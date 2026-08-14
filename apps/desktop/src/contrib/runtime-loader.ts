@@ -235,7 +235,7 @@ async function loadDiskPlugin(name: string, file: string): Promise<void> {
   }
 }
 
-async function scanDiskPlugins(): Promise<void> {
+async function scanDiskPlugins(forceReload = false): Promise<void> {
   const desktop = window.hermesDesktop
 
   // Re-entrancy guard: the 5s poll must not overlap a slow in-flight scan
@@ -263,6 +263,11 @@ async function scanDiskPlugins(): Promise<void> {
       seen.add(dir.name)
 
       if (disk.has(dir.name)) {
+        if (forceReload) {
+          const record = disk.get(dir.name)!
+          await loadDiskPlugin(dir.name, record.file)
+        }
+
         continue
       }
 
@@ -313,7 +318,7 @@ async function scanDiskPlugins(): Promise<void> {
 }
 
 /** Manual rescan (the ⌘K "Reload desktop plugins" fallback). */
-export const discoverRuntimePlugins = scanDiskPlugins
+export const discoverRuntimePlugins = (): Promise<void> => scanDiskPlugins(true)
 
 /** Start the self-maintaining disk door: initial scan, per-file hot reload,
  *  fs-watched folder reconciliation (poll fallback on older shells). Idempotent. */

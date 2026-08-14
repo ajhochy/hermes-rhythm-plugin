@@ -16,12 +16,16 @@ vi.mock('@/hermes', async importActual => ({
 
 const desktopPluginsRoot = vi.fn<() => Promise<string>>()
 const readDir = vi.fn<(path: string) => Promise<HermesReadDirResult>>()
+const readFileText = vi.fn<(path: string) => Promise<{ text: string }>>()
+const watchPreviewFile = vi.fn<(path: string) => Promise<{ id: string }>>()
 const watchDirectory = vi.fn<(path: string) => Promise<{ id: string }>>()
 const onPreviewFileChanged = vi.fn()
 
 beforeEach(() => {
   desktopPluginsRoot.mockReset()
   readDir.mockReset()
+  readFileText.mockReset()
+  watchPreviewFile.mockReset()
   watchDirectory.mockReset()
   onPreviewFileChanged.mockReset()
   getStatus.mockClear()
@@ -29,6 +33,8 @@ beforeEach(() => {
     desktopPluginsRoot,
     onPreviewFileChanged,
     readDir,
+    readFileText,
+    watchPreviewFile,
     watchDirectory
   }
 })
@@ -57,6 +63,28 @@ describe('scanDiskPlugins (#66899)', () => {
     await discoverRuntimePlugins()
 
     expect(readDir).not.toHaveBeenCalled()
+  })
+
+  it('manual discovery re-reads an already-known plugin file', async () => {
+    desktopPluginsRoot.mockResolvedValue('/local/.hermes/desktop-plugins')
+    readDir.mockResolvedValue({
+      entries: [
+        {
+          name: 'reload-probe',
+          path: '/local/.hermes/desktop-plugins/reload-probe',
+          isDirectory: true
+        }
+      ]
+    })
+    readFileText.mockResolvedValue({ text: 'not valid plugin javascript' })
+    watchPreviewFile.mockResolvedValue({ id: 'watch-reload-probe' })
+
+    await discoverRuntimePlugins()
+    const readsAfterDiscovery = readFileText.mock.calls.length
+    await discoverRuntimePlugins()
+
+    expect(readsAfterDiscovery).toBeGreaterThan(0)
+    expect(readFileText.mock.calls.length).toBeGreaterThan(readsAfterDiscovery)
   })
 })
 

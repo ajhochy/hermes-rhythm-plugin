@@ -54,6 +54,7 @@ import {
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH
 } from '@/store/layout'
+import { notify } from '@/store/notifications'
 import { runExportProfileFlow, runImportProfileFlow } from '@/store/profile-share'
 import { $reviewOpen, closeReview, openReview, REVIEW_PANE_ID } from '@/store/review'
 import { $currentCwd, $selectedStoredSessionId, $sessions, $yoloActive, sessionMatchesStoredId } from '@/store/session'
@@ -263,7 +264,10 @@ registry.registerMany([
       id: 'plugins.reload',
       label: 'Reload desktop plugins',
       keywords: ['plugins', 'reload', 'refresh', 'desktop'],
-      run: () => void discoverRuntimePlugins()
+      run: async () => {
+        await discoverRuntimePlugins()
+        notify({ kind: 'success', message: 'Desktop plugins reloaded' })
+      }
     } satisfies PaletteContribution
   },
   {
