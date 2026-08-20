@@ -1,0 +1,10 @@
+.venv/
+node_modules/
+dist/
+build/
+__pycache__/
+.pytest_cache/
+.coverage
+*.egg-info/
+.DS_Store
+.hermes/workflows/

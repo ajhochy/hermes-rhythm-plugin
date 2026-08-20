@@ -1,0 +1,6 @@
+{
+  "name": "hermes-coding-workflow-desktop",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test tests/desktop/*.test.mjs", "build": "node --check desktop/plugin.js && node --test tests/desktop/plugin.test.mjs" }
+}

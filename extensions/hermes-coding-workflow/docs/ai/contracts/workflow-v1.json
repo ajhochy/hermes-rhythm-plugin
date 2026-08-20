@@ -1,0 +1,123 @@
+{
+  "schema_version": 1,
+  "status": "superseded",
+  "superseded_by": "workflow-v2.json",
+  "campaign": "hermes-coding-workflow",
+  "terminal_scope": "complete-product",
+  "source_base": "initial repository",
+  "compatibility": {
+    "hermes": "0.20.0",
+    "python": "3.11",
+    "node": "22"
+  },
+  "global_invariants": [
+    "standalone extension; no Hermes core modification",
+    "Kanban is durable task-state authority",
+    "all production behavior follows observed RED evidence",
+    "all implementation occurs in isolated worktrees",
+    "builder and reviewers use different profile/session identities",
+    "spec review passes before quality review",
+    "review and verification bind to exact immutable candidate SHA",
+    "post-review changes invalidate prior approval",
+    "completion requires fresh deterministic and required live behavior evidence",
+    "draft PR only; default branch is never auto-merged",
+    "telemetry excludes prompts, transcripts, secrets, raw tool arguments and raw user data"
+  ],
+  "packages": [
+    {
+      "id": "P0",
+      "name": "foundation",
+      "depends_on": [],
+      "required_behavior": [
+        "versioned schemas for run, stage, review and evidence",
+        "documented state transitions and rejection reasons",
+        "third-party attribution for adapted Superpowers methodology"
+      ],
+      "gate": ["schema tests", "documentation contract checks"]
+    },
+    {
+      "id": "P1",
+      "name": "control-plane",
+      "depends_on": ["P0"],
+      "required_behavior": [
+        "create or select one Kanban board per repository",
+        "materialize the complete stage dependency graph",
+        "persist revisioned run mappings and bounded evidence",
+        "enforce exact-SHA, identity, scope, RED, review and verification predicates",
+        "support repair loops without rewriting reviewed history",
+        "provide CLI init/start/show/advance/record/doctor commands"
+      ],
+      "gate": ["unit tests", "contract tests", "multi-process revision conflict test", "CLI integration tests"]
+    },
+    {
+      "id": "P2",
+      "name": "superpowers-disciplines",
+      "depends_on": ["P0"],
+      "required_behavior": [
+        "automatic coding-intent bootstrap before source mutation",
+        "design interview and explicit approval",
+        "context-free granular implementation plans",
+        "strict TDD and YAGNI/DRY policies",
+        "fresh-task worker dispatch",
+        "spec review then quality review",
+        "systematic debugging and evidence-based review reception",
+        "verification-before-completion and provenance-aware branch finishing"
+      ],
+      "gate": ["skill structure tests", "bootstrap injection test", "adversarial pressure evaluations"]
+    },
+    {
+      "id": "P3",
+      "name": "hermes-plugin-api",
+      "depends_on": ["P1"],
+      "required_behavior": [
+        "native plugin discovery and enable lifecycle",
+        "scoped read-only dashboard API for boards, runs, stages, evidence and reviews",
+        "bounded DTOs and strict identifier/path validation",
+        "no arbitrary filesystem or command surface"
+      ],
+      "gate": ["API tests", "security boundary tests", "hermes plugins doctor"]
+    },
+    {
+      "id": "P4",
+      "name": "desktop-ui",
+      "depends_on": ["P3"],
+      "required_behavior": [
+        "Coding Runs route, sidebar entry and command palette action",
+        "repository/board selector and run list",
+        "stage graph/status, profile/model, attempts, SHAs and blockers",
+        "safe evidence and review detail views",
+        "loading, empty, error and stale-candidate states",
+        "theme-safe and keyboard/accessibility behavior"
+      ],
+      "gate": ["frontend contract tests", "production bundle", "isolated Desktop live observation"]
+    },
+    {
+      "id": "P5",
+      "name": "installation-and-live-proof",
+      "depends_on": ["P2", "P3", "P4"],
+      "required_behavior": [
+        "fixed-allowlist install, uninstall and doctor scripts",
+        "dev-profile installation without clobbering unrelated config",
+        "clean-session acceptance prompt routes to design before code",
+        "disposable repository completes full plan-contract-build-review-verify-handoff flow",
+        "Desktop shows the same durable run and evidence",
+        "restart/resume preserves run state"
+      ],
+      "gate": ["clean install test", "isolated HERMES_HOME test", "real end-to-end coding run", "independent adversarial review"]
+    }
+  ],
+  "required_final_evidence": [
+    "clean integration worktree",
+    "all focused and full tests passing",
+    "Python and Node builds passing",
+    "added-line secret/security scan passing",
+    "Hermes plugin doctor passing",
+    "authenticated scoped API live proof",
+    "isolated Desktop contributions observed",
+    "clean-session design-first auto-trigger transcript",
+    "complete disposable-repository workflow transcript and artifacts",
+    "fresh independent review of final immutable head",
+    "Dev Dashboard tracker current",
+    "draft PR or local handoff with manual merge gate preserved"
+  ]
+}
