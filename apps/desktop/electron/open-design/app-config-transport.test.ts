@@ -204,6 +204,55 @@ test('bounds a PUT response body too, even though the caller ignores it', async 
   )
 })
 
+test('the deadline aborts a stalled body read, not just fetch/header setup', async () => {
+  let cancelled = false
+
+  const stalledStream = new ReadableStream<Uint8Array>({
+    pull() {
+      // Never enqueue or close: simulates a connection that sends headers
+      // then stalls mid-body, forever, below the byte cap.
+    },
+    cancel() {
+      cancelled = true
+    }
+  })
+
+  const fetchImpl = async () =>
+    ({
+      status: 200,
+      headers: new Headers(),
+      body: stalledStream,
+      async text() {
+        throw new Error('unbounded text() must never be called by the transport')
+      },
+      async arrayBuffer() {
+        throw new Error('unbounded arrayBuffer() must never be called by the transport')
+      }
+    }) as unknown as Response
+
+  const fetch = createOpenDesignAppConfigFetch({ fetchImpl })
+
+  const fetchPromise = fetch('http://127.0.0.1:5173/api/app-config', {
+    method: 'GET',
+    headers: {},
+    timeoutMs: 10
+  })
+
+  const safetyTimeout = new Promise((_resolve, reject) => {
+    setTimeout(
+      () => reject(new Error('test safety timeout: transport did not honor timeoutMs across the body read')),
+      200
+    )
+  })
+
+  await assert.rejects(
+    Promise.race([fetchPromise, safetyTimeout]),
+    (error: unknown) => error instanceof OpenDesignTransportError && error.code === 'timeout'
+  )
+
+  assert.equal(cancelled, true)
+})
+
 test('a response with no body stream resolves to an empty string', async () => {
   const fetchImpl = async () =>
     ({ status: 204, headers: new Headers(), body: null }) as unknown as Response

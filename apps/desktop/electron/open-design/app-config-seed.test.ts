@@ -443,6 +443,22 @@ test('an invalid clock (negative) produces a static failure code rather than thr
   assert.deepEqual(result, { status: 'failed', errorCode: 'invalid_clock' })
 })
 
+test('a fresh config whose injected clock throws produces a static failure code rather than throwing', async () => {
+  const { fetch, calls } = makeFetch([{ status: 200, body: FRESH_EMPTY_ENVELOPE }])
+
+  const result = await seedHermesOpenDesignDefaults({
+    origin: ORIGIN,
+    fetch,
+    now: () => {
+      throw new Error('clock unexpectedly threw')
+    }
+  })
+
+  assert.deepEqual(result, { status: 'failed', errorCode: 'invalid_clock' })
+  // The GET happened (we need the config to know it's fresh) but no PUT was attempted.
+  assert.equal(calls.length, 1)
+})
+
 test('a preserved result never evaluates the clock at all', async () => {
   const { fetch } = makeFetch([{ status: 200, body: JSON.stringify({ config: { agentId: null } }) }])
 

@@ -46,27 +46,29 @@ export function createOpenDesignAppConfigFetch(
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), init.timeoutMs)
 
-    let response: Response
-
     try {
-      response = await fetchImpl(url, {
-        method: init.method,
-        headers: init.headers,
-        body: init.body,
-        redirect: 'error',
-        signal: controller.signal
-      })
-    } catch (error) {
-      if (controller.signal.aborted) {
-        throw new OpenDesignTransportError('timeout', 'Open Design app-config request deadline exceeded')
+      let response: Response
+
+      try {
+        response = await fetchImpl(url, {
+          method: init.method,
+          headers: init.headers,
+          body: init.body,
+          redirect: 'error',
+          signal: controller.signal
+        })
+      } catch (error) {
+        if (controller.signal.aborted) {
+          throw new OpenDesignTransportError('timeout', 'Open Design app-config request deadline exceeded')
+        }
+
+        throw new OpenDesignTransportError('network_error', 'Open Design app-config request failed')
       }
 
-      throw new OpenDesignTransportError('network_error', 'Open Design app-config request failed')
+      return await readBoundedResponse(response, maxResponseBytes, controller.signal)
     } finally {
       clearTimeout(timer)
     }
-
-    return readBoundedResponse(response, maxResponseBytes)
   }
 }
 
@@ -84,16 +86,39 @@ function contentLengthExceedsCap(response: Response, maxResponseBytes: number): 
 
 async function readBoundedResponse(
   response: Response,
-  maxResponseBytes: number
+  maxResponseBytes: number,
+  signal: AbortSignal
 ): Promise<OpenDesignAppConfigFetchResponse> {
   if (contentLengthExceedsCap(response, maxResponseBytes)) {
     await cancelBody(response)
     throw new OpenDesignTransportError('oversized_response', 'Open Design app-config Content-Length exceeds cap')
   }
 
-  const body = await readBoundedUtf8Body(response, maxResponseBytes)
+  const body = await readBoundedUtf8Body(response, maxResponseBytes, signal)
 
   return { status: response.status, body }
+}
+
+function waitForAbort(signal: AbortSignal): { promise: Promise<never>; cleanup: () => void } {
+  let onAbort: () => void = () => {}
+
+  const promise = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(new OpenDesignTransportError('timeout', 'Open Design app-config request deadline exceeded'))
+
+    if (signal.aborted) {
+      onAbort()
+
+      return
+    }
+
+    signal.addEventListener('abort', onAbort)
+  })
+
+  // A rejected racer that's never awaited (because the other side of the
+  // race won first) would otherwise surface as an unhandled rejection.
+  promise.catch(() => {})
+
+  return { promise, cleanup: () => signal.removeEventListener('abort', onAbort) }
 }
 
 async function cancelBody(response: Response): Promise<void> {
@@ -104,7 +129,11 @@ async function cancelBody(response: Response): Promise<void> {
   }
 }
 
-async function readBoundedUtf8Body(response: Response, maxResponseBytes: number): Promise<string> {
+async function readBoundedUtf8Body(
+  response: Response,
+  maxResponseBytes: number,
+  signal: AbortSignal
+): Promise<string> {
   const reader = response.body?.getReader()
 
   if (!reader) {
@@ -114,28 +143,41 @@ async function readBoundedUtf8Body(response: Response, maxResponseBytes: number)
   const chunks: Uint8Array[] = []
   let totalBytes = 0
 
-  while (true) {
-    const { done, value } = await reader.read()
+  try {
+    while (true) {
+      const { promise: abortPromise, cleanup } = waitForAbort(signal)
 
-    if (done) {
-      break
-    }
+      let done: boolean
+      let value: Uint8Array | undefined
 
-    if (value) {
-      totalBytes += value.byteLength
-
-      if (totalBytes > maxResponseBytes) {
-        try {
-          await reader.cancel()
-        } catch {
-          // Best-effort; the request is already being rejected.
-        }
-
-        throw new OpenDesignTransportError('oversized_response', 'Open Design app-config response body exceeds cap')
+      try {
+        ;({ done, value } = await Promise.race([reader.read(), abortPromise]))
+      } finally {
+        cleanup()
       }
 
-      chunks.push(value)
+      if (done) {
+        break
+      }
+
+      if (value) {
+        totalBytes += value.byteLength
+
+        if (totalBytes > maxResponseBytes) {
+          throw new OpenDesignTransportError('oversized_response', 'Open Design app-config response body exceeds cap')
+        }
+
+        chunks.push(value)
+      }
     }
+  } catch (error) {
+    try {
+      await reader.cancel()
+    } catch {
+      // Best-effort; the request is already being rejected.
+    }
+
+    throw error
   }
 
   return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString('utf-8')

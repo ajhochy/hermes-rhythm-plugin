@@ -230,7 +230,13 @@ export async function seedHermesOpenDesignDefaults(
     return { status: 'preserved' }
   }
 
-  const nowMs = now()
+  let nowMs: number
+
+  try {
+    nowMs = now()
+  } catch {
+    return { status: 'failed', errorCode: 'invalid_clock' }
+  }
 
   if (!isValidClockMs(nowMs)) {
     return { status: 'failed', errorCode: 'invalid_clock' }
