@@ -46,7 +46,7 @@ Hermes /design ─start─► │ OpenDesignRuntimeSupervisor │
                        yes             │              yes
                         │              │               │
                         ▼              │               ▼
-          staged OD 0.20 Resources     │     compatible Open Design.app
+          staged signed OD 0.20 app        │     compatible Open Design.app
                         │              │               │
                         └──────────────┴───────────────┘
                                        │
@@ -63,7 +63,9 @@ Hermes /design ─start─► │ OpenDesignRuntimeSupervisor │
                         sanitized URL/state to renderer
 ```
 
-Packaged builds download the official platform release asset into an external cache, verify the contract SHA-256, extract the packaged Resources tree, and copy it through `electron-builder` as an extra resource. Installer/runtime binaries never enter Git.
+Packaged builds download the official platform release asset into an external cache, verify the contract SHA-256, and stage the complete signed application payload through `electron-builder` as an extra resource. Hermes launches that application with `--headless`; Open Design creates no `BrowserWindow` and remains the lifecycle owner of its daemon and web sidecars. Installer/runtime binaries never enter Git.
+
+The original Resources-only reuse assumption was falsified against the packaged Hermes executable: a renamed packaged Electron binary ignores an alternate `main.cjs` app path and boots its own embedded Hermes application. The release payload also contains no plain-Node headless bundle. [Amendment 1](./open-design-integration.amendment-1.json) records the evidence, size impact, rejected lifecycle-reimplementation alternative, and unchanged acceptance invariants.
 
 ## Skin flow
 
