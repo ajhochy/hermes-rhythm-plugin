@@ -19,7 +19,7 @@ The methodology incorporates selected principles from Jesse Vincent's MIT-licens
 
 Installation is explicit and local-only. It never uses the current user's home by default, contacts a network service, edits Hermes configuration files directly, or depends on a sibling worktree. The repository root is the control plane.
 
-Create a **Hermes-tool-dispatch** source profile in the target home first, then install. Direct-tool providers such as `openai-codex`, `copilot-acp`, Claude Code ACP, and OpenCode ACP are rejected before any mutation because their file tools do not pass through Hermes `pre_tool_call` hooks.
+Create a **Hermes-tool-dispatch** source profile in the target home first, then install. Direct-tool providers such as `copilot-acp`, Claude Code ACP, and OpenCode ACP are rejected before any mutation because their file tools do not pass through Hermes `pre_tool_call` hooks. Both `openai` and `openai-codex` are runtime-checked before the native-provider allowlist; `codex_app_server` under either supported config spelling and unknown runtime values remain fail-closed.
 
 ```sh
 export HERMES_HOME=/path/to/isolated-hermes-home
@@ -47,6 +47,12 @@ $HERMES_HOME/profiles/dev/plugins/hcw/runtime/bin/hcw --help
 
 Role profiles are created with Hermes's supported `profile create --clone-from dev --no-alias` flow and precise routing descriptions: `dev-planner`, `dev-contract`, `dev-builder`, `dev-spec-reviewer`, `dev-quality-reviewer`, `dev-verifier`, and `dev-recorder`. The source and all roles must retain supported Hermes-tool-dispatch providers. Plugin enablement and scanner validation use supported Hermes CLI commands; no `config.yaml` is edited directly.
 
+For account-subscription routing with no API keys, first authenticate both pools with `hermes auth add openai-codex` and `hermes auth add anthropic --type oauth`, then add `--account-oauth-tiers` to the install command. The source orchestrator, planner, and spec reviewer use OpenAI OAuth with `gpt-5.6-sol`; contract and builder use Claude Sonnet 4.6; quality review uses Claude Opus 4.6; verification uses `gpt-5.6-terra`; recording uses Claude Haiku 4.5. Every profile explicitly sets `model.openai_runtime: auto`, pins its native Hermes API mode (`codex_responses` for OpenAI or `anthropic_messages` for Anthropic), and clears inherited fallback providers, so no API-key or direct-tool route is attempted. OpenAI OAuth is accepted only through Hermes's `codex_responses` loop; either config spelling for `codex_app_server`, plus unknown runtime values, remains fail-closed because app-server owns its tools outside Hermes hooks. Verify exact routes, empty fallback chains, and active OAuth credential metadata with:
+
+```sh
+python scripts/doctor.py --hermes-home "$HERMES_HOME" --source-profile hcw-dev --account-oauth-tiers --verify-account-oauth
+```
+
 ## Remove
 
 ```sh
@@ -69,4 +75,4 @@ Direct tool/provider output is never acceptance evidence. Hermes task identity, 
 
 `tests/integration/test_lifecycle_install.py` and `tests/e2e/test_disposable_repo.py` exercise the public installed launcher and real Hermes Kanban host. The E2E is mandatory acceptance: it creates a run, uses graph-issued actor/task identities, records RED/GREEN/deterministic/live checks, reviews, repair when needed, and a manual-merge handoff. No provider call, mock runner, or environment-gated substitute can satisfy that contract.
 
-Status: complete candidate is installed through the safe `hcw-dev` source profile. Parent gates, independent review, isolated installed E2E, and an active-home tracer run all pass; the live board's nine stage tasks are all `done`. Existing direct-tool `dev` remains unchanged. See `docs/ai/project-state.md` and `docs/ai/runs/terra-final-reconcile.md`.
+Status: the OAuth-tier candidate is installed through `hcw-dev`; OpenAI Sol live inference and all structural gates pass. Anthropic OAuth is authenticated but live Anthropic inference remains pending account extra-usage entitlement. Existing `dev` remains unchanged. See `docs/ai/project-state.md`.

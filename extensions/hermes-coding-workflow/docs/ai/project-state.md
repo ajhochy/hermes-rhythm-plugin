@@ -12,19 +12,19 @@ Build the complete standalone Hermes coding workflow package, including the cont
 
 ## Current activity
 
-- Complete candidate `b436a6e` is installed in the live Hermes home through safe native-provider source profile `hcw-dev` and seven Gemini-backed role profiles. A real installed tracer run completed on board `hcw-live-tracer-1787210374`; all nine exact task IDs are `done`, RED failed as required, GREEN/live passed, the candidate SHA was preserved, and the disposable repository's `main` remained unchanged.
+- OAuth-tier candidate `fix/oauth-tier-routing` is installed in the live Hermes home. `hcw-dev` is the GPT-5.6-Sol orchestrator through OpenAI account OAuth; dispatched roles are tiered across OpenAI account OAuth and Anthropic account OAuth, with no API-key fallback chain. Exact-route doctor and OpenAI Sol live smoke pass. A real Sol `write_file` probe was rejected by the HCW `pre_tool_call` boundary with `workflow identity required for mutation`, and the target file was not created. Anthropic OAuth authentication succeeds, but Anthropic currently rejects third-party inference until account extra usage is enabled/funded; mixed-pool live completion remains pending that external entitlement.
 
 ## Safety
 
 - Existing dirty Rhythm checkout is out of scope and must not be modified.
 - No worker merges or pushes.
 - No automatic default-branch merge.
-- Existing direct-tool `dev` remains unchanged; live enforcement is installed only in `hcw-dev` and its role profiles.
+- Existing `dev` remains unchanged; live enforcement is installed only in `hcw-dev` and its role profiles. OpenAI OAuth is pinned to Hermes-owned behavior by `model.openai_runtime: auto` plus `model.api_mode: codex_responses`; either Codex app-server config spelling remains rejected.
 
 ## Test status
 
 - Control plane, native plugins, role profiles, installer, read-only API, Desktop UI, and public installed lifecycle are implemented.
-- Final fork-worktree gates: `44 passed in 245.65s` with zero skips/xfails; Node `3/3`, production ESM build, Python compilation, wheel build, diff check, native plugin doctors, isolated installed lifecycle, crash-consistency failure injection, and live active-home lifecycle all passed.
+- OAuth-tier branch gates: `55 passed` with zero skips/xfails; Node `3/3`, production ESM build, Python compilation, diff check, exact tier-routing lifecycle, source/profile rollback injection, both app-server config spellings across both OpenAI provider names, runtime allowlist tests, active OAuth credential-type checks, and fallback-removal verification passed.
 - Live proof: run `live-tracer-1787210374`, board `hcw-live-tracer-1787210374`, nine tasks all `done`, base `4e269dee0ded1b4c4080f02f9fdc3be536979323`, candidate `0123bcdac2e9b3faaca17b58af8d72e37afb5b93`, and default branch unchanged.
 
 ## Recent coding-agent runs

@@ -31,17 +31,26 @@ ROLE_DESCRIPTIONS = {
     "dev-verifier": "Runs fresh deterministic, security, and live behavior verification and records bounded evidence.",
     "dev-recorder": "Records draft-PR/manual-merge handoff and durable project-state evidence without changing implementation.",
 }
+ACCOUNT_OAUTH_TIERS = {
+    "dev-planner": ("openai-codex", "gpt-5.6-sol", "codex_responses"),
+    "dev-contract": ("anthropic", "claude-sonnet-4-6", "anthropic_messages"),
+    "dev-builder": ("anthropic", "claude-sonnet-4-6", "anthropic_messages"),
+    "dev-spec-reviewer": ("openai-codex", "gpt-5.6-sol", "codex_responses"),
+    "dev-quality-reviewer": ("anthropic", "claude-opus-4-6", "anthropic_messages"),
+    "dev-verifier": ("openai-codex", "gpt-5.6-terra", "codex_responses"),
+    "dev-recorder": ("anthropic", "claude-haiku-4-5", "anthropic_messages"),
+}
 OWNERSHIP_FILE = ".hcw-lifecycle.json"
 
 # Hermes invokes native pre_tool_call hooks only for tools dispatched by its
-# own agent loop.  These providers/transports hand execution to another coding
-# runtime (Codex app-server or ACP), so a plugin hook cannot police its direct
-# file/shell tools.  Keep this a small, explicit allowlist: a new provider is
-# unsafe until it is shown to route tools through Hermes.
+# own agent loop. Codex app-server and ACP hand execution to another coding
+# runtime, so a plugin hook cannot police their direct file/shell tools. OpenAI
+# account OAuth defaults to Hermes-owned codex_responses and is safe unless the
+# profile explicitly opts into codex_app_server.
 SAFE_HERMES_TOOL_DISPATCH_PROVIDERS = frozenset({
     "openai", "anthropic", "gemini", "google", "openrouter", "nous",
 })
-DIRECT_CODE_TOOL_PROVIDERS = frozenset({"openai-codex", "copilot-acp", "codex", "claude-acp", "opencode-acp"})
+DIRECT_CODE_TOOL_PROVIDERS = frozenset({"copilot-acp", "codex", "claude-acp", "opencode-acp"})
 PROVIDER_BOUNDARY_ERROR = "HCW_PROVIDER_BOUNDARY_UNSAFE"
 
 
@@ -78,7 +87,16 @@ def _provider_for(home: Path) -> str:
 
 
 def _assert_safe_provider(home: Path, label: str) -> None:
-    provider = _provider_for(home)
+    config = _read_config(home / "config.yaml")
+    model = config.get("model", {})
+    provider = str(model.get("provider", "")).strip().lower() if isinstance(model, dict) else ""
+    runtime = str(model.get("openai_runtime", "")).strip().lower()
+    api_mode = str(model.get("api_mode", "")).strip().lower()
+    if provider in {"openai", "openai-codex"}:
+        safe_api_modes = {"", "chat_completions", "codex_responses"} if provider == "openai" else {"", "codex_responses"}
+        if runtime in {"", "auto", "codex_responses"} and api_mode in safe_api_modes:
+            return
+        raise RuntimeError(f"{PROVIDER_BOUNDARY_ERROR}: {label} uses provider '{provider}'")
     if provider in SAFE_HERMES_TOOL_DISPATCH_PROVIDERS:
         return
     # Prefix matching covers future ACP variants without treating ordinary
@@ -125,7 +143,10 @@ def _preflight(home: Path, source_profile: str, worker_source_profile: str) -> l
     missing = [str(path) for path in required if not path.exists()]
     if missing:
         raise RuntimeError("workflow source payload is incomplete: " + ", ".join(missing))
-    targets = [home]
+    source_target = home / "profiles" / source_profile
+    # The source/orchestrator is mutated by plugin enablement and, optionally,
+    # OAuth tier routing, so its config must roll back with the base home.
+    targets = [home, source_target]
     for name, description in ROLE_DESCRIPTIONS.items():
         target = home / "profiles" / name
         if target.exists() and not target.is_dir():
@@ -136,7 +157,8 @@ def _preflight(home: Path, source_profile: str, worker_source_profile: str) -> l
             if _profile_metadata(home, name).get("description", "") != description:
                 raise RuntimeError(f"existing role profile '{name}' has an unexpected description")
             _assert_safe_provider(target, f"existing role profile '{name}'")
-            targets.append(target)
+            if target not in targets:
+                targets.append(target)
     return targets
 
 
@@ -279,6 +301,21 @@ def _ensure_profiles(home: Path, worker_source_profile: str, transaction: Transa
     return result
 
 
+def _configure_account_oauth_tiers(source_home: Path, role_homes: list[Path]) -> None:
+    routes = {source_home.name: ("openai-codex", "gpt-5.6-sol", "codex_responses"), **ACCOUNT_OAUTH_TIERS}
+    for target in (source_home, *role_homes):
+        provider, model, api_mode = routes[target.name]
+        _run(target, ["config", "set", "model.provider", provider])
+        _run(target, ["config", "set", "model.default", model])
+        _run(target, ["config", "set", "model.openai_runtime", "auto"])
+        _run(target, ["config", "set", "model.api_mode", api_mode])
+        config = _read_config(target / "config.yaml")
+        for fallback_key in ("fallback_providers", "fallback_model"):
+            if fallback_key in config:
+                _run(target, ["config", "unset", fallback_key])
+        _assert_safe_provider(target, f"OAuth tier profile '{target.name}'")
+
+
 def _enable_and_check(home: Path) -> None:
     for plugin in PLUGIN_SOURCES:
         _run(home, ["plugins", "enable", plugin, "--no-allow-tool-override"])
@@ -289,7 +326,7 @@ def _enable_dashboard(home: Path) -> None:
     _run(home, ["plugins", "doctor", str(home / "plugins" / DASHBOARD_PLUGIN), "--ci"])
 
 
-def install(home: Path, *, source_profile: str = "dev", worker_source_profile: str | None = None, fail_at: str | None = None) -> int:
+def install(home: Path, *, source_profile: str = "dev", worker_source_profile: str | None = None, account_oauth_tiers: bool = False, fail_at: str | None = None) -> int:
     home = Path(home).resolve()
     worker_source_profile = worker_source_profile or source_profile
     targets = _preflight(home, source_profile, worker_source_profile)
@@ -300,6 +337,8 @@ def install(home: Path, *, source_profile: str = "dev", worker_source_profile: s
         transaction.snapshot_file(home / OWNERSHIP_FILE)
         try:
             profile_homes = _ensure_profiles(home, worker_source_profile, transaction)
+            if account_oauth_tiers:
+                _configure_account_oauth_tiers(home / "profiles" / source_profile, profile_homes)
             _stage_dashboard_home(home, transaction)
             for target_home in (home / "profiles" / source_profile, *profile_homes):
                 _stage_home(target_home, transaction)
@@ -323,8 +362,14 @@ def main() -> int:
     parser.add_argument("--hermes-home", required=True, help="explicit Hermes home; never defaults to a user home")
     parser.add_argument("--source-profile", required=True, help="existing profile cloned into each workflow role")
     parser.add_argument("--worker-source-profile", help="safe Hermes-tool-dispatch profile cloned into role workers; defaults to --source-profile")
+    parser.add_argument("--account-oauth-tiers", action="store_true", help="route orchestrator and roles across OpenAI and Anthropic account OAuth tiers")
     args = parser.parse_args()
-    return install(Path(args.hermes_home), source_profile=args.source_profile, worker_source_profile=args.worker_source_profile)
+    return install(
+        Path(args.hermes_home),
+        source_profile=args.source_profile,
+        worker_source_profile=args.worker_source_profile,
+        account_oauth_tiers=args.account_oauth_tiers,
+    )
 
 
 if __name__ == "__main__":
