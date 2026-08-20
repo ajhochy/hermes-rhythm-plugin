@@ -1,0 +1,7 @@
+name: hcw
+version: 1.0.2
+description: Contract-gated Hermes coding workflow roles
+author: Hermes Coding Workflow
+provides_hooks:
+  - pre_llm_call
+  - pre_tool_call

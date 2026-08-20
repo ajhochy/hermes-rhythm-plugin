@@ -1,0 +1,9 @@
+Superpowers source material vendored from obra/superpowers at
+b36e0829c6d0140e93cfef2ca599b1b07d4a7797.
+
+Copyright (c) 2025 Jesse Vincent
+Licensed under the MIT License; see LICENSE.
+
+This package includes the fourteen upstream skill directories and their
+necessary reference, template, and helper-script support. It intentionally
+excludes upstream branding assets and telemetry.

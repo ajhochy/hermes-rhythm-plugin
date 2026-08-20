@@ -1,0 +1,1 @@
+{"type":"object","additionalProperties":false,"required":["schema_version","kind","id","created_at","name","input_sha"],"properties":{"schema_version":{"const":"hcw/v1"},"kind":{"const":"stage"}}}

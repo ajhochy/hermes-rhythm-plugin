@@ -1,0 +1,227 @@
+from __future__ import annotations
+import json,subprocess,sys
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+import pytest
+import hermes_coding_workflow.service as service_module
+from hermes_coding_workflow.adapters import KanbanAdapter
+from hermes_coding_workflow.contracts import PROFILES
+from hermes_coding_workflow.service import ActorContext,WorkflowError,WorkflowService
+from hermes_coding_workflow.store import RunStore
+def git(repo:Path,*args:str)->str:return subprocess.check_output(["git","-C",str(repo),*args],text=True).strip()
+@pytest.fixture()
+def repo(tmp_path:Path)->Path:
+ subprocess.run(["git","init",str(tmp_path)],check=True,capture_output=True);git(tmp_path,"config","user.email","a@b.invalid");git(tmp_path,"config","user.name","t");(tmp_path/"app.txt").write_text("old\n");git(tmp_path,"add",".");git(tmp_path,"commit","-m","base");return tmp_path
+def board(repo:Path,calls:list[tuple[str,...]],home:Path|None=None,fail_complete:bool=False)->KanbanAdapter:
+ statuses:dict[str,str]={}; failed=False
+ def run(argv,cwd):
+  nonlocal failed
+  calls.append(tuple(argv))
+  if "create" in argv:
+   stage=argv[argv.index("create")+1].split(": ")[-1];ident="task-"+stage;statuses[ident]="todo";return subprocess.CompletedProcess(argv,0,json.dumps({"id":ident}) if "--json" in argv else "","")
+  if "show" in argv:
+   ident=argv[argv.index("show")+1];return subprocess.CompletedProcess(argv,0,json.dumps({"task":{"id":ident,"status":statuses.get(ident,"todo")}}),"")
+  if "complete" in argv:
+   if fail_complete and not failed:failed=True;return subprocess.CompletedProcess(argv,1,"","temporary")
+   statuses[argv[argv.index("complete")+1]]="done"
+  return subprocess.CompletedProcess(argv,0,"","")
+ return KanbanAdapter(repo,"hcw-test",run,home=home)
+def act(stage:str)->ActorContext:return ActorContext(PROFILES[stage],"task-"+stage)
+def payloads():
+ command=[sys.executable,"-c","import pathlib; raise SystemExit(0 if pathlib.Path('app.txt').read_text() == 'new\\n' else 1)"]
+ return ({"observable_outcome":"new behavior","requirements":[{"id":"R1","description":"change app"}],"acceptance_criteria":["green"],"approved":True},{"tasks":[{"id":"one","description":"change it","paths":["app.txt"],"test_command":command,"requirement_ids":["R1"]}],"commands":{"red":{"argv":command,"requirement_ids":["R1"]},"green":{"argv":command,"requirement_ids":["R1"]},"full":{"argv":[sys.executable,"-c","pass"],"requirement_ids":["R1"]},"security":{"argv":[sys.executable,"-c","pass"],"requirement_ids":["R1"]},"live":{"argv":[sys.executable,"-c","pass"],"requirement_ids":["R1"]}},"approved":True})
+def ready(repo:Path):
+ calls=[];s=WorkflowService(repo);run=s.create_run("pkg",["app.txt"],"run-1","hcw-test",board(repo,calls));d,p=payloads();s.approve_design("run-1",act("design"),d);s.approve_plan("run-1",act("plan"),p);return s,run,calls
+def test_create_graph_uses_actual_workspace_and_exact_profiles(repo:Path)->None:
+ s,run,calls=ready(repo)
+ assert run["status"]=="awaiting_design" and run["stage_profiles"]==PROFILES
+ assert set(run["kanban_task_ids"])==set(PROFILES)
+ assert run["stage_statuses"] == {stage: ("active" if stage == "design" else "pending") for stage in PROFILES}
+ creates=[x for x in calls if "create" in x and "--idempotency-key" in x]
+ assert all(f"worktree:{run['worktree_path']}" in x and "--branch" in x and "--idempotency-key" in x for x in creates)
+ assert any(x[x.index("link")+1:x.index("link")+3]==("task-design","task-plan") for x in calls if "link" in x)
+ assert json.loads((Path(run["worktree_path"])/".hermes/hcw-run.json").read_text())["run_id"]=="run-1"
+
+def test_create_run_resumes_from_durable_intent_after_graph_before_run_write(monkeypatch,repo:Path)->None:
+ calls=[];adapter=board(repo,calls);svc=WorkflowService(repo);original=RunStore.write_run;failed=False
+ def fail_once(self,record,expected):
+  nonlocal failed
+  if not failed:failed=True;raise OSError("injected post-graph crash")
+  return original(self,record,expected)
+ monkeypatch.setattr(RunStore,"write_run",fail_once)
+ with pytest.raises(WorkflowError,match="setup_failed"):
+  svc.create_run("pkg",["app.txt"],"run-resume","hcw-test",adapter,goal="resume me")
+ store=RunStore(repo,"run-resume");internal=store.read("internal.json")
+ assert not store._path("run.json").exists()
+ assert internal["create_intent"]["status"]=="graph_created"
+ assert Path(internal["create_intent"]["worktree_path"]).is_dir()
+ created_before=len([call for call in calls if "create" in call])
+ monkeypatch.setattr(RunStore,"write_run",original)
+ resumed=svc.create_run("pkg",["app.txt"],"run-resume","hcw-test",adapter,goal="resume me")
+ assert resumed["status"]=="awaiting_design"
+ assert store.read("internal.json")["create_intent"]["status"]=="completed"
+ assert len([call for call in calls if "create" in call])==created_before
+
+def test_create_run_rejects_preexisting_branch_at_wrong_base(repo:Path)->None:
+ (repo/"later.txt").write_text("later\n");git(repo,"add","later.txt");git(repo,"commit","-m","later")
+ git(repo,"branch","hcw/run-collision/attempt-1","HEAD~1")
+ with pytest.raises(WorkflowError,match="worktree_creation_failed"):
+  WorkflowService(repo).create_run("pkg",["app.txt"],"run-collision","hcw-test",board(repo,[]))
+
+def test_create_run_rejects_symlinked_attempt_path(repo:Path,tmp_path:Path)->None:
+ controlled=repo/".worktrees";controlled.mkdir();(controlled/"hcw-run-link-1").symlink_to(tmp_path/"outside",target_is_directory=True)
+ with pytest.raises(WorkflowError,match="path_scope_violation"):
+  WorkflowService(repo).create_run("pkg",["app.txt"],"run-link","hcw-test",board(repo,[]))
+
+def test_graph_failure_never_deletes_idempotent_task_ids(repo:Path)->None:
+ calls=[];created=0
+ def runner(argv,cwd):
+  nonlocal created
+  calls.append(tuple(argv))
+  if "create" in argv:created+=1;return subprocess.CompletedProcess(argv,0,json.dumps({"id":f"existing-{created}"}),"")
+  if "link" in argv:return subprocess.CompletedProcess(argv,1,"","injected")
+  return subprocess.CompletedProcess(argv,0,"","")
+ with pytest.raises(RuntimeError,match="kanban_failed"):
+  KanbanAdapter(repo,"hcw-test",runner).graph("run-safe","branch",repo,PROFILES)
+ assert not any("delete" in call for call in calls)
+
+def test_transition_updates_authoritative_stage_statuses(repo:Path)->None:
+ s,run,calls=ready(repo); d,p=payloads()
+ # ready() has already approved design and plan; RED is now the sole active task.
+ assert RunStore(repo,"run-1").read()["stage_statuses"]["red"] == "active"
+ s.check("run-1",act("red"),"red",payloads()[1]["commands"]["red"]["argv"])
+ statuses=RunStore(repo,"run-1").read()["stage_statuses"]
+ assert statuses["red"] == "completed" and statuses["green"] == "active"
+ completed=[call for call in calls if "complete" in call]
+ assert [call[call.index("complete")+1] for call in completed] == ["task-design","task-plan","task-red"]
+ assert all("--result" in call and "--summary" in call and "--json" not in call for call in completed)
+
+def test_kanban_reconciles_after_durable_transition_using_persisted_adapter_home(monkeypatch,repo:Path,tmp_path:Path)->None:
+ home=tmp_path/"kanban-home";home.mkdir();calls=[];svc=WorkflowService(repo)
+ run=svc.create_run("pkg",["app.txt"],"run-sync","hcw-test",board(repo,calls,home=home,fail_complete=True));design,_=payloads()
+ with pytest.raises(RuntimeError,match="kanban_failed"):
+  svc.approve_design("run-sync",ActorContext(PROFILES["design"],run["kanban_task_ids"]["design"]),design)
+ durable=RunStore(repo,"run-sync").read()
+ assert durable["status"]=="awaiting_plan" and durable["stage_statuses"]["design"]=="completed"
+ assert Path(RunStore(repo,"run-sync").read("internal.json")["kanban_home"])==home.resolve()
+ replay_calls=[];replacement=board(repo,replay_calls,home=home);captured={}
+ def factory(repo_path,board_name,runner=None,home=None):captured["home"]=home;return replacement
+ monkeypatch.setattr(service_module,"KanbanAdapter",factory)
+ shown=WorkflowService(repo).show("run-sync")
+ assert shown["status"]=="awaiting_plan" and captured["home"]==home.resolve()
+ assert any("complete" in call and "task-design" in call for call in replay_calls)
+def test_actor_forgery_and_structured_artifacts_rejected(repo:Path)->None:
+ s,run,_=ready(repo)
+ with pytest.raises(WorkflowError,match="task_profile_mismatch"):s.check("run-1",ActorContext("dev-builder","task-red"),"red",["python","-c","raise SystemExit(1)"])
+ with pytest.raises(WorkflowError,match="malformed_design"):WorkflowService(repo).approve_design("run-1",act("design"),{"approved":True})
+def test_check_executes_argv_not_forged_exit(repo:Path)->None:
+ s,run,_=ready(repo)
+ with pytest.raises(WorkflowError,match="planned_command_mismatch"):s.check("run-1",act("red"),"red",["python","-c","pass"])
+ red=s.check("run-1",act("red"),"red",payloads()[1]["commands"]["red"]["argv"])
+ assert red["exit_code"]==1 and red["command"]==payloads()[1]["commands"]["red"]["argv"]
+ w=Path(run["worktree_path"]);(w/"app.txt").write_text("new\n");git(w,"add","app.txt");git(w,"commit","-m","green")
+ green=s.check("run-1",act("green"),"green",payloads()[1]["commands"]["green"]["argv"]);assert green["exit_code"]==0
+
+def test_red_rejects_source_mutation_and_evidence_tampering(repo:Path)->None:
+ s,run,_=ready(repo)
+ plan_path=repo / ".hermes" / "workflows" / "run-1" / "plan.json"
+ plan=json.loads(plan_path.read_text());plan["content"]["commands"]["red"]["argv"]=[sys.executable,"-c","open('app.txt','w').write('bad'); raise SystemExit(1)"];plan_path.write_text(json.dumps(plan))
+ with pytest.raises(WorkflowError,match="red_mutation_violation"):
+  s.check("run-1",act("red"),"red",[sys.executable,"-c","open('app.txt','w').write('bad'); raise SystemExit(1)"])
+ subprocess.run(["git","-C",str(run["worktree_path"]),"checkout","--","app.txt"],check=True)
+ plan["content"]["commands"]["red"]["argv"]=payloads()[1]["commands"]["red"]["argv"];plan_path.write_text(json.dumps(plan))
+ s.check("run-1",act("red"),"red",payloads()[1]["commands"]["red"]["argv"])
+ # An existing evidence artifact must remain content-addressed when consumed.
+ worktree=Path(run["worktree_path"]);(worktree/"app.txt").write_text("new\n");git(worktree,"add","app.txt");git(worktree,"commit","-m","green")
+ green=s.check("run-1",act("green"),"green",payloads()[1]["commands"]["green"]["argv"])
+ artifact=repo / green["artifact_path"]
+ artifact.write_text("tampered")
+ with pytest.raises(ValueError,match="artifact_hash_mismatch"):RunStore(repo,"run-1").evidence()
+def test_concurrent_store_has_one_winner(repo:Path)->None:
+ s,_,_=ready(repo);store=RunStore(repo,"run-1");snapshot=store.read()
+ def f():
+  copy=dict(snapshot);copy["revision"]+=1
+  try:store.write_run(copy,snapshot["revision"]);return "ok"
+  except Exception:return "conflict"
+ with ThreadPoolExecutor(max_workers=2) as ex:out=list(ex.map(lambda _:f(),range(2)))
+ assert out.count("ok")==1
+
+def test_create_run_rejects_symlinked_controlled_roots(repo:Path, tmp_path:Path)->None:
+ (repo/".worktrees").symlink_to(tmp_path / "outside")
+ with pytest.raises(WorkflowError,match="path_scope_violation"):
+  WorkflowService(repo).create_run("pkg",["app.txt"],"run-escape","hcw-test",board(repo,[]))
+
+def test_completion_rejects_dirty_post_verification_worktree(repo:Path)->None:
+ s,run,_=ready(repo);store=RunStore(repo,"run-1");state=store.read();head=git(Path(run["worktree_path"]),"rev-parse","HEAD")
+ state["head_sha"]=head;state["status"]="verified";state["revision"]+=1
+ state["stage_statuses"]={stage:("active" if stage=="complete" else "completed") for stage in PROFILES}
+ store.write_json("run.json",state)
+ store.write_json("verification.json",{"schema_version":"hcw/v1","kind":"verification","id":"verify-test","created_at":"2026-08-19T00:00:00Z","run_id":"run-1","candidate_sha":head,"evidence_ids":[],"status":"passed"})
+ (Path(run["worktree_path"])/"app.txt").write_text("dirty after verification\n")
+ with pytest.raises(WorkflowError,match="premature_completion"):s.complete("run-1",act("complete"))
+
+def test_completion_revalidates_live_evidence_artifacts(repo:Path)->None:
+ s,run,_=ready(repo);plan=payloads()[1];worktree=Path(run["worktree_path"])
+ s.check("run-1",act("red"),"red",plan["commands"]["red"]["argv"])
+ (worktree/"app.txt").write_text("new\n");s.commit("run-1",act("green"),"green")
+ s.check("run-1",act("green"),"green",plan["commands"]["green"]["argv"]);head=git(worktree,"rev-parse","HEAD")
+ approved={"reviewed_sha":head,"decision":"approved","findings":[],"dispositions":[]}
+ s.review("run-1",act("spec-review"),approved);s.review("run-1",act("quality-review"),approved)
+ s.check("run-1",act("verify"),"full",plan["commands"]["full"]["argv"]);s.check("run-1",act("verify"),"security",plan["commands"]["security"]["argv"]);s.verify("run-1",act("verify"))
+ live=s.check("run-1",act("live"),"live",plan["commands"]["live"]["argv"])
+ store=RunStore(repo,"run-1");verification=store.read("verification.json");original_ids=list(verification["evidence_ids"]);verification["evidence_ids"].append(original_ids[0]);store.write_json("verification.json",verification)
+ with pytest.raises(WorkflowError,match="premature_completion"):s.complete("run-1",act("complete"))
+ verification["evidence_ids"]=original_ids;store.write_json("verification.json",verification)
+ (repo/live["artifact_path"]).write_text("tampered after live")
+ with pytest.raises(WorkflowError,match="evidence_integrity_failure"):s.complete("run-1",act("complete"))
+
+def test_repair_reuses_original_kanban_home_and_reattaches_plan(monkeypatch,repo:Path)->None:
+ s,run,_=ready(repo);plan=payloads()[1];worktree=Path(run["worktree_path"])
+ s.check("run-1",act("red"),"red",plan["commands"]["red"]["argv"])
+ (worktree/"app.txt").write_text("new\n");s.commit("run-1",act("green"),"green");s.check("run-1",act("green"),"green",plan["commands"]["green"]["argv"])
+ head=git(worktree,"rev-parse","HEAD");finding={"id":"F1","severity":"blocker","description":"repair required"}
+ s.review("run-1",act("spec-review"),{"reviewed_sha":head,"decision":"changes_requested","findings":[finding],"dispositions":[{"finding_id":"F1","disposition":"accepted"}]})
+ calls=[];replacement=board(repo,calls);captured={};expected=Path(RunStore(repo,"run-1").read("internal.json")["kanban_home"])
+ def factory(repo_path,board_name,runner=None,home=None):captured["home"]=home;return replacement
+ monkeypatch.setattr(service_module,"KanbanAdapter",factory)
+ repaired=WorkflowService(repo).repair("run-1",act("spec-review"))
+ assert repaired["attempt"]==2 and captured["home"]==expected and repaired["stage_statuses"]["red"]=="active"
+ comments=[call for call in calls if "comment" in call]
+ assert len(comments)==len(PROFILES)-2
+ payload=json.loads(comments[0][comments[0].index("comment")+2])
+ assert payload["attempt"]==2 and payload["declared_commands"]["red"]==plan["commands"]["red"]["argv"]
+
+def test_repair_resumes_durable_intent_after_graph_failure(monkeypatch,repo:Path)->None:
+ s,run,_=ready(repo);plan=payloads()[1];worktree=Path(run["worktree_path"])
+ s.check("run-1",act("red"),"red",plan["commands"]["red"]["argv"])
+ (worktree/"app.txt").write_text("new\n");s.commit("run-1",act("green"),"green");s.check("run-1",act("green"),"green",plan["commands"]["green"]["argv"])
+ head=git(worktree,"rev-parse","HEAD");finding={"id":"F1","severity":"blocker","description":"repair required"}
+ s.review("run-1",act("spec-review"),{"reviewed_sha":head,"decision":"changes_requested","findings":[finding],"dispositions":[{"finding_id":"F1","disposition":"accepted"}]})
+ calls=[];replacement=board(repo,calls);original=WorkflowService._attach_plan_briefs
+ def fail_after_graph(*args,**kwargs):raise OSError("injected post-graph crash")
+ monkeypatch.setattr(WorkflowService,"_attach_plan_briefs",fail_after_graph)
+ with pytest.raises(WorkflowError,match="repair_setup_failed"):s.repair("run-1",act("spec-review"),replacement)
+ store=RunStore(repo,"run-1");intent=store.read("internal.json")["repair_intent"]
+ assert store.read()["attempt"]==1 and intent["status"]=="graph_created"
+ assert Path(intent["worktree_path"]).is_dir()
+ created_before=len([call for call in calls if "create" in call])
+ monkeypatch.setattr(WorkflowService,"_attach_plan_briefs",original)
+ repaired=s.repair("run-1",act("spec-review"),replacement)
+ assert repaired["attempt"]==2 and repaired["status"]=="awaiting_red"
+ assert store.read("internal.json")["repair_intent"]["status"]=="completed"
+ assert len([call for call in calls if "create" in call])==created_before
+
+def test_repair_rejects_symlinked_worktree_root(repo:Path,tmp_path:Path)->None:
+ s,_,_=ready(repo);store=RunStore(repo,"run-1");state=store.read();state["status"]="repairing";state["stage_statuses"]["spec-review"]="blocked";store.write_json("run.json",state)
+ controlled=repo/".worktrees";outside=tmp_path/"outside-worktrees";controlled.rename(outside);controlled.symlink_to(outside,target_is_directory=True)
+ with pytest.raises(WorkflowError,match="path_scope_violation"):s.repair("run-1",act("spec-review"),board(repo,[]))
+
+def test_repair_rejects_preexisting_attempt_branch_at_wrong_base(repo:Path)->None:
+ s,_,_=ready(repo);store=RunStore(repo,"run-1");state=store.read();state["status"]="repairing";state["stage_statuses"]["spec-review"]="blocked";store.write_json("run.json",state)
+ (repo/"later.txt").write_text("later\n");git(repo,"add","later.txt");git(repo,"commit","-m","later");git(repo,"branch","hcw/run-1/attempt-2","HEAD")
+ with pytest.raises(WorkflowError,match="repair_setup_failed"):s.repair("run-1",act("spec-review"),board(repo,[]))
+
+def test_repair_rejects_symlinked_attempt_path(repo:Path,tmp_path:Path)->None:
+ s,_,_=ready(repo);store=RunStore(repo,"run-1");state=store.read();state["status"]="repairing";state["stage_statuses"]["spec-review"]="blocked";store.write_json("run.json",state)
+ (repo/".worktrees"/"hcw-run-1-2").symlink_to(tmp_path/"outside",target_is_directory=True)
+ with pytest.raises(WorkflowError,match="path_scope_violation"):s.repair("run-1",act("spec-review"),board(repo,[]))

@@ -1,0 +1,7 @@
+{
+  "name": "hermes-coding-workflow",
+  "label": "Coding Runs",
+  "description": "Read-only workflow run visibility for Hermes Desktop.",
+  "version": "1.0.0",
+  "api": "plugin_api.py"
+}
