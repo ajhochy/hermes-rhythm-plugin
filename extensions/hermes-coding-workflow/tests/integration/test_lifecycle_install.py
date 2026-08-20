@@ -108,6 +108,19 @@ def test_unknown_openai_oauth_runtime_fails_closed(tmp_path: Path) -> None:
         installer._assert_safe_provider(profile, "OpenAI OAuth profile")
 
 
+@pytest.mark.parametrize("provider", ("openai", "openai-codex"))
+def test_api_mode_name_is_rejected_as_openai_runtime(tmp_path: Path, provider: str) -> None:
+    profile = tmp_path / provider; profile.mkdir()
+    (profile / "config.yaml").write_text(
+        f"model:\n  provider: {provider}\n  default: gpt-5.6-sol\n  openai_runtime: codex_responses\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match=installer.PROVIDER_BOUNDARY_ERROR):
+        installer._assert_safe_provider(profile, "OpenAI OAuth profile")
+    with pytest.raises(RuntimeError, match="provider boundary unsafe"):
+        doctor._provider_boundary(profile)
+
+
 def test_source_profile_role_collision_fails_before_mutation(tmp_path: Path) -> None:
     home = tmp_path / "hermes"; home.mkdir()
     before = {path.relative_to(home): path.read_bytes() for path in home.rglob("*") if path.is_file()}

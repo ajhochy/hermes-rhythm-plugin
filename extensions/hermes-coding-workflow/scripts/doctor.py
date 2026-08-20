@@ -46,7 +46,7 @@ def _provider_boundary(home: Path) -> str:
     openai_safe = False
     if provider in {"openai", "openai-codex"}:
         safe_api_modes = {"", "chat_completions", "codex_responses"} if provider == "openai" else {"", "codex_responses"}
-        openai_safe = runtime in {"", "auto", "codex_responses"} and api_mode in safe_api_modes
+        openai_safe = runtime in {"", "auto"} and api_mode in safe_api_modes
     if (provider in {"openai", "openai-codex"} and not openai_safe) or (provider not in SAFE_HERMES_TOOL_DISPATCH_PROVIDERS and not openai_safe):
         raise RuntimeError(f"provider boundary unsafe in {home}: {provider or '<unset>'}")
     return provider

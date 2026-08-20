@@ -94,7 +94,7 @@ def _assert_safe_provider(home: Path, label: str) -> None:
     api_mode = str(model.get("api_mode", "")).strip().lower()
     if provider in {"openai", "openai-codex"}:
         safe_api_modes = {"", "chat_completions", "codex_responses"} if provider == "openai" else {"", "codex_responses"}
-        if runtime in {"", "auto", "codex_responses"} and api_mode in safe_api_modes:
+        if runtime in {"", "auto"} and api_mode in safe_api_modes:
             return
         raise RuntimeError(f"{PROVIDER_BOUNDARY_ERROR}: {label} uses provider '{provider}'")
     if provider in SAFE_HERMES_TOOL_DISPATCH_PROVIDERS:
