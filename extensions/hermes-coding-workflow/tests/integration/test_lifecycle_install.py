@@ -108,6 +108,23 @@ def test_unknown_openai_oauth_runtime_fails_closed(tmp_path: Path) -> None:
         installer._assert_safe_provider(profile, "OpenAI OAuth profile")
 
 
+def test_source_profile_role_collision_fails_before_mutation(tmp_path: Path) -> None:
+    home = tmp_path / "hermes"; home.mkdir()
+    before = {path.relative_to(home): path.read_bytes() for path in home.rglob("*") if path.is_file()}
+
+    with pytest.raises(RuntimeError, match="collides with a managed workflow role"):
+        installer.install(home, source_profile="dev-builder", account_oauth_tiers=True)
+
+    after = {path.relative_to(home): path.read_bytes() for path in home.rglob("*") if path.is_file()}
+    assert after == before
+
+
+def test_doctor_rejects_source_profile_role_collision_before_scanning(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(doctor, "_check_home", lambda *args, **kwargs: pytest.fail("scan must not start"))
+    with pytest.raises(RuntimeError, match="collides with a managed workflow role"):
+        doctor.doctor(tmp_path, source_profile="dev-builder", account_oauth_tiers=True)
+
+
 @pytest.mark.parametrize("provider", ("openai", "openai-codex"))
 def test_explicit_api_mode_codex_app_server_fails_closed(tmp_path: Path, provider: str) -> None:
     profile = tmp_path / "oauth"; profile.mkdir()

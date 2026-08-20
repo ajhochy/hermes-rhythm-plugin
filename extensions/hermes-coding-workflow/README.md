@@ -19,7 +19,7 @@ The methodology incorporates selected principles from Jesse Vincent's MIT-licens
 
 Installation is explicit and local-only. It never uses the current user's home by default, contacts a network service, edits Hermes configuration files directly, or depends on a sibling worktree. The repository root is the control plane.
 
-Create a **Hermes-tool-dispatch** source profile in the target home first, then install. Direct-tool providers such as `copilot-acp`, Claude Code ACP, and OpenCode ACP are rejected before any mutation because their file tools do not pass through Hermes `pre_tool_call` hooks. Both `openai` and `openai-codex` are runtime-checked before the native-provider allowlist; `codex_app_server` under either supported config spelling and unknown runtime values remain fail-closed.
+Create a **Hermes-tool-dispatch** source profile in the target home first, then install. Its name must be distinct from all managed workflow role names; installer and doctor reject a collision before mutation or scanning. Direct-tool providers such as `copilot-acp`, Claude Code ACP, and OpenCode ACP are rejected before any mutation because their file tools do not pass through Hermes `pre_tool_call` hooks. Both `openai` and `openai-codex` are runtime-checked before the native-provider allowlist; `codex_app_server` under either supported config spelling and unknown runtime values remain fail-closed.
 
 ```sh
 export HERMES_HOME=/path/to/isolated-hermes-home

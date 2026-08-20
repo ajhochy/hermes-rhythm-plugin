@@ -123,6 +123,11 @@ def _profile_metadata(home: Path, name: str) -> dict[str, Any]:
 def _preflight(home: Path, source_profile: str, worker_source_profile: str) -> list[Path]:
     if not home.is_dir():
         raise RuntimeError(f"Hermes home does not exist: {home}")
+    if source_profile in ROLE_DESCRIPTIONS:
+        raise RuntimeError(
+            f"source profile '{source_profile}' collides with a managed workflow role; "
+            "the orchestrator and role profiles must have distinct names"
+        )
     _hermes()
     if not (home / "profiles" / source_profile).is_dir():
         raise RuntimeError(f"source profile '{source_profile}' does not exist in {home / 'profiles'}")

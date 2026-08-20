@@ -134,6 +134,11 @@ def _check_home(home: Path, *, worker_home: bool = False, dashboard_only: bool =
 
 def doctor(home: Path, *, source_profile: str = "dev", account_oauth_tiers: bool = False, verify_account_oauth: bool = False) -> int:
     home = Path(home).resolve()
+    if source_profile in DESCRIPTIONS:
+        raise RuntimeError(
+            f"source profile '{source_profile}' collides with a managed workflow role; "
+            "the orchestrator and role profiles must have distinct names"
+        )
     # Every installed home is independently scanned: provider route, plugin
     # registration, launcher, dashboard and desktop payload all remain local.
     _check_home(home, dashboard_only=True)
