@@ -210,8 +210,15 @@ def test_repair_reuses_original_kanban_home_and_reattaches_plan(monkeypatch,repo
  calls=[];replacement=board(repo,calls);captured={};expected=Path(RunStore(repo,"run-1").read("internal.json")["kanban_home"])
  def factory(repo_path,board_name,runner=None,home=None):captured["home"]=home;return replacement
  monkeypatch.setattr(service_module,"KanbanAdapter",factory)
+ reconciled=[];original_reconcile=WorkflowService._reconcile
+ def observe_reconcile(self,store,state):reconciled.append(store.read()["attempt"]);return original_reconcile(self,store,state)
+ monkeypatch.setattr(WorkflowService,"_reconcile",observe_reconcile)
  repaired=WorkflowService(repo).repair("run-1",act("spec-review"))
+ assert reconciled==[2]
  assert repaired["attempt"]==2 and captured["home"]==expected and repaired["stage_statuses"]["red"]=="active"
+ assert repaired["stage_statuses"]["design"]=="completed" and repaired["stage_statuses"]["plan"]=="completed"
+ completed={call[call.index("complete")+1] for call in calls if "complete" in call}
+ assert {repaired["kanban_task_ids"]["design"],repaired["kanban_task_ids"]["plan"]}.issubset(completed)
  comments=[call for call in calls if "comment" in call]
  assert len(comments)==len(PROFILES)-2
  payload=json.loads(comments[0][comments[0].index("comment")+2])

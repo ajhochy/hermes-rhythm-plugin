@@ -305,8 +305,8 @@ class WorkflowService:
    for name in ("evidence.jsonl","reviews.json","verification.json","handoff.json"):
     source=s._path(name)
     if source.exists():shutil.move(str(source),str(archive/name))
-   run["attempt_history"].append({"attempt":run["attempt"],"worktree_path":str(old),"head_sha":run["head_sha"]});run.update({"attempt":attempt,"branch":branch,"worktree_path":str(worktree.resolve()),"head_sha":run["base_sha"],"kanban_task_ids":tasks,"dispatches":draft["dispatches"],"stage_statuses":{stage:("active" if stage=="red" else "pending") for stage in STAGES},"status":"awaiting_red"});self._bump(s,run)
-   internal=s.read("internal.json");internal["repair_intent"]["status"]="completed";RunStore._atomic(s._path("internal.json"),internal);return run
+   run["attempt_history"].append({"attempt":run["attempt"],"worktree_path":str(old),"head_sha":run["head_sha"]});run.update({"attempt":attempt,"branch":branch,"worktree_path":str(worktree.resolve()),"head_sha":run["base_sha"],"kanban_task_ids":tasks,"dispatches":draft["dispatches"],"stage_statuses":{stage:("completed" if stage in {"design","plan"} else "active" if stage=="red" else "pending") for stage in STAGES},"status":"awaiting_red"});self._bump(s,run)
+   internal=s.read("internal.json");internal["repair_intent"]["status"]="completed";RunStore._atomic(s._path("internal.json"),internal);self._reconcile(s,run);return run
  def dispatch_worker(self,rid:str,stage:str)->dict[str,Any]:
   """Launch the sole eligible Claude-backed stage as a detached, async worker.
 
