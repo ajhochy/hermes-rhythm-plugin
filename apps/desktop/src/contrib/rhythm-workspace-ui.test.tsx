@@ -123,6 +123,52 @@ describe('accepted Rhythm workspace package', () => {
     expect((rest as unknown as { mock: { calls: Array<[string]> } }).mock.calls.every(([path]) => ['/dashboard-summary', '/tasks'].includes(path))).toBe(true)
   })
 
+  it('makes every visible Dashboard and Tasks mutation control inert without host write capabilities while preserving inspection and Ask Hermes', async () => {
+    const rest = restFor(summary)
+    const gateway = createGateway(rest)
+    const followUp = vi.fn()
+    const dashboard = renderScreen(<DashboardScreen />, gateway, { ...host, onRequestFollowUp: followUp })
+    await screen.findByTestId('dashboard-header-add-task')
+    for (const testId of ['dashboard-header-add-task', 'task-toggle-task-1']) {
+      const control = screen.getByTestId(testId) as HTMLButtonElement
+      expect(control.disabled).toBe(true)
+      fireEvent.click(control)
+    }
+
+    fireEvent.click(screen.getByTestId('task-row-task-1'))
+    expect(await screen.findByTestId('task-inspector')).not.toBeNull()
+
+    for (const testId of ['task-inspector-title', 'task-inspector-notes', 'task-inspector-scheduled', 'task-inspector-due', 'task-inspector-save']) {
+      expect((screen.getByTestId(testId) as HTMLInputElement | HTMLTextAreaElement | HTMLButtonElement).disabled).toBe(true)
+    }
+
+    fireEvent.click(screen.getByTestId('quick-action-help-me-finish-this'))
+    expect(followUp).toHaveBeenCalledTimes(1)
+    expect(screen.getByTestId('rhythm-dashboard-screen')).not.toBeNull()
+    dashboard.unmount()
+
+    const tasks = renderScreen(<TasksScreen />, gateway, { ...host, onRequestFollowUp: followUp })
+    await screen.findByTestId('tasks-header-add-task')
+    expect((screen.getByTestId('tasks-header-add-task') as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByTestId('task-complete-task-1') as HTMLInputElement).disabled).toBe(true)
+    fireEvent.click(screen.getByTestId('tasks-header-add-task'))
+    fireEvent.click(screen.getByTestId('task-complete-task-1'))
+    fireEvent.click(screen.getByTestId('task-menu-task-1'))
+    expect((await screen.findByTestId('task-delete-task-1') as HTMLButtonElement).disabled).toBe(true)
+
+    fireEvent.click(screen.getByTestId('task-select-task-1'))
+
+    for (const testId of ['task-edit-title', 'task-edit-notes', 'task-edit-scheduled-date', 'task-edit-due-date', 'task-edit-agent', 'task-edit-energy', 'task-detail-complete', 'task-save', 'task-add-collaborator']) {
+      expect((screen.getByTestId(testId) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLButtonElement).disabled).toBe(true)
+    }
+
+    fireEvent.click(screen.getByTestId('quick-action-help-finish'))
+    expect(followUp).toHaveBeenCalledTimes(2)
+    expect(screen.getByTestId('rhythm-tasks-screen')).not.toBeNull()
+    expect((rest as unknown as { mock: { calls: Array<[string]> } }).mock.calls.every(([path]) => ['/dashboard-summary', '/tasks'].includes(path))).toBe(true)
+    tasks.unmount()
+  })
+
   it('does not let a deferred old gateway publish after a provider re-home', async () => {
     let resolveOld: (value: typeof summary) => void = () => undefined
     const oldSummary = new Promise<typeof summary>(resolve => { resolveOld = resolve })

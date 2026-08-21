@@ -501,7 +501,7 @@ interface RhythmCurrentUser {
     /** Host-neutral, affirmative capabilities. An absent list is intentionally read-only. */
     capabilities?: readonly RhythmWorkspaceCapability[];
 }
-type RhythmWorkspaceCapability = 'facilities.manage' | 'facilities.reserve' | 'automations.write' | 'integrations.write';
+type RhythmWorkspaceCapability = 'facilities.manage' | 'facilities.reserve' | 'automations.write' | 'integrations.write' | 'dashboard.write' | 'tasks.write';
 /** The ten non-agent screens this package exposes — used only for host-owned, in-package
  * cross-screen navigation (e.g. Dashboard's "Open planner" shortcut). Never includes an
  * agent surface: this package has no notion of one. */
