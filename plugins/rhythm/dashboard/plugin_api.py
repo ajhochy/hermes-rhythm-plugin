@@ -239,11 +239,11 @@ def _m5_payload(operation: str, payload: dict[str, Any]) -> dict[str, Any]:
         "facilities.update-facility": ({"name": "short", "building": "short?", "description": "text?"}, set()),
         "facilities.delete-facility": ({}, set()),
         "facilities.create-reservation": ({"facilityId": "id", "title": "short", "requesterName": "short?", "start": "timestamp", "end": "timestamp", "notes": "text?"}, {"facilityId", "title", "start", "end"}),
-        "facilities.update-reservation": ({"facilityId": "id", "title": "short", "requesterName": "short?", "start": "timestamp", "end": "timestamp", "notes": "text?"}, {"facilityId"}),
-        "facilities.delete-reservation": ({"facilityId": "id"}, {"facilityId"}),
-        "facilities.update-group": ({"facilityId": "id", "title": "short", "requesterName": "short?", "start": "timestamp", "end": "timestamp", "notes": "text?"}, {"facilityId"}),
-        "facilities.delete-group": ({"facilityId": "id"}, {"facilityId"}),
-        "facilities.delete-series": ({"facilityId": "id"}, {"facilityId"}),
+        "facilities.update-reservation": ({"title": "short", "requesterName": "short?", "start": "timestamp", "end": "timestamp", "notes": "text?"}, set()),
+        "facilities.delete-reservation": ({}, set()),
+        "facilities.update-group": ({"title": "short", "requesterName": "short?", "start": "timestamp", "end": "timestamp", "notes": "text?"}, set()),
+        "facilities.delete-group": ({}, set()),
+        "facilities.delete-series": ({}, set()),
         "facilities.delete-reservations": ({"ids": "ids"}, {"ids"}),
     }
     try: allowed, required = schemas[operation]
@@ -664,19 +664,49 @@ def _m5_authorization_path(operation: str, entity_id: str, payload: dict[str, An
     return f"/project-templates/{entity_id}"
 
 
-def _m6_authorization_path(operation: str, entity_id: str, payload: dict[str, Any]) -> str | None:
-    if operation.startswith("messages."): return f"/message-threads/{entity_id}"
-    if operation in {"facilities.create-facility", "facilities.delete-reservations"}: return None
-    if operation.startswith("facilities."):
-        facility_id = payload.get("facilityId")
-        return f"/facilities/{facility_id if isinstance(facility_id, str) else entity_id}"
-    return None
+def _m6_items(raw: Any) -> list[dict[str, Any]]:
+    """Accept the canonical collection shapes used by deployed Rhythm versions."""
+    items = raw.get("items") if isinstance(raw, dict) else raw
+    if not isinstance(items, list) or len(items) > 500 or not all(isinstance(item, dict) for item in items):
+        raise RhythmProtocolError("schema_drift")
+    return items
+
+
+def _m6_target(client: RhythmClient, operation: str, entity_id: str) -> tuple[dict[str, Any], str]:
+    """Canonical-read the exact M6 target and derive its route parent server-side.
+
+    Receipt payloads intentionally contain no redundant facility id for existing
+    entities.  The actual target, including its owner and parent facility, is
+    derived from trusted upstream reads immediately before the mutation.
+    """
+    if operation in {"facilities.update-facility", "facilities.delete-facility"}:
+        return client.call("GET", f"/facilities/{entity_id}"), entity_id
+    if operation in {"facilities.update-reservation", "facilities.delete-reservation"}:
+        target = next((item for item in _m6_items(client.call("GET", "/facilities/reservations")) if str(item.get("id")) == entity_id), None)
+        facility_id = target.get("facilityId") if target else None
+        if not isinstance(facility_id, str) or not _safe_id(facility_id): raise RhythmProtocolError("schema_drift")
+        return target, facility_id
+    if operation in {"facilities.update-group", "facilities.delete-group"}:
+        overview = next((item for item in _m6_items(client.call("GET", "/facilities/reservations?grouped=true")) if isinstance(item.get("group"), dict) and str(item["group"].get("id")) == entity_id), None)
+        facilities = overview.get("facilities") if overview else None
+        if not isinstance(facilities, list) or len(facilities) != 1 or not isinstance(facilities[0], dict): raise RhythmProtocolError("schema_drift")
+        facility_id = facilities[0].get("id")
+        if not isinstance(facility_id, str) or not _safe_id(facility_id): raise RhythmProtocolError("schema_drift")
+        return overview["group"], facility_id
+    if operation == "facilities.delete-series":
+        for facility in _m6_items(client.call("GET", "/facilities")):
+            facility_id = facility.get("id")
+            if not isinstance(facility_id, str) or not _safe_id(facility_id): raise RhythmProtocolError("schema_drift")
+            target = next((item for item in _m6_items(client.call("GET", f"/facilities/{facility_id}/reservation-series")) if str(item.get("id")) == entity_id), None)
+            if target is not None: return target, facility_id
+        raise RhythmRemoteError("not_found", 404)
+    raise RhythmProtocolError("schema_drift")
 
 
 def _m6_authorized(operation: str, target: Any, identity: dict[str, str], workspace: dict[str, str]) -> bool:
-    if not isinstance(target, dict) or target.get("workspaceId") != workspace["id"]: return False
+    if not isinstance(target, dict): return False
     if operation.startswith("messages."):
-        return any(isinstance(row, dict) and row.get("id") == identity["id"] for row in target.get("participants", []))
+        return target.get("workspaceId") == workspace["id"] and any(isinstance(row, dict) and row.get("id") == identity["id"] for row in target.get("participants", []))
     if identity.get("isFacilitiesManager") is True: return True
     if operation in {"facilities.update-facility", "facilities.delete-facility"}: return False
     return target.get("creatorId") == identity["id"] or target.get("createdByUserId") == identity["id"]
@@ -927,11 +957,15 @@ async def workspace_operation(incoming_request: Request):
         if identity["id"] != receipt.actor_id or canonical_workspace["id"] != receipt.workspace_id or _m5_digest(identity, canonical_workspace, payload) != receipt.intent_digest:
             raise HTTPException(409, detail={"error": "stale_confirmation", "recoverable": True})
         if payload.operation.startswith(("messages.", "facilities.")):
-            target_path = _m6_authorization_path(payload.operation, payload.entityId, payload.payload)
-            if target_path is None:
+            target: dict[str, Any] | None = None
+            facility_id: str | None = None
+            if payload.operation in {"facilities.create-facility", "facilities.delete-reservations"}:
                 if identity.get("isFacilitiesManager") is not True and not _m6_workspace_can_manage(workspace): raise RhythmRemoteError("forbidden")
+            elif payload.operation.startswith("facilities."):
+                target, facility_id = _m6_target(client, payload.operation, payload.entityId)
+                if not _m6_authorized(payload.operation, target, identity, canonical_workspace): raise RhythmRemoteError("forbidden")
             else:
-                target = client.call("GET", target_path)
+                target = client.call("GET", f"/message-threads/{payload.entityId}")
                 if not _m6_authorized(payload.operation, target, identity, canonical_workspace): raise RhythmRemoteError("forbidden")
             with _oauth_lock:
                 intent = _workspace_intents.get(receipt.intent_digest)
@@ -939,7 +973,7 @@ async def workspace_operation(incoming_request: Request):
                     raise HTTPException(409, detail={"error": "stale_confirmation", "recoverable": True})
                 intent.claimed = True; _workspace_confirmations.pop(payload.confirmation, None)
             method, template = _M5_UPSTREAM[payload.operation]
-            path = template.format(id=payload.entityId, facilityId=payload.payload.get("facilityId", ""))
+            path = template.format(id=payload.entityId, facilityId=facility_id or payload.payload.get("facilityId", ""))
             upstream_body = {key: value for key, value in body.items() if key != "facilityId"}
             try:
                 result = _m6_result(payload.operation, payload.entityId, client.call(method, path, body=upstream_body or None, idempotency_key=receipt.intent_digest, m5=True))
@@ -947,7 +981,26 @@ async def workspace_operation(incoming_request: Request):
                 if exc.kind in {"timeout", "network", "dns", "upstream_unavailable"}:
                     raise RhythmRemoteError("uncertain", exc.status_code) from exc
                 raise
-            if method == "DELETE": return result
+            if method == "DELETE":
+                try:
+                    if payload.operation == "facilities.delete-facility":
+                        client.call("GET", f"/facilities/{payload.entityId}")
+                    elif payload.operation == "facilities.delete-reservation":
+                        if any(str(item.get("id")) == payload.entityId for item in _m6_items(client.call("GET", "/facilities/reservations"))): raise RhythmRemoteError("conflict", 409)
+                        return result
+                    elif payload.operation == "facilities.delete-group":
+                        if any(isinstance(item.get("group"), dict) and str(item["group"].get("id")) == payload.entityId for item in _m6_items(client.call("GET", "/facilities/reservations?grouped=true"))): raise RhythmRemoteError("conflict", 409)
+                        return result
+                    elif payload.operation == "facilities.delete-series":
+                        if facility_id is None: raise RhythmProtocolError("schema_drift")
+                        if any(str(item.get("id")) == payload.entityId for item in _m6_items(client.call("GET", f"/facilities/{facility_id}/reservation-series"))): raise RhythmRemoteError("conflict", 409)
+                        return result
+                    else:
+                        raise RhythmRemoteError("conflict", 409)
+                except RhythmRemoteError as exc:
+                    if exc.kind == "not_found": return result
+                    raise
+                raise RhythmRemoteError("conflict", 409)
             read_path = path if payload.operation not in {"facilities.create-facility", "facilities.create-reservation"} else (f"/facilities/{result['id']}" if payload.operation == "facilities.create-facility" else f"/facilities/{payload.payload['facilityId']}/reservations/{result['id']}")
             raw = client.call("GET", read_path)
             if raw.get("id") != result["id"]: raise RhythmRemoteError("conflict", 409)

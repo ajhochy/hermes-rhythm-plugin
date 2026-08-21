@@ -303,8 +303,12 @@ def _m6_read_path(path: str) -> bool:
     if len(parts) == 3 and parts[0] == "message-threads" and parts[2] == "messages":
         return _safe_task_id(parts[1]) and not parsed.query
     if parsed.path == "/facilities/reservations":
-        keys = {key for key, _ in parse_qsl(parsed.query, keep_blank_values=True)}
-        return keys == {"start", "end"}
+        pairs = parse_qsl(parsed.query, keep_blank_values=True)
+        if not pairs:
+            return True
+        if pairs == [("grouped", "true")]:
+            return True
+        return {key for key, _ in pairs} == {"start", "end"}
     if len(parts) == 2 and parts[0] == "facilities":
         return _safe_task_id(parts[1]) and not parsed.query
     if len(parts) == 4 and parts[0] == "facilities" and parts[2] == "reservations":
