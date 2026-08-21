@@ -151,7 +151,7 @@ def _task(payload: dict[str, Any]) -> dict[str, Any]:
     priority = payload.get("priority", 0)
     tags = payload.get("tags", [])
     collaborators = payload.get("collaborators", [])
-    if not isinstance(priority, int) or priority not in {0, 1, 2, 3} or not isinstance(tags, list) or len(tags) > 32 or not all(isinstance(tag, str) and 0 < len(tag) <= 64 for tag in tags) or not isinstance(collaborators, list) or len(collaborators) > 32:
+    if type(priority) is not int or priority not in {0, 1, 2, 3} or not isinstance(tags, list) or len(tags) > 32 or not all(isinstance(tag, str) and 0 < len(tag) <= 64 for tag in tags) or not isinstance(collaborators, list) or len(collaborators) > 32:
         raise RhythmProtocolError("schema_drift")
     safe_collaborators = []
     for collaborator in collaborators:
@@ -180,7 +180,7 @@ def _dashboard_summary(payload: dict[str, Any], identity: dict[str, str], worksp
     tasks = payload.get("tasks")
     project = payload.get("project")
     threads = payload.get("unreadThreads")
-    if not isinstance(count, int) or not 0 <= count <= 10_000 or not isinstance(thread_count, int) or not 0 <= thread_count <= 10_000 or not isinstance(tasks, list) or len(tasks) > 100 or project is not None or not isinstance(threads, list) or threads:
+    if type(count) is not int or not 0 <= count <= 10_000 or type(thread_count) is not int or not 0 <= thread_count <= 10_000 or not isinstance(tasks, list) or len(tasks) > 100 or project is not None or not isinstance(threads, list) or threads:
         raise RhythmProtocolError("schema_drift")
     summary_tasks = []
     for raw in tasks:
