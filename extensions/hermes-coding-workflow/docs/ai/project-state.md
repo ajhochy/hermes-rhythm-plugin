@@ -25,10 +25,16 @@ Build the complete standalone Hermes coding workflow package, including the cont
 ## Test status
 
 - Control plane, native plugins, role profiles, installer, read-only API, Desktop UI, public installed lifecycle, and the async Claude Code CLI worker dispatch/runner are implemented.
-- Branch gates: `211 passed` (Python) with zero skipped/xfailed/xpassed; installer integration `40 passed`; native mutation-boundary `75 passed`; Node `3/3`, production ESM build, source compilation, diff check, added-line secret scan, installed-runner importability, source/profile rollback, OpenAI runtime/API-mode allowlists, account-auth parsing, credential-minimal worker/probe environments, descriptor-bound atomic writes, registered-worktree identity, authoritative brief binding, stale-process reconciliation, and authoritative worker-repository binding all pass.
+- Branch gates: `220 passed` (Python) with zero skipped/xfailed/xpassed; installer integration `40 passed`; native mutation-boundary `76 passed`; Node `3/3`, production ESM build, source compilation, diff check, added-line secret scan, installed-runner importability, source/profile rollback, OpenAI runtime/API-mode allowlists, account-auth parsing, credential-minimal worker/probe environments, descriptor-bound atomic writes, registered-worktree identity, authoritative brief binding, stale-process reconciliation, authoritative worker-repository binding, worker-success transition gates, and installed external-stage E2E all pass.
 - The older `live-tracer-1787210374` proof validates the pre-pivot workflow only. A fresh real Team-account asynchronous dispatch smoke is still required for this adapter; the current account-auth and print-mode readiness probes pass.
 
 ## Recent coding-agent runs
+
+### 2026-08-21 — External-worker authority enforcement
+- Immutable review of `00dc34078593f0c318737f2ae7d8da565c11d6dc` found two P1 defects before activation: external-stage transitions were instruction-gated rather than service-gated, and GREEN guidance placed `check` before the only legal `commit` window.
+- The service now requires the latest exact, schema-valid, identity-bound, design/plan/dispatch-bound, successful worker record with intact hashed stdout/stderr artifacts before RED/GREEN check, GREEN commit, quality review, or completion. Redispatch after success is idempotent.
+- GREEN bootstrap and builder guidance now dispatch, poll, commit, then check. The installed lifecycle E2E exercises the complete external worker path instead of bypassing it.
+- Focused authority tests, core service suites, and the final `220 passed` aggregate gate all pass.
 
 ### 2026-08-21 — External stage controller contract repair
 - Files modified: the native bootstrap now emits `dispatch-worker`, `worker-status`, and the later authoritative lifecycle command in order for red, green, quality-review, and complete; the four corresponding role skills require one dispatch, bounded polling to `succeeded`/`failed`, fail-closed Kanban blocking on worker failure, and controller-only HCW transition after success. `tests/plugin/test_native_plugins.py` covers all four bootstrap and skill contracts.

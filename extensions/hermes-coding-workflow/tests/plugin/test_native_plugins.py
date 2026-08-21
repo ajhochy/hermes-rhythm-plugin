@@ -129,6 +129,23 @@ def test_external_stage_skills_require_dispatch_poll_and_controller_transition(
     assert f"authoritative `{transition}`" in text
 
 
+def test_green_controller_commits_before_running_the_authoritative_check(workflow, monkeypatch) -> None:
+    plugin = load_plugin("hermes-coding-workflow")
+    repo, _, state = workflow
+    state["status"] = "awaiting_green"
+    state["stage_statuses"] = {name: ("active" if name == "green" else "pending") for name in state["stage_statuses"]}
+    (repo / ".hermes" / "workflows" / "run-test" / "run.json").write_text(json.dumps(state))
+    monkeypatch.delenv("HCW_RUN_ID")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-green")
+    monkeypatch.setenv("HERMES_PROFILE", "dev-builder")
+
+    bootstrap = plugin._build_bootstrap()
+    skill = (ROOT / "skills" / "builder" / "SKILL.md").read_text()
+
+    assert bootstrap.index("commit ") < bootstrap.index("check ")
+    assert skill.index("authoritative `commit`") < skill.index("authoritative `check`")
+
+
 def test_bootstrap_context_gives_dispatcher_a_complete_matching_create_run_shape(tmp_path, monkeypatch):
     hcw = load_plugin("hermes-coding-workflow")
     monkeypatch.chdir(tmp_path)
@@ -197,7 +214,7 @@ def test_nested_hcw_stage_missing_locator_still_fails_closed(nested_workflow, mo
         ("design", "dev-planner", "task-design", ("approve-design <repo> run-test --json <payload>",)),
         ("plan", "dev-planner", "task-plan", ("approve-plan <repo> run-test --json <payload>",)),
         ("red", "dev-contract", "task-red", ("dispatch-worker <repo> run-test red", "worker-status <repo> run-test red", "check <repo> run-test red -- <failing-test-command>")),
-        ("green", "dev-builder", "task-green", ("dispatch-worker <repo> run-test green", "worker-status <repo> run-test green", "check <repo> run-test green -- <passing-test-command>", "commit <repo> run-test --message <quoted-commit-message>")),
+        ("green", "dev-builder", "task-green", ("dispatch-worker <repo> run-test green", "worker-status <repo> run-test green", "commit <repo> run-test --message <quoted-commit-message>", "check <repo> run-test green -- <passing-test-command>")),
         ("spec-review", "dev-spec-reviewer", "task-spec", ("review <repo> run-test --json <payload>",)),
         ("quality-review", "dev-quality-reviewer", "task-quality", ("dispatch-worker <repo> run-test quality-review", "worker-status <repo> run-test quality-review", "review <repo> run-test --json <payload>")),
         ("verify", "dev-verifier", "task-verify", ("check <repo> run-test full -- <full-test-command>", "check <repo> run-test security -- <security-test-command>", "verify <repo> run-test")),

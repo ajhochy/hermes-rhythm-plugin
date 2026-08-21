@@ -73,6 +73,23 @@ class WorkflowService:
  def _actor(self,run:dict[str,Any],actor:ActorContext,stage:str)->None:
   if run["stage_profiles"].get(stage)!=actor.profile or run["kanban_task_ids"].get(stage)!=actor.task_id:raise WorkflowError("task_profile_mismatch")
  def _workgit(self,run:dict[str,Any])->GitAdapter:return GitAdapter(Path(run["worktree_path"]))
+ def _require_succeeded_worker(self,s:RunStore,run:dict[str,Any],stage:str)->dict[str,Any]:
+  attempt=run["attempt"];latest=s.latest_worker_attempt(stage,attempt)
+  record=s.read_worker(stage,attempt,latest) if latest else None;dispatch=run["dispatches"].get(stage) or {}
+  expected_dispatch=full_sha_hash({"run_id":run["id"],"stage":stage,"task_id":run["kanban_task_ids"][stage],"profile":PROFILES[stage],"attempt":attempt,"brief_hash":dispatch.get("brief_hash")})
+  if not record or validate_record(record) or record.get("state")!="succeeded" or record.get("exit_code")!=0:raise WorkflowError("worker_not_succeeded")
+  if record.get("run_id")!=run["id"] or record.get("stage")!=stage or record.get("task_id")!=run["kanban_task_ids"][stage] or record.get("profile")!=PROFILES[stage] or record.get("attempt")!=attempt or record.get("worker_attempt")!=latest or record.get("brief_hash")!=dispatch.get("brief_hash") or record.get("backend")!=CLAUDE_BACKEND or record.get("model")!=CLAUDE_TIER_MODELS[stage] or record.get("worktree_path")!=run["worktree_path"]:raise WorkflowError("worker_not_succeeded")
+  if record.get("design_sha256")!=full_sha_hash(s.read("approved-design.json")) or record.get("plan_sha256")!=full_sha_hash(s.read("plan.json")) or record.get("dispatch_sha256")!=expected_dispatch:raise WorkflowError("worker_not_succeeded")
+  artifact_root=s.root/"artifacts"
+  if artifact_root.is_symlink() or not artifact_root.is_dir():raise WorkflowError("worker_not_succeeded")
+  for path_key,hash_key in (("stdout_path","stdout_sha256"),("stderr_path","stderr_sha256")):
+   relative=record.get(path_key)
+   if not isinstance(relative,str):raise WorkflowError("worker_not_succeeded")
+   supplied=Path(relative)
+   if supplied.is_absolute() or ".." in supplied.parts:raise WorkflowError("worker_not_succeeded")
+   artifact=self.repo/supplied
+   if artifact.parent!=artifact_root or artifact.is_symlink() or not artifact.is_file() or hashlib.sha256(artifact.read_bytes()).hexdigest()!=record.get(hash_key):raise WorkflowError("worker_not_succeeded")
+  return record
  def _bump(self,store:RunStore,run:dict[str,Any])->None:run["revision"]+=1;run["updated_at"]=now();store.write_json("run.json",run)
  def _board_for(self,store:RunStore,run:dict[str,Any])->KanbanAdapter:
   internal=store.read("internal.json") if store._path("internal.json").exists() else {}
@@ -174,6 +191,7 @@ class WorkflowService:
    if argv != plan["commands"][typ]["argv"]:raise WorkflowError("planned_command_mismatch")
    expected={"red":"awaiting_red","green":"awaiting_green","full":"awaiting_verify","security":"awaiting_verify","live":"awaiting_live"}[typ]
    if run["status"]!=expected:raise WorkflowError("check_not_ready")
+   if typ in {"red","green"}:self._require_succeeded_worker(s,run,typ)
    if typ=="green" and not any(e["type"]=="red" and e["exit_code"]!=0 and e["commit_sha"]==run["base_sha"] for e in s.evidence()):raise WorkflowError("missing_red_evidence")
    try:r=subprocess.run(argv,cwd=Path(run["worktree_path"]),text=True,capture_output=True,timeout=timeout,env={"PATH":os.environ.get("PATH", ""),"PYTHONDONTWRITEBYTECODE":"1","PYTHONPYCACHEPREFIX":os.environ.get("PYTHONPYCACHEPREFIX","/tmp/hcw-pyc")})
    except subprocess.TimeoutExpired as exc:r=subprocess.CompletedProcess(argv,124,exc.stdout or "",exc.stderr or "timeout")
@@ -203,6 +221,7 @@ class WorkflowService:
   with s.locked():
    run=s.read();self._actor(run,actor,"green")
    if run["status"]!="awaiting_green":raise WorkflowError("check_not_ready")
+   self._require_succeeded_worker(s,run,"green")
    g=self._workgit(run);paths=sorted(g.paths(run["base_sha"]))
    if not paths or not all(any(fnmatch.fnmatch(path,pat) for pat in run["scope"]) for path in paths):raise WorkflowError("path_scope_violation")
    result=subprocess.run(["git","-C",str(run["worktree_path"]),"add","--",*paths],text=True,capture_output=True)
@@ -215,7 +234,9 @@ class WorkflowService:
   with s.locked():
    run=s.read();stage="spec-review" if actor.task_id==run["kanban_task_ids"]["spec-review"] else "quality-review";self._actor(run,actor,stage);head=self._workgit(run).head()
    expected="awaiting_spec_review" if stage=="spec-review" else "awaiting_quality_review"
-   if run["status"]!=expected or self._workgit(run).dirty() or not validate_review(payload) or payload["reviewed_sha"]!=head:raise WorkflowError("malformed_review")
+   if run["status"]!=expected:raise WorkflowError("malformed_review")
+   if stage=="quality-review":self._require_succeeded_worker(s,run,stage)
+   if self._workgit(run).dirty() or not validate_review(payload) or payload["reviewed_sha"]!=head:raise WorkflowError("malformed_review")
    rec={"schema_version":SCHEMA_VERSION,"kind":"review","id":"RV-"+uuid.uuid4().hex,"created_at":now(),"run_id":rid,"reviewer":actor.record(),**payload};reviews=s.read("reviews.json") if s._path("reviews.json").exists() else {"reviews":[]};reviews["reviews"].append(rec);RunStore._atomic(s._path("reviews.json"),reviews)
    if payload["decision"]!="approved":
     run["status"]="repairing";run["stage_statuses"][stage]="blocked";self._bump(s,run);return rec
@@ -232,6 +253,7 @@ class WorkflowService:
    run=s.read();self._actor(run,actor,"complete");head=self._workgit(run).head();v=s.read("verification.json") if s._path("verification.json").exists() else {}
    try:ev=s.evidence()
    except (ValueError,json.JSONDecodeError,OSError) as exc:raise WorkflowError("evidence_integrity_failure") from exc
+   if run["status"]=="verified":self._require_succeeded_worker(s,run,"complete")
    current_ids=[item["id"] for item in ev if item["commit_sha"]==head]
    if run["status"]!="verified" or v.get("candidate_sha")!=head or v.get("evidence_ids")!=current_ids or len(current_ids)!=len(set(current_ids)) or not {"green","full","security","live"}.issubset({item["type"] for item in ev if item["commit_sha"]==head and item["exit_code"]==0}) or self._workgit(run).dirty():raise WorkflowError("premature_completion")
    h={"schema_version":SCHEMA_VERSION,"kind":"handoff","id":"handoff-"+uuid.uuid4().hex,"created_at":now(),"run_id":rid,"candidate_sha":head,"action":"draft_pr_manual_merge"};RunStore._atomic(s._path("handoff.json"),h);run["status"]="completed";self._advance(run,"complete",None);self._bump(s,run);self._reconcile(s,run);return run
@@ -317,6 +339,7 @@ class WorkflowService:
    latest=s.latest_worker_attempt(stage,attempt)
    if latest:
     previous=s.read_worker(stage,attempt,latest)
+    if previous and previous.get("state")=="succeeded":return self._require_succeeded_worker(s,run,stage)
     if previous and previous["state"] in {"queued","running"} and _worker_process_alive(previous):
      raise WorkflowError("worker_dispatch_in_progress")
     if previous and previous["state"] in {"queued","running"}:

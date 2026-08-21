@@ -119,6 +119,61 @@ def wait_terminal(svc: WorkflowService, rid: str, stage: str, timeout: float = 1
     raise AssertionError(f"worker for stage {stage} never reached a terminal state: {svc.worker_status(rid, stage)}")
 
 
+def activate_stage(repo: Path, stage: str, status: str) -> dict:
+    store = RunStore(repo, "run-1")
+    state = store.read()
+    state["status"] = status
+    state["stage_statuses"] = {
+        name: ("active" if name == stage else "pending")
+        for name in state["stage_statuses"]
+    }
+    store.write_json("run.json", state)
+    return state
+
+
+def test_red_check_cannot_transition_before_external_worker_succeeds(repo: Path) -> None:
+    svc, _ = ready(repo)
+    command = payloads()[1]["commands"]["red"]["argv"]
+
+    with pytest.raises(WorkflowError, match="worker_not_succeeded"):
+        svc.check("run-1", act("red"), "red", command)
+
+
+def test_green_check_cannot_transition_before_external_worker_succeeds(repo: Path) -> None:
+    svc, _ = ready(repo)
+    activate_stage(repo, "green", "awaiting_green")
+    command = payloads()[1]["commands"]["green"]["argv"]
+
+    with pytest.raises(WorkflowError, match="worker_not_succeeded"):
+        svc.check("run-1", act("green"), "green", command)
+
+
+def test_green_commit_cannot_run_before_external_worker_succeeds(repo: Path) -> None:
+    svc, _ = ready(repo)
+    activate_stage(repo, "green", "awaiting_green")
+
+    with pytest.raises(WorkflowError, match="worker_not_succeeded"):
+        svc.commit("run-1", act("green"), "green candidate")
+
+
+def test_quality_review_cannot_transition_before_external_worker_succeeds(repo: Path) -> None:
+    svc, _ = ready(repo)
+    state = activate_stage(repo, "quality-review", "awaiting_quality_review")
+    reviewed_sha = git(Path(state["worktree_path"]), "rev-parse", "HEAD")
+    payload = {"reviewed_sha": reviewed_sha, "decision": "approved", "findings": [], "dispositions": []}
+
+    with pytest.raises(WorkflowError, match="worker_not_succeeded"):
+        svc.review("run-1", act("quality-review"), payload)
+
+
+def test_complete_cannot_transition_before_external_worker_succeeds(repo: Path) -> None:
+    svc, _ = ready(repo)
+    activate_stage(repo, "complete", "verified")
+
+    with pytest.raises(WorkflowError, match="worker_not_succeeded"):
+        svc.complete("run-1", act("complete"))
+
+
 def test_dispatch_worker_rejects_stage_outside_the_claude_tier_map(repo: Path) -> None:
     svc, run = ready(repo)
     with pytest.raises(WorkflowError, match="unsupported_claude_stage"):
@@ -396,6 +451,38 @@ def test_dispatch_worker_success_never_advances_hcw_stage_state(repo: Path, fake
     assert after["status"] == "awaiting_red"
     assert after["stage_statuses"]["red"] == "active"
     assert after["revision"] == before["revision"]
+
+
+def test_succeeded_external_worker_unlocks_the_authoritative_red_check(repo: Path, fake_claude: Path) -> None:
+    svc, _ = ready(repo)
+    svc.dispatch_worker("run-1", "red")
+    assert wait_terminal(svc, "run-1", "red")["state"] == "succeeded"
+
+    evidence = svc.check("run-1", act("red"), "red", payloads()[1]["commands"]["red"]["argv"])
+
+    assert evidence["type"] == "red" and evidence["exit_code"] != 0
+    assert svc.show("run-1")["status"] == "awaiting_green"
+
+
+def test_dispatch_after_success_is_idempotent_and_does_not_launch_attempt_two(repo: Path, fake_claude: Path) -> None:
+    svc, _ = ready(repo)
+    svc.dispatch_worker("run-1", "red")
+    first = wait_terminal(svc, "run-1", "red")
+
+    repeated = svc.dispatch_worker("run-1", "red")
+
+    assert repeated["id"] == first["id"]
+    assert RunStore(repo, "run-1").latest_worker_attempt("red", 1) == 1
+
+
+def test_tampered_success_artifact_relocks_the_authoritative_transition(repo: Path, fake_claude: Path) -> None:
+    svc, _ = ready(repo)
+    svc.dispatch_worker("run-1", "red")
+    final = wait_terminal(svc, "run-1", "red")
+    (repo / final["stdout_path"]).write_text("tampered\n")
+
+    with pytest.raises(WorkflowError, match="worker_not_succeeded"):
+        svc.check("run-1", act("red"), "red", payloads()[1]["commands"]["red"]["argv"])
 
 
 def test_dispatch_worker_records_failure_from_nonzero_exit(repo: Path, fake_claude: Path, monkeypatch) -> None:

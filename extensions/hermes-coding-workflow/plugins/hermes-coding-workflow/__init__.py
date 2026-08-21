@@ -43,7 +43,7 @@ def _build_bootstrap() -> str:
                 "design": (f"approve-design {repo} {run_id} --json {payload_arg}",),
                 "plan": (f"approve-plan {repo} {run_id} --json {payload_arg}",),
                 "red": (f"dispatch-worker {repo} {run_id} red", f"worker-status {repo} {run_id} red", f"check {repo} {run_id} red -- <failing-test-command>"),
-                "green": (f"dispatch-worker {repo} {run_id} green", f"worker-status {repo} {run_id} green", f"check {repo} {run_id} green -- <passing-test-command>", f"commit {repo} {run_id} --message <quoted-commit-message>"),
+                "green": (f"dispatch-worker {repo} {run_id} green", f"worker-status {repo} {run_id} green", f"commit {repo} {run_id} --message <quoted-commit-message>", f"check {repo} {run_id} green -- <passing-test-command>"),
                 "spec-review": (f"review {repo} {run_id} --json {payload_arg}",),
                 "quality-review": (f"dispatch-worker {repo} {run_id} quality-review", f"worker-status {repo} {run_id} quality-review", f"review {repo} {run_id} --json {payload_arg}"),
                 "verify": (f"check {repo} {run_id} full -- <full-test-command>", f"check {repo} {run_id} security -- <security-test-command>", f"verify {repo} {run_id}"),

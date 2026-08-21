@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 import hermes_coding_workflow.service as service_module
 from hermes_coding_workflow.adapters import KanbanAdapter
-from hermes_coding_workflow.contracts import PROFILES
-from hermes_coding_workflow.service import ActorContext,WorkflowError,WorkflowService
+from hermes_coding_workflow.contracts import CLAUDE_BACKEND,CLAUDE_TIER_MODELS,PROFILES
+from hermes_coding_workflow.service import ActorContext,WorkflowError,WorkflowService,full_sha_hash
 from hermes_coding_workflow.store import RunStore
 def git(repo:Path,*args:str)->str:return subprocess.check_output(["git","-C",str(repo),*args],text=True).strip()
 @pytest.fixture()
@@ -32,6 +32,13 @@ def payloads():
  return ({"observable_outcome":"new behavior","requirements":[{"id":"R1","description":"change app"}],"acceptance_criteria":["green"],"approved":True},{"tasks":[{"id":"one","description":"change it","paths":["app.txt"],"test_command":command,"requirement_ids":["R1"]}],"commands":{"red":{"argv":command,"requirement_ids":["R1"]},"green":{"argv":command,"requirement_ids":["R1"]},"full":{"argv":[sys.executable,"-c","pass"],"requirement_ids":["R1"]},"security":{"argv":[sys.executable,"-c","pass"],"requirement_ids":["R1"]},"live":{"argv":[sys.executable,"-c","pass"],"requirement_ids":["R1"]}},"approved":True})
 def ready(repo:Path):
  calls=[];s=WorkflowService(repo);run=s.create_run("pkg",["app.txt"],"run-1","hcw-test",board(repo,calls));d,p=payloads();s.approve_design("run-1",act("design"),d);s.approve_plan("run-1",act("plan"),p);return s,run,calls
+def seed_worker_success(repo:Path,stage:str)->dict:
+ store=RunStore(repo,"run-1");run=store.read();attempt=run["attempt"];worker_attempt=store.latest_worker_attempt(stage,attempt)+1;dispatch=run["dispatches"][stage]
+ artifact_root=store.root/"artifacts";artifact_root.mkdir(exist_ok=True)
+ stdout=artifact_root/f"{stage}-{attempt}-{worker_attempt}.stdout";stderr=artifact_root/f"{stage}-{attempt}-{worker_attempt}.stderr";stdout.write_text("fixture success\n");stderr.write_text("")
+ rel_stdout=str(stdout.relative_to(repo));rel_stderr=str(stderr.relative_to(repo));stamp="2026-08-21T00:00:00Z"
+ record={"schema_version":"hcw/v1","kind":"worker","id":f"worker-run-1-{stage}-{attempt}-{worker_attempt}","created_at":stamp,"updated_at":stamp,"run_id":"run-1","stage":stage,"task_id":run["kanban_task_ids"][stage],"profile":PROFILES[stage],"backend":CLAUDE_BACKEND,"model":CLAUDE_TIER_MODELS[stage],"attempt":attempt,"worker_attempt":worker_attempt,"brief_hash":dispatch["brief_hash"],"worktree_path":run["worktree_path"],"pid":None,"state":"succeeded","stdout_path":rel_stdout,"stderr_path":rel_stderr,"stdout_sha256":__import__("hashlib").sha256(stdout.read_bytes()).hexdigest(),"stderr_sha256":__import__("hashlib").sha256(stderr.read_bytes()).hexdigest(),"exit_code":0,"note":None,"design_sha256":full_sha_hash(store.read("approved-design.json")),"plan_sha256":full_sha_hash(store.read("plan.json")),"dispatch_sha256":full_sha_hash({"run_id":"run-1","stage":stage,"task_id":run["kanban_task_ids"][stage],"profile":PROFILES[stage],"attempt":attempt,"brief_hash":dispatch["brief_hash"]}),"process_identity":None}
+ store.write_worker(stage,attempt,worker_attempt,record);return record
 def test_create_graph_uses_actual_workspace_and_exact_profiles(repo:Path)->None:
  s,run,calls=ready(repo)
  assert run["status"]=="awaiting_design" and run["stage_profiles"]==PROFILES
@@ -89,6 +96,7 @@ def test_transition_updates_authoritative_stage_statuses(repo:Path)->None:
  s,run,calls=ready(repo); d,p=payloads()
  # ready() has already approved design and plan; RED is now the sole active task.
  assert RunStore(repo,"run-1").read()["stage_statuses"]["red"] == "active"
+ seed_worker_success(repo,"red")
  s.check("run-1",act("red"),"red",payloads()[1]["commands"]["red"]["argv"])
  statuses=RunStore(repo,"run-1").read()["stage_statuses"]
  assert statuses["red"] == "completed" and statuses["green"] == "active"
@@ -117,22 +125,27 @@ def test_actor_forgery_and_structured_artifacts_rejected(repo:Path)->None:
 def test_check_executes_argv_not_forged_exit(repo:Path)->None:
  s,run,_=ready(repo)
  with pytest.raises(WorkflowError,match="planned_command_mismatch"):s.check("run-1",act("red"),"red",["python","-c","pass"])
+ seed_worker_success(repo,"red")
  red=s.check("run-1",act("red"),"red",payloads()[1]["commands"]["red"]["argv"])
  assert red["exit_code"]==1 and red["command"]==payloads()[1]["commands"]["red"]["argv"]
  w=Path(run["worktree_path"]);(w/"app.txt").write_text("new\n");git(w,"add","app.txt");git(w,"commit","-m","green")
+ seed_worker_success(repo,"green")
  green=s.check("run-1",act("green"),"green",payloads()[1]["commands"]["green"]["argv"]);assert green["exit_code"]==0
 
 def test_red_rejects_source_mutation_and_evidence_tampering(repo:Path)->None:
  s,run,_=ready(repo)
  plan_path=repo / ".hermes" / "workflows" / "run-1" / "plan.json"
  plan=json.loads(plan_path.read_text());plan["content"]["commands"]["red"]["argv"]=[sys.executable,"-c","open('app.txt','w').write('bad'); raise SystemExit(1)"];plan_path.write_text(json.dumps(plan))
+ seed_worker_success(repo,"red")
  with pytest.raises(WorkflowError,match="red_mutation_violation"):
   s.check("run-1",act("red"),"red",[sys.executable,"-c","open('app.txt','w').write('bad'); raise SystemExit(1)"])
  subprocess.run(["git","-C",str(run["worktree_path"]),"checkout","--","app.txt"],check=True)
  plan["content"]["commands"]["red"]["argv"]=payloads()[1]["commands"]["red"]["argv"];plan_path.write_text(json.dumps(plan))
+ seed_worker_success(repo,"red")
  s.check("run-1",act("red"),"red",payloads()[1]["commands"]["red"]["argv"])
  # An existing evidence artifact must remain content-addressed when consumed.
  worktree=Path(run["worktree_path"]);(worktree/"app.txt").write_text("new\n");git(worktree,"add","app.txt");git(worktree,"commit","-m","green")
+ seed_worker_success(repo,"green")
  green=s.check("run-1",act("green"),"green",payloads()[1]["commands"]["green"]["argv"])
  artifact=repo / green["artifact_path"]
  artifact.write_text("tampered")
@@ -157,18 +170,21 @@ def test_completion_rejects_dirty_post_verification_worktree(repo:Path)->None:
  state["stage_statuses"]={stage:("active" if stage=="complete" else "completed") for stage in PROFILES}
  store.write_json("run.json",state)
  store.write_json("verification.json",{"schema_version":"hcw/v1","kind":"verification","id":"verify-test","created_at":"2026-08-19T00:00:00Z","run_id":"run-1","candidate_sha":head,"evidence_ids":[],"status":"passed"})
+ seed_worker_success(repo,"complete")
  (Path(run["worktree_path"])/"app.txt").write_text("dirty after verification\n")
  with pytest.raises(WorkflowError,match="premature_completion"):s.complete("run-1",act("complete"))
 
 def test_completion_revalidates_live_evidence_artifacts(repo:Path)->None:
  s,run,_=ready(repo);plan=payloads()[1];worktree=Path(run["worktree_path"])
+ seed_worker_success(repo,"red")
  s.check("run-1",act("red"),"red",plan["commands"]["red"]["argv"])
- (worktree/"app.txt").write_text("new\n");s.commit("run-1",act("green"),"green")
+ (worktree/"app.txt").write_text("new\n");seed_worker_success(repo,"green");s.commit("run-1",act("green"),"green")
  s.check("run-1",act("green"),"green",plan["commands"]["green"]["argv"]);head=git(worktree,"rev-parse","HEAD")
  approved={"reviewed_sha":head,"decision":"approved","findings":[],"dispositions":[]}
- s.review("run-1",act("spec-review"),approved);s.review("run-1",act("quality-review"),approved)
+ s.review("run-1",act("spec-review"),approved);seed_worker_success(repo,"quality-review");s.review("run-1",act("quality-review"),approved)
  s.check("run-1",act("verify"),"full",plan["commands"]["full"]["argv"]);s.check("run-1",act("verify"),"security",plan["commands"]["security"]["argv"]);s.verify("run-1",act("verify"))
  live=s.check("run-1",act("live"),"live",plan["commands"]["live"]["argv"])
+ seed_worker_success(repo,"complete")
  store=RunStore(repo,"run-1");verification=store.read("verification.json");original_ids=list(verification["evidence_ids"]);verification["evidence_ids"].append(original_ids[0]);store.write_json("verification.json",verification)
  with pytest.raises(WorkflowError,match="premature_completion"):s.complete("run-1",act("complete"))
  verification["evidence_ids"]=original_ids;store.write_json("verification.json",verification)
@@ -176,9 +192,10 @@ def test_completion_revalidates_live_evidence_artifacts(repo:Path)->None:
  with pytest.raises(WorkflowError,match="evidence_integrity_failure"):s.complete("run-1",act("complete"))
 
 def test_repair_reuses_original_kanban_home_and_reattaches_plan(monkeypatch,repo:Path)->None:
- s,run,_=ready(repo);plan=payloads()[1];worktree=Path(run["worktree_path"])
+ home=repo.parent/"kanban-home";home.mkdir();initial_calls=[];s=WorkflowService(repo);run=s.create_run("pkg",["app.txt"],"run-1","hcw-test",board(repo,initial_calls,home=home));design,plan=payloads();s.approve_design("run-1",act("design"),design);s.approve_plan("run-1",act("plan"),plan);worktree=Path(run["worktree_path"])
+ seed_worker_success(repo,"red")
  s.check("run-1",act("red"),"red",plan["commands"]["red"]["argv"])
- (worktree/"app.txt").write_text("new\n");s.commit("run-1",act("green"),"green");s.check("run-1",act("green"),"green",plan["commands"]["green"]["argv"])
+ (worktree/"app.txt").write_text("new\n");seed_worker_success(repo,"green");s.commit("run-1",act("green"),"green");s.check("run-1",act("green"),"green",plan["commands"]["green"]["argv"])
  head=git(worktree,"rev-parse","HEAD");finding={"id":"F1","severity":"blocker","description":"repair required"}
  s.review("run-1",act("spec-review"),{"reviewed_sha":head,"decision":"changes_requested","findings":[finding],"dispositions":[{"finding_id":"F1","disposition":"accepted"}]})
  calls=[];replacement=board(repo,calls);captured={};expected=Path(RunStore(repo,"run-1").read("internal.json")["kanban_home"])
@@ -193,8 +210,9 @@ def test_repair_reuses_original_kanban_home_and_reattaches_plan(monkeypatch,repo
 
 def test_repair_resumes_durable_intent_after_graph_failure(monkeypatch,repo:Path)->None:
  s,run,_=ready(repo);plan=payloads()[1];worktree=Path(run["worktree_path"])
+ seed_worker_success(repo,"red")
  s.check("run-1",act("red"),"red",plan["commands"]["red"]["argv"])
- (worktree/"app.txt").write_text("new\n");s.commit("run-1",act("green"),"green");s.check("run-1",act("green"),"green",plan["commands"]["green"]["argv"])
+ (worktree/"app.txt").write_text("new\n");seed_worker_success(repo,"green");s.commit("run-1",act("green"),"green");s.check("run-1",act("green"),"green",plan["commands"]["green"]["argv"])
  head=git(worktree,"rev-parse","HEAD");finding={"id":"F1","severity":"blocker","description":"repair required"}
  s.review("run-1",act("spec-review"),{"reviewed_sha":head,"decision":"changes_requested","findings":[finding],"dispositions":[{"finding_id":"F1","disposition":"accepted"}]})
  calls=[];replacement=board(repo,calls);original=WorkflowService._attach_plan_briefs
