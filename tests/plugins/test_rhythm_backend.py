@@ -195,6 +195,62 @@ def test_schema_bounds_and_redaction(api, monkeypatch, caplog):
     assert TOKEN not in caplog.text and JOIN_CODE not in caplog.text
 
 
+def test_read_only_dashboard_and_tasks_are_sanitized(api, monkeypatch):
+    """The first live slice exposes canonical DTOs, never upstream objects."""
+    client, mod = api
+
+    def read_only_transport(method, url, headers, body, timeout):
+        assert method == "GET"
+        if url.endswith("/auth/me"):
+            return 200, {}, {"id": "user-1", "email": "me@example.test", "joinCode": JOIN_CODE}
+        if url.endswith("/workspaces/me"):
+            return 200, {}, {"id": "ws-1", "name": "Personal", "enrollmentCode": JOIN_CODE}
+        if url.endswith("/dashboard/summary"):
+            return 200, {}, {
+                "openTaskCount": 1,
+                "threadCount": 0,
+                "tasks": [{"id": "task-1", "title": "Review brief", "notes": "Private notes", "status": "open", "bucket": "today", "dueLabel": "Today", "joinCode": JOIN_CODE}],
+                "project": None,
+                "unreadThreads": [],
+                "enrollment": JOIN_CODE,
+            }
+        if url.endswith("/tasks"):
+            return 200, {}, {"tasks": [{"id": "task-1", "title": "Review brief", "notes": "Private notes", "status": "open", "bucket": "today", "priority": 1, "tags": ["work"], "createdAt": "2026-08-21", "createdBy": "Me", "ownerId": "user-1", "isShared": False, "sourceType": "manual", "preferredAgent": "", "energy": "", "collaborators": [], "joinCode": JOIN_CODE}]}
+        if url.endswith("/tasks/task-1"):
+            return 200, {}, {"id": "task-1", "title": "Review brief", "notes": "Private notes", "status": "open", "bucket": "today", "priority": 1, "tags": ["work"], "createdAt": "2026-08-21", "createdBy": "Me", "ownerId": "user-1", "isShared": False, "sourceType": "manual", "preferredAgent": "", "energy": "", "collaborators": [], "joinCode": JOIN_CODE}
+        raise AssertionError(url)
+
+    monkeypatch.setattr(mod, "request", read_only_transport)
+    assert client.put("/api/plugins/rhythm/connection", json={"access_token": TOKEN}).status_code == 200
+    summary = client.get("/api/plugins/rhythm/dashboard-summary")
+    listing = client.get("/api/plugins/rhythm/tasks")
+    detail = client.get("/api/plugins/rhythm/tasks/task-1")
+
+    assert summary.status_code == listing.status_code == detail.status_code == 200
+    assert summary.json()["identity"] == {"id": "user-1", "email": "me@example.test"}
+    assert summary.json()["workspace"] == {"id": "ws-1", "name": "Personal"}
+    assert listing.json()["tasks"][0]["id"] == detail.json()["id"] == "task-1"
+    assert JOIN_CODE not in summary.text + listing.text + detail.text
+
+
+def test_task_detail_rejects_unsafe_or_write_receipts():
+    from plugins.rhythm.backend.client import RhythmProtocolError, RhythmClient
+
+    client = RhythmClient(TOKEN, transport=_ok_transport)
+    for method, path in (("POST", "/tasks"), ("PATCH", "/tasks/task-1"), ("GET", "/tasks/../../auth/me")):
+        with pytest.raises(RhythmProtocolError, match="operation_not_allowed"):
+            client.call(method, path)
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [("post", "/dashboard-summary"), ("patch", "/tasks/task-1"), ("delete", "/tasks/task-1")],
+)
+def test_dashboard_and_task_writes_are_unreachable(api, method, path):
+    client, _ = api
+    assert getattr(client, method)(f"/api/plugins/rhythm{path}").status_code == 405
+
+
 @pytest.mark.parametrize(
     ("path", "payload", "secret"),
     [

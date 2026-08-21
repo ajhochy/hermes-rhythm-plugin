@@ -103,7 +103,7 @@ class TestApiOperationsContract:
         first_slice = contract["milestones"]["M4a"]
         assert first_slice["read_only"] is True
         paths = {op["path"] for op in first_slice["allowed_operations"]}
-        assert paths == {"/auth/me", "/workspaces/me"}
+        assert paths == {"/auth/me", "/workspaces/me", "/dashboard/summary", "/tasks and /tasks/{task_id}"}
         methods = {op["method"] for op in first_slice["allowed_operations"]}
         assert methods == {"GET"}
 

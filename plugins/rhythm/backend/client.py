@@ -14,7 +14,12 @@ from urllib.parse import urljoin, urlparse
 APPROVED_ORIGIN = "https://api.rhythm.app"
 GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 OAUTH_CLIENT_ID = "hermes-desktop"
-ALLOWED_OPERATIONS = {("GET", "/auth/me"), ("GET", "/workspaces/me")}
+ALLOWED_OPERATIONS = {
+    ("GET", "/auth/me"),
+    ("GET", "/workspaces/me"),
+    ("GET", "/dashboard/summary"),
+    ("GET", "/tasks"),
+}
 MAX_RESPONSE_BYTES = 32_768
 REQUEST_TIMEOUT_SECONDS = 10.0
 Transport = Callable[[str, str, dict[str, str], bytes | None, float], tuple[int, dict[str, str], Any]]
@@ -105,7 +110,8 @@ class RhythmClient:
 
     def call(self, method: str, path: str) -> dict[str, Any]:
         method = method.upper()
-        if (method, path) not in ALLOWED_OPERATIONS:
+        is_task_detail = method == "GET" and path.startswith("/tasks/") and _safe_task_id(path.removeprefix("/tasks/"))
+        if (method, path) not in ALLOWED_OPERATIONS and not is_task_detail:
             raise RhythmProtocolError("operation_not_allowed")
         parsed = urlparse(path)
         if parsed.scheme or parsed.netloc or not path.startswith("/"):
@@ -162,3 +168,7 @@ class RhythmClient:
         if not isinstance(payload, dict) or not isinstance(payload.get("access_token"), str) or not payload["access_token"]:
             raise RhythmProtocolError("schema_drift")
         return payload["access_token"]
+
+
+def _safe_task_id(value: str) -> bool:
+    return bool(value) and len(value) <= 128 and all(char.isalnum() or char in "_-" for char in value)

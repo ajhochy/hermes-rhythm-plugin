@@ -132,6 +132,67 @@ def _safe_workspace(payload: dict[str, Any]) -> dict[str, str]:
     return result
 
 
+def _text(payload: dict[str, Any], name: str, maximum: int, *, required: bool = False) -> str | None:
+    value = payload.get(name)
+    if value is None and not required:
+        return None
+    if not isinstance(value, str) or not value.strip() or len(value) > maximum:
+        raise RhythmProtocolError("schema_drift")
+    return value.strip()
+
+
+def _task(payload: dict[str, Any]) -> dict[str, Any]:
+    ident = _text(payload, "id", 128, required=True)
+    title = _text(payload, "title", 512, required=True)
+    status = payload.get("status")
+    bucket = payload.get("bucket")
+    if status not in {"open", "in_progress", "waiting_for_reply", "done"} or bucket not in {"past-due", "today", "week", "month", "no-due", "completed"}:
+        raise RhythmProtocolError("schema_drift")
+    priority = payload.get("priority", 0)
+    tags = payload.get("tags", [])
+    collaborators = payload.get("collaborators", [])
+    if not isinstance(priority, int) or priority not in {0, 1, 2, 3} or not isinstance(tags, list) or len(tags) > 32 or not all(isinstance(tag, str) and 0 < len(tag) <= 64 for tag in tags) or not isinstance(collaborators, list) or len(collaborators) > 32:
+        raise RhythmProtocolError("schema_drift")
+    safe_collaborators = []
+    for collaborator in collaborators:
+        if not isinstance(collaborator, dict):
+            raise RhythmProtocolError("schema_drift")
+        safe_collaborators.append({"id": _text(collaborator, "id", 128, required=True), "name": _text(collaborator, "name", 256, required=True), "initials": _text(collaborator, "initials", 16, required=True)})
+    result: dict[str, Any] = {
+        "id": ident, "title": title, "notes": _text(payload, "notes", 8_192) or "", "status": status,
+        "bucket": bucket, "priority": priority, "tags": tags, "createdAt": _text(payload, "createdAt", 64, required=True),
+        "createdBy": _text(payload, "createdBy", 256, required=True), "ownerId": _text(payload, "ownerId", 128, required=True),
+        "isShared": payload.get("isShared") is True, "sourceType": payload.get("sourceType", "manual"),
+        "preferredAgent": payload.get("preferredAgent", ""), "energy": payload.get("energy", ""), "collaborators": safe_collaborators,
+    }
+    if result["sourceType"] not in {"manual", "rhythm", "project", "automation", "calendar_shadow_event", "prod_mirror"} or result["preferredAgent"] not in {"", "claude-code", "codex"} or result["energy"] not in {"", "🔥", "⚡", "🌱"}:
+        raise RhythmProtocolError("schema_drift")
+    for name in ("scheduledDate", "dueDate", "sourceName"):
+        value = _text(payload, name, 256)
+        if value is not None:
+            result[name] = value
+    return result
+
+
+def _dashboard_summary(payload: dict[str, Any], identity: dict[str, str], workspace: dict[str, str]) -> dict[str, Any]:
+    count = payload.get("openTaskCount")
+    thread_count = payload.get("threadCount")
+    tasks = payload.get("tasks")
+    project = payload.get("project")
+    threads = payload.get("unreadThreads")
+    if not isinstance(count, int) or not 0 <= count <= 10_000 or not isinstance(thread_count, int) or not 0 <= thread_count <= 10_000 or not isinstance(tasks, list) or len(tasks) > 100 or project is not None or not isinstance(threads, list) or threads:
+        raise RhythmProtocolError("schema_drift")
+    summary_tasks = []
+    for raw in tasks:
+        if not isinstance(raw, dict):
+            raise RhythmProtocolError("schema_drift")
+        status, bucket = raw.get("status"), raw.get("bucket")
+        if status not in {"open", "done"} or bucket not in {"past-due", "today", "week", "unscheduled"}:
+            raise RhythmProtocolError("schema_drift")
+        summary_tasks.append({"id": _text(raw, "id", 128, required=True), "title": _text(raw, "title", 512, required=True), "notes": _text(raw, "notes", 8_192) or "", "status": status, "bucket": bucket, "dueLabel": _text(raw, "dueLabel", 128, required=True)})
+    return {"identity": identity, "workspace": workspace, "openTaskCount": count, "threadCount": thread_count, "tasks": summary_tasks, "project": None, "unreadThreads": []}
+
+
 def _error(exc: Exception) -> HTTPException:
     if isinstance(exc, ValueError):
         return HTTPException(400, detail={"error": "invalid_profile", "recoverable": True})
@@ -189,6 +250,55 @@ def health():
             return {"status": "disconnected"}
         identity, workspace = _validated_connection(current["access_token"])
         return {"status": "ok", "identity": identity, "workspace": workspace}
+    except Exception as exc:
+        raise _error(exc) from None
+
+
+def _connected_client() -> tuple[RhythmClient, dict[str, str], dict[str, str]]:
+    current = store.connection()
+    if current is None:
+        raise RhythmRemoteError("unauthorized")
+    return RhythmClient(current["access_token"], transport=request), current["identity"], current["workspace"]
+
+
+@router.api_route("/dashboard-summary", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+def dashboard_summary(incoming_request: Request):
+    if incoming_request.method != "GET":
+        raise HTTPException(405, detail={"error": "read_only", "recoverable": True})
+    try:
+        client, identity, workspace = _connected_client()
+        return _dashboard_summary(client.call("GET", "/dashboard/summary"), identity, workspace)
+    except Exception as exc:
+        raise _error(exc) from None
+
+
+@router.api_route("/tasks", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+def task_list(incoming_request: Request):
+    if incoming_request.method != "GET":
+        raise HTTPException(405, detail={"error": "read_only", "recoverable": True})
+    try:
+        client, _, _ = _connected_client()
+        payload = client.call("GET", "/tasks")
+        rows = payload.get("tasks")
+        if not isinstance(rows, list) or len(rows) > 500:
+            raise RhythmProtocolError("schema_drift")
+        if not all(isinstance(row, dict) for row in rows):
+            raise RhythmProtocolError("schema_drift")
+        return {"tasks": [_task(row) for row in rows]}
+    except Exception as exc:
+        raise _error(exc) from None
+
+
+@router.api_route("/tasks/{task_id}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+def task_detail(task_id: str, incoming_request: Request):
+    if incoming_request.method != "GET":
+        raise HTTPException(405, detail={"error": "read_only", "recoverable": True})
+    try:
+        client, _, _ = _connected_client()
+        detail = _task(client.call("GET", f"/tasks/{task_id}"))
+        if detail["id"] != task_id:
+            raise RhythmProtocolError("schema_drift")
+        return detail
     except Exception as exc:
         raise _error(exc) from None
 
