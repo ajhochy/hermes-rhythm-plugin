@@ -6,6 +6,10 @@ import { askHermes, confirmationKey, createGateway, gatewayError, workspaceKey }
 import {
   DashboardScreen,
   ArtifactsScreen,
+  AutomationsScreen,
+  FacilitiesScreen,
+  IntegrationsScreen,
+  MessagesScreen,
   defaultRhythmTokens,
   type RhythmDomainGateway,
   type RhythmHostAdapter,
@@ -126,6 +130,28 @@ describe('accepted Rhythm workspace package', () => {
     expect((await screen.findAllByText(content)).length).toBeGreaterThan(0)
     await waitFor(() => expect(rest.mock.calls.map(([path]) => path)).toContain(expectedPath))
     expect(rest.mock.calls.map(([path]) => path).some(path => /collaborator|member/.test(path))).toBe(false)
+    view.unmount()
+  })
+
+  it.each([
+    ['Dashboard', DashboardScreen, 'rhythm-dashboard-screen'],
+    ['Tasks', TasksScreen, 'rhythm-tasks-screen'],
+    ['Planner', PlannerScreen, 'rhythm-planner-screen'],
+    ['Rhythms', RhythmsScreen, 'rhythm-rhythms-screen'],
+    ['Projects', ProjectsScreen, 'rhythm-projects-screen'],
+    ['Messages', MessagesScreen, 'rhythm-messages-screen'],
+    ['Facilities', FacilitiesScreen, 'rhythm-facilities-screen'],
+    ['Automations', AutomationsScreen, 'rhythm-automations-screen'],
+    ['Integrations', IntegrationsScreen, 'rhythm-integrations-screen'],
+  ])('issue-14: mounts %s through the real adapter with compact/expanded a11y failure recovery', async (_name, Screen, testId) => {
+    const unavailable = Object.assign(new Error('fixture unavailable'), { status: 503 })
+    const rest = vi.fn(async () => { throw unavailable })
+    const view = renderScreen(<Screen />, createGateway(rest as never), { ...host, viewport: 'compact' })
+    expect(await screen.findByTestId(testId)).not.toBeNull()
+    expect(await screen.findByTestId('page-state-unavailable')).not.toBeNull()
+    expect(screen.getByTestId('page-state-unavailable').getAttribute('role')).toMatch(/status|alert/)
+    view.rerender(<div className="rhythm-workspace-root" data-readonly="true"><RhythmWorkspaceProvider gateway={createGateway(rest as never)} host={{ ...host, viewport: 'expanded' }}><Screen /></RhythmWorkspaceProvider></div>)
+    expect(await screen.findByTestId(testId)).not.toBeNull()
     view.unmount()
   })
 
