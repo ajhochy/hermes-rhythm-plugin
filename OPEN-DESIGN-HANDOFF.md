@@ -5,7 +5,7 @@
 **Primary branch:** `agent-stack/opendesign-webview`
 **Primary worktree:** `/Users/ajhochhalter/.hermes/worktrees/hermes-agent/opendesign-webview`
 **Primary HEAD:** `f107c3e08f10695621af76548bcc93ee8b9e2805`
-**Dev Dashboard tracker:** `hermesOpenDesignWebview` — overall 55%, `repairing`, last campaign revision 730
+**Dev Dashboard tracker:** `hermesOpenDesignWebview` — overall 55%, paused (`pending`)
 
 ## Pause receipt
 
