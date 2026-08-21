@@ -22,6 +22,7 @@ from urllib.parse import parse_qsl
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 
 TOKEN = "rhythm-test-token-" + "x" * 24
@@ -46,7 +47,7 @@ def api(rhythm_home):
     mod = _router_module()
     app = FastAPI()
     app.include_router(mod.router, prefix="/api/plugins/rhythm")
-    return TestClient(app), mod
+    return TestClient(app, base_url="http://127.0.0.1:49123"), mod
 
 
 def _ok_transport(method, url, headers, body, timeout):
@@ -61,6 +62,18 @@ def _ok_transport(method, url, headers, body, timeout):
     if url.endswith("/workspaces/me"):
         return 200, {}, {"id": "ws-1", "name": "Personal", "enrollmentCode": JOIN_CODE}
     raise AssertionError(url)
+
+
+def _loopback_request(port: int = 49123) -> Request:
+    return Request(
+        {
+            "type": "http",
+            "scheme": "http",
+            "method": "GET",
+            "path": "/api/plugins/rhythm/oauth/callback",
+            "headers": [(b"host", f"127.0.0.1:{port}".encode())],
+        }
+    )
 
 
 def test_import_has_no_filesystem_or_network_side_effects(monkeypatch, tmp_path):
@@ -311,7 +324,7 @@ def test_pkce_wire_contract_and_get_handoff(api, monkeypatch):
     start = client.post("/api/plugins/rhythm/oauth/start").json()
     query = dict(parse_qsl(start["authorization_url"].split("?", 1)[1]))
     assert query["client_id"] == mod.OAUTH_CLIENT_ID
-    assert query["redirect_uri"] == mod.OAUTH_REDIRECT_URI
+    assert query["redirect_uri"] == "http://127.0.0.1:49123/api/plugins/rhythm/oauth/callback"
     response = client.get(
         "/api/plugins/rhythm/oauth/callback",
         params={"state": start["state"], "code": "handoff-code"},
@@ -324,7 +337,7 @@ def test_pkce_wire_contract_and_get_handoff(api, monkeypatch):
             "code": "handoff-code",
             "code_verifier": ANY,
             "client_id": mod.OAUTH_CLIENT_ID,
-            "redirect_uri": mod.OAUTH_REDIRECT_URI,
+            "redirect_uri": "http://127.0.0.1:49123/api/plugins/rhythm/oauth/callback",
         }
     ]
 
@@ -366,8 +379,9 @@ def test_pkce_concurrent_profiles_persist_only_to_their_bound_homes(api, monkeyp
     def complete(home):
         token = set_hermes_home_override(home)
         try:
-            state = mod.oauth_start()["state"]
-            outcomes.append(mod._complete_oauth_callback(state, "code"))
+            request = _loopback_request()
+            state = mod.oauth_start(request)["state"]
+            outcomes.append(mod._complete_oauth_callback(state, "code", request))
         finally:
             reset_hermes_home_override(token)
 

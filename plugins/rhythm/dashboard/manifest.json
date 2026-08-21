@@ -6,5 +6,8 @@
   "version": "0.1.0",
   "tab": {"path": "/rhythm", "hidden": true},
   "entry": "dist/index.js",
-  "api": "plugin_api.py"
+  "api": "plugin_api.py",
+  "public_api": [
+    {"path": "/oauth/callback", "method": "GET"}
+  ]
 }

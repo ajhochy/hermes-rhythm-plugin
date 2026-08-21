@@ -559,9 +559,7 @@ app.add_middleware(
 # Keep the upstream list minimal — only truly non-sensitive, read-only
 # endpoints belong there.
 # ---------------------------------------------------------------------------
-from hermes_cli.dashboard_auth.public_paths import (
-    PUBLIC_API_PATHS as _PUBLIC_API_PATHS,
-)
+from hermes_cli.dashboard_auth.public_paths import is_public_api_route as _is_public_api_route
 
 
 def _has_valid_session_token(request: Request) -> bool:
@@ -831,7 +829,7 @@ async def auth_middleware(request: Request, call_next):
         return await call_next(request)
     path = request.url.path
     is_mcp_oauth_callback = path.startswith("/api/mcp/oauth/callback/")
-    if path.startswith("/api/") and path not in _PUBLIC_API_PATHS and not is_mcp_oauth_callback:
+    if path.startswith("/api/") and not _is_public_api_route(request.method, path) and not is_mcp_oauth_callback:
         if not _has_valid_session_token(request) and not _has_valid_query_token(request, path):
             return JSONResponse(
                 status_code=401,
@@ -17898,6 +17896,39 @@ def _safe_plugin_api_relpath(api_field: Any, *, dashboard_dir: Path) -> Optional
     return api_field
 
 
+def _safe_public_plugin_api_routes(value: Any, *, plugin_name: str) -> set[tuple[str, str]]:
+    """Return manifest-declared exact public plugin routes, or no routes.
+
+    Public plugin endpoints are an exception to dashboard session auth for
+    browser-owned callbacks. Keep this declaration deliberately narrow: static
+    absolute API paths and explicit methods only; the mounted router must also
+    expose the same exact route before it is registered.
+    """
+    if not isinstance(value, list):
+        return set()
+    routes: set[tuple[str, str]] = set()
+    prefix = f"/api/plugins/{plugin_name}"
+    for item in value:
+        if not isinstance(item, dict):
+            return set()
+        path, method = item.get("path"), item.get("method")
+        if not isinstance(path, str) or not isinstance(method, str):
+            return set()
+        full_path = f"{prefix}{path}"
+        if (
+            not path.startswith("/")
+            or path.endswith("/")
+            or "{" in path
+            or "?" in path
+            or "#" in path
+            or "//" in path
+            or method.upper() not in {"GET", "HEAD"}
+        ):
+            return set()
+        routes.add((method.upper(), full_path))
+    return routes
+
+
 def _discover_dashboard_plugins() -> list:
     """Scan plugins/*/dashboard/manifest.json for dashboard extensions.
 
@@ -18018,6 +18049,9 @@ def _discover_dashboard_plugins() -> list:
                     "source": source,
                     "_dir": str(dashboard_dir),
                     "_api_file": safe_api,
+                    "_public_api_routes": _safe_public_plugin_api_routes(
+                        data.get("public_api"), plugin_name=name,
+                    ),
                 })
             except Exception as exc:
                 _log.warning("Bad dashboard plugin manifest %s: %s", manifest_file, exc)
@@ -18644,6 +18678,17 @@ def _mount_plugin_api_routes():
                 _log.warning("Plugin %s api file has no 'router' attribute", plugin["name"])
                 continue
             app.include_router(router, prefix=f"/api/plugins/{plugin['name']}")
+            declared_public_routes = plugin.get("_public_api_routes", set())
+            mounted_routes = {
+                (method, f"/api/plugins/{plugin['name']}{route.path}")
+                for route in router.routes
+                for method in getattr(route, "methods", set())
+            }
+            public_routes = declared_public_routes & mounted_routes
+            if public_routes:
+                from hermes_cli.dashboard_auth.public_paths import register_public_plugin_api_routes
+
+                register_public_plugin_api_routes(public_routes)
             _log.info("Mounted plugin API routes: /api/plugins/%s/", plugin["name"])
         except Exception as exc:
             _log.warning("Failed to load plugin %s API routes: %s", plugin["name"], exc)
