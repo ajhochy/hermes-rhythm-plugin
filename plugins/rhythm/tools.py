@@ -34,6 +34,7 @@ _receipt_lock = threading.Lock()
 
 @dataclass
 class _CompletionReceipt:
+    receipt_id: str
     action: str
     payload: dict[str, str]
     task_id: str
@@ -47,12 +48,6 @@ class _CompletionReceipt:
 
 
 _completion_receipts: dict[str, _CompletionReceipt] = {}
-
-
-def _canonical_home() -> str:
-    from hermes_constants import get_hermes_home
-
-    return str(get_hermes_home().resolve(strict=False))
 
 
 def _connected() -> tuple[RhythmClient, dict[str, str], dict[str, str]]:
@@ -158,14 +153,25 @@ def get_edit_approval_requester():
     return module.get_edit_approval_requester()
 
 
-def _approval_proposal(task_id: str):
+def _approval_proposal(receipt: _CompletionReceipt):
     module = importlib.import_module("acp" + "_adapter.edit_approval")
     return module.EditProposal(
         tool_name="rhythm_complete_task",
-        path=f"Rhythm task {task_id}",
+        path=f"Rhythm task {receipt.task_id}",
         old_text=None,
         new_text="Mark this exact Rhythm task complete.",
-        arguments={"task_id": task_id, "action": "complete", "payload": {"status": "done"}},
+        arguments={
+            "task_id": receipt.task_id,
+            "action": receipt.action,
+            "payload": receipt.payload,
+            "profile": receipt.profile,
+            "session_id": receipt.session_id,
+            "generation": receipt.generation,
+            "prestate_digest": receipt.prestate_digest,
+            "remote_context_digest": receipt.remote_context_digest,
+            "receipt_id": receipt.receipt_id,
+            "expires_at": receipt.expires_at,
+        },
     )
 
 
@@ -179,14 +185,28 @@ def _mutate_complete(client: RhythmClient, task_id: str, receipt_id: str) -> dic
     return client.mutate_task(task_id, "complete", idempotency_key=_digest({"receipt_id": receipt_id, "action": "complete", "task_id": task_id}))
 
 
-def rhythm_complete_task(args: dict[str, Any], *, task_id: str | None = None, session_id: str | None = None, **_kwargs: Any) -> str:
+def _trusted_acp_session_id() -> str | None:
+    try:
+        from gateway.session_context import get_session_env
+
+        value = get_session_env("HERMES_SESSION_ID", "")
+    except Exception:
+        return None
+    return value if isinstance(value, str) and value else None
+
+
+def rhythm_complete_task(args: dict[str, Any], **_kwargs: Any) -> str:
     target_id = args.get("task_id")
     if not isinstance(target_id, str) or not target_id or len(target_id) > 128 or not all(char.isalnum() or char in "_-" for char in target_id):
         return tool_error("invalid_task_id")
-    # This operation has no non-ACP approval route.  The session and generation
-    # are host-provided dispatch metadata, never model-controlled arguments.
-    if not session_id or not task_id:
+    # Never derive connection authority from a tool-call task id. ACP's session
+    # is server-side context; Rhythm's profile/generation come from the
+    # validated connection record used by the dashboard backend.
+    session_id = _trusted_acp_session_id()
+    scope = store.approval_scope()
+    if session_id is None or scope is None:
         return tool_error("acp_approval_required")
+    profile, generation = scope
     try:
         requester = get_edit_approval_requester()
     except Exception:
@@ -202,27 +222,30 @@ def rhythm_complete_task(args: dict[str, Any], *, task_id: str | None = None, se
         payload = {"status": "done"}
         receipt_id = secrets.token_urlsafe(24)
         receipt = _CompletionReceipt(
-            "complete", payload, target_id, _digest(before), context_digest,
-            _canonical_home(), session_id, task_id, time.monotonic() + _APPROVAL_TTL_SECONDS,
+            receipt_id, "complete", payload, target_id, _digest(before), context_digest,
+            profile, session_id, generation, time.monotonic() + _APPROVAL_TTL_SECONDS,
         )
         with _receipt_lock:
             _prune_receipts_locked()
             _completion_receipts[receipt_id] = receipt
         # The ACP bridge accepts only the allow_once option. Any deny, timeout,
         # malformed response, or requester failure is false and does not PATCH.
-        if not bool(requester(_approval_proposal(target_id))):
+        proposal = _approval_proposal(receipt)
+        if not bool(requester(proposal)):
             with _receipt_lock:
                 receipt.used = True
             return tool_error("acp_approval_denied")
         identity_after, workspace_after, context_after = _remote_context(client)
         current = _task(client.call("GET", f"/tasks/{target_id}"))
+        current_scope = store.approval_scope()
         if (
             receipt.expires_at <= time.monotonic()
-            or receipt.profile != _canonical_home()
-            or receipt.session_id != session_id
-            or receipt.generation != task_id
+            or current_scope != (receipt.profile, receipt.generation)
+            or receipt.session_id != _trusted_acp_session_id()
+            or receipt.receipt_id != receipt_id
             or receipt.action != "complete"
             or receipt.payload != payload
+            or _approval_proposal(receipt).arguments != proposal.arguments
             or receipt.remote_context_digest != context_after
             or identity_after["id"] != identity["id"]
             or workspace_after["id"] != workspace["id"]

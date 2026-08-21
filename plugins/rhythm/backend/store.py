@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import secrets
 from typing import Any
 
 _PROFILE_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
@@ -37,6 +38,31 @@ def connection() -> dict[str, Any] | None:
     return data
 
 
+def approval_scope() -> tuple[str, str] | None:
+    """Return server-owned profile and connection generation for one approval.
+
+    The generation is installed only by ``save`` after the dashboard backend
+    validates a connection.  Older connection records deliberately have no
+    completion scope, so native mutation fails closed until the connection is
+    refreshed instead of inventing authority from tool-call metadata.
+    """
+    current = connection()
+    if current is None:
+        return None
+    generation = current.get("generation")
+    if not isinstance(generation, str) or not 16 <= len(generation) <= 128:
+        return None
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        profile = get_active_profile_name()
+    except Exception:
+        return None
+    if not isinstance(profile, str) or not profile or len(profile) > 64:
+        return None
+    return profile, generation
+
+
 def save(access_token: str, identity: dict[str, str], workspace: dict[str, str]) -> None:
     _profile_home()
     from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
@@ -44,7 +70,12 @@ def save(access_token: str, identity: dict[str, str], workspace: dict[str, str])
         data = _load_auth_store()
         if not isinstance(data, dict):
             data = {}
-        data["rhythm"] = {"access_token": access_token, "identity": identity, "workspace": workspace}
+        data["rhythm"] = {
+            "access_token": access_token,
+            "identity": identity,
+            "workspace": workspace,
+            "generation": secrets.token_urlsafe(24),
+        }
         _save_auth_store(data)
     # auth's writer normally handles this; make the privacy invariant explicit.
     try:
