@@ -90,7 +90,7 @@ class WorkspaceOperation(BaseModel):
         "facilities.update-group", "facilities.delete-group", "facilities.delete-series", "facilities.delete-reservations",
     ]
     entityId: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
-    payload: dict[str, str | int | bool | None | list[dict[str, str | int | bool | None]]] = Field(default_factory=dict, max_length=16)
+    payload: dict[str, str | int | bool | None | list[str] | list[dict[str, str | int | bool | None]]] = Field(default_factory=dict, max_length=16)
     generation: str = Field(min_length=8, max_length=256)
     confirmation: str | None = Field(default=None, min_length=32, max_length=128)
 
@@ -704,9 +704,10 @@ def _m6_target(client: RhythmClient, operation: str, entity_id: str) -> tuple[di
 
 
 def _m6_authorized(operation: str, target: Any, identity: dict[str, str], workspace: dict[str, str]) -> bool:
-    if not isinstance(target, dict): return False
+    if not isinstance(target, dict) or target.get("workspaceId") != workspace["id"]:
+        return False
     if operation.startswith("messages."):
-        return target.get("workspaceId") == workspace["id"] and any(isinstance(row, dict) and row.get("id") == identity["id"] for row in target.get("participants", []))
+        return any(isinstance(row, dict) and row.get("id") == identity["id"] for row in target.get("participants", []))
     if identity.get("isFacilitiesManager") is True: return True
     if operation in {"facilities.update-facility", "facilities.delete-facility"}: return False
     return target.get("creatorId") == identity["id"] or target.get("createdByUserId") == identity["id"]
@@ -994,6 +995,12 @@ async def workspace_operation(incoming_request: Request):
                     elif payload.operation == "facilities.delete-series":
                         if facility_id is None: raise RhythmProtocolError("schema_drift")
                         if any(str(item.get("id")) == payload.entityId for item in _m6_items(client.call("GET", f"/facilities/{facility_id}/reservation-series"))): raise RhythmRemoteError("conflict", 409)
+                        return result
+                    elif payload.operation == "facilities.delete-reservations":
+                        deleted_ids = payload.payload.get("ids")
+                        if not isinstance(deleted_ids, list) or not all(isinstance(item, str) for item in deleted_ids): raise RhythmProtocolError("schema_drift")
+                        remaining = {str(item.get("id")) for item in _m6_items(client.call("GET", "/facilities/reservations"))}
+                        if any(item in remaining for item in deleted_ids): raise RhythmRemoteError("conflict", 409)
                         return result
                     else:
                         raise RhythmRemoteError("conflict", 409)
