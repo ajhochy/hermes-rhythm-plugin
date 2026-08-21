@@ -101,6 +101,20 @@ def test_package_gate_requires_enumerated_content_provenance_and_license(tmp_pat
         validate_package_tree(tmp_path, manifest)
 
 
+def test_package_gate_rejects_undeclared_content_and_invalid_package_data(tmp_path):
+    """Regression: a wheel adds unreviewed data or a package-data glob names no payload."""
+    manifest = _manifest()
+    _write_complete_package(tmp_path, manifest)
+    _write(tmp_path, "dashboard/dist/unreviewed.js", "export {};\n")
+
+    with pytest.raises(PackagingGateError, match="undeclared package content"):
+        validate_package_tree(tmp_path, manifest)
+
+    manifest["content"]["package_data"].append("dashboard/*.css")
+    with pytest.raises(PackagingGateError, match="package_data pattern matches no declared content"):
+        validate_package_tree(tmp_path, manifest)
+
+
 def test_package_gate_rejects_incomplete_provenance(tmp_path):
     """Regression: a copied package loses the source transformation record."""
     manifest = _manifest()
@@ -127,7 +141,12 @@ def test_macos_gate_inspects_app_asar_and_unpacked_payloads(tmp_path):
         seen.append(path)
         return {manifest["desktop"]["entry"]}
 
-    validate_macos_bundle(app, manifest, list_asar=list_asar)
+    validate_macos_bundle(
+        app,
+        manifest,
+        list_asar=list_asar,
+        read_asar=lambda _, __: "export { RhythmPlugin } from 'rhythm-host';\n",
+    )
 
     assert seen == [asar]
     assert (unpacked / manifest["desktop"]["entry"]).is_file()
@@ -143,7 +162,44 @@ def test_macos_gate_rejects_missing_unpacked_entry(tmp_path):
     (app / "Contents/Resources/app.asar.unpacked").mkdir(parents=True)
 
     with pytest.raises(PackagingGateError, match="app.asar.unpacked"):
-        validate_macos_bundle(app, manifest, list_asar=lambda _: {manifest["desktop"]["entry"]})
+        validate_macos_bundle(
+            app,
+            manifest,
+            list_asar=lambda _: {manifest["desktop"]["entry"]},
+            read_asar=lambda _, __: "export {};\n",
+        )
+
+
+@pytest.mark.parametrize(
+    ("asar_paths", "asar_source", "unpacked_relative", "unpacked_source", "message"),
+    [
+        ({"desktop/dist/rhythm.mjs", "desktop/dist/chunk-extra.js"}, "export {};\n", None, None, "unexpected desktop artifact"),
+        ({"desktop/dist/rhythm.mjs"}, "export {};\n", "desktop/dist/chunk-extra.js", "export {};\n", "unexpected desktop artifact"),
+        ({"desktop/dist/rhythm.mjs"}, "import './chunk-extra.js';\n", None, None, "relative import"),
+        ({"desktop/dist/rhythm.mjs"}, "export {};\n", None, "const React = { createElement() {} };\n", "embedded React runtime"),
+    ],
+)
+def test_macos_gate_rejects_bundle_drift_in_both_electron_payloads(
+    tmp_path, asar_paths, asar_source, unpacked_relative, unpacked_source, message
+):
+    """Regression: a macOS copy gains chunks, relative imports, or a second React runtime."""
+    manifest = _manifest()
+    app = tmp_path / "Hermes.app"
+    asar = app / "Contents/Resources/app.asar"
+    unpacked = app / "Contents/Resources/app.asar.unpacked"
+    asar.parent.mkdir(parents=True)
+    asar.write_text("archive", encoding="utf-8")
+    _write(unpacked, manifest["desktop"]["entry"], unpacked_source or "export {} from 'rhythm-host';\n")
+    if unpacked_relative:
+        _write(unpacked, unpacked_relative, "export {};\n")
+
+    with pytest.raises(PackagingGateError, match=message):
+        validate_macos_bundle(
+            app,
+            manifest,
+            list_asar=lambda _: asar_paths,
+            read_asar=lambda _, __: asar_source,
+        )
 
 
 def test_install_and_doctor_fixtures_are_redacted_and_non_destructive():
@@ -153,10 +209,41 @@ def test_install_and_doctor_fixtures_are_redacted_and_non_destructive():
     validate_install_doctor_fixture(fixtures, _manifest())
 
 
-@pytest.mark.parametrize("leak", ["Bearer " + "secret-token-123", "api_key=" + "abcdefghijklmno"])
+@pytest.mark.parametrize(
+    "leak",
+    [
+        "Bearer secret-token-123",
+        "api_key=abcdefghijklmno",
+        "token=abcdefghijklmno",
+        "secret=abcdefghijklmno",
+        "access_token=abcdefghijklmno",
+        "refresh_token=abcdefghijklmno",
+        "password=abcdefghijklmno",
+    ],
+)
 def test_install_and_doctor_fixture_gate_rejects_credential_shaped_values(leak):
     """Regression: a new operator message includes a token-shaped diagnostic value."""
-    fixtures = {"records": [{"kind": "doctor-error", "message": leak}]}
+    fixtures = {"records": [{"kind": "doctor-error", "operation": "validate", "message": leak}]}
 
     with pytest.raises(PackagingGateError, match="credential-shaped"):
         validate_install_doctor_fixture(fixtures, _manifest())
+
+
+@pytest.mark.parametrize("field", ["token", "secret", "access_token", "refresh_token", "db_password"])
+def test_install_and_doctor_fixture_gate_rejects_credential_fields(field):
+    """Regression: structured diagnostics serialize a credential outside the message text."""
+    fixtures = {"records": [{"kind": "doctor-error", "operation": "validate", "message": "safe", field: "abcdefghijklmno"}]}
+
+    with pytest.raises(PackagingGateError, match="credential-shaped"):
+        validate_install_doctor_fixture(fixtures, _manifest())
+
+
+@pytest.mark.parametrize("record", [
+    {"kind": "doctor-error", "operation": "validate", "message": "API key label is shown without a value."},
+    {"kind": "doctor-error", "operation": "validate", "message": "access_token label is unavailable."},
+    {"kind": "doctor-error", "operation": "validate", "message": "password label is unavailable."},
+    {"kind": "doctor-error", "operation": "validate", "message": "safe", "label": "refresh_token"},
+])
+def test_install_and_doctor_fixture_gate_allows_credential_labels_without_values(record):
+    """Regression: redaction scanning rejects harmless labels instead of only leaked values."""
+    validate_install_doctor_fixture({"records": [record]}, _manifest())
