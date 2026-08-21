@@ -1,7 +1,7 @@
 /**
  * Read-only host integration for the accepted @ajhochy/rhythm-workspace-ui
  * artifact, built from accepted source revision
- * b20f5112de024fecffd199129cb9d297435fb36c (see vendor provenance).
+ * 685ab24ed67b598109fd8b5fd85b1b8292e065b1 (see vendor provenance).
  * The package remains the owner of Dashboard/Tasks JSX and styles; this file
  * owns only the Hermes transport, lifecycle and bounded chat handoff.
  */
@@ -9,6 +9,9 @@ import { host, type HermesPlugin, PALETTE_AREA, ROUTES_AREA, SIDEBAR_NAV_AREA, t
 import { useMemo } from 'react'
 import {
   DashboardScreen,
+  AutomationsScreen,
+  IntegrationsScreen,
+  ArtifactsScreen,
   defaultRhythmTokens,
   RhythmGatewayError,
   RhythmWorkspaceProvider,
@@ -25,6 +28,9 @@ import {
   type RhythmTask,
   type RhythmTaskOperationConfirmation,
   type RhythmWorkspaceOperationConfirmation,
+  type ArtifactHostCapabilityResult,
+  type ArtifactHostDocument,
+  type ArtifactHostPort,
 } from '../vendor/rhythm-workspace-ui/dist/index.js'
 import '../vendor/rhythm-workspace-ui/dist/styles/rhythm.css'
 
@@ -82,6 +88,16 @@ function read<T>(rest: Rest, path: string): Promise<T> {
  * silently turn this M4a slice into a mutation channel. */
 function write<T>(rest: Rest, path: string, body: unknown): Promise<T> {
   return (rest as unknown as (path: string, init: { method: string; body: unknown }) => Promise<T>)(path, { method: 'POST', body }).catch(error => Promise.reject(gatewayError(error)))
+}
+
+/** The artifact document is a server-sanitized value, not a URL or transport.
+ * The capability endpoint is local-only and returns conflict generations
+ * unchanged so independent artifact/state concurrency remains visible. */
+function createArtifactHostPort(rest: Rest): ArtifactHostPort {
+  return {
+    open: artifactId => read<ArtifactHostDocument>(rest, `/artifacts/${encodeURIComponent(artifactId)}/document`),
+    receive: message => write<ArtifactHostCapabilityResult>(rest, `/artifacts/${encodeURIComponent(message.artifactId)}/capability`, message),
+  }
 }
 
 function confirmationKey(confirmation: RhythmTaskOperationConfirmation | RhythmWorkspaceOperationConfirmation): string {
@@ -180,8 +196,28 @@ function createGateway(rest: Rest, confirmations = new Map<string, ConfirmationR
     },
     messages: unavailablePort,
     facilities: unavailablePort,
-    integrations: unavailablePort,
-    automations: unavailablePort,
+    integrations: {
+      accounts: async () => (await read<{ accounts?: unknown[] }>(rest, '/integrations/status')).accounts ?? [],
+      calendarSources: async () => (await read<{ calendarSources?: unknown[] }>(rest, '/integrations/settings')).calendarSources ?? [],
+      gmailSignals: async () => [],
+      // This named sync port is a classified GET status refresh; controls stay
+      // disabled because Hermes grants no integrations.write capability.
+      sync: async (id: string) => {
+        const response = await read<{ accounts?: Array<{ id: string }> }>(rest, '/integrations/sync')
+        const account = response.accounts?.find(candidate => candidate.id === id)
+        if (!account) return unavailable()
+        return account
+      },
+      saveCalendarSelection: unavailable,
+      disconnect: unavailable,
+      requestAuthorization: () => undefined,
+    },
+    automations: {
+      list: async () => (await read<{ items?: unknown[] }>(rest, '/automations/rules')).items ?? [],
+      catalog: () => read(rest, '/automations/catalog'),
+      preview: (id: string) => read(rest, `/automations/rules/${encodeURIComponent(id)}/preview`),
+      create: unavailable, update: unavailable, delete: unavailable,
+    },
   } as unknown as RhythmDomainGateway
 }
 
@@ -199,12 +235,13 @@ function RhythmWorkspace({ rest }: { rest: Rest }) {
   const connectionId = useValue(host.state.connectionId) ?? 'local'
   const gatewayState = useValue(host.state.gateway)
   const target = rhythmRouteTarget(window.location.hash.split('?')[1] ? `?${window.location.hash.split('?')[1]}` : '')
-  const tab = (['tasks', 'planner', 'rhythms', 'projects'] as const).find(candidate => target.includes(`tab=${candidate}`)) ?? 'overview'
+  const tab = (['tasks', 'planner', 'rhythms', 'projects', 'automations', 'integrations', 'artifacts'] as const).find(candidate => target.includes(`tab=${candidate}`)) ?? 'overview'
   // A changed identity is a synchronous re-home: React unmounts old screen
   // state before the replacement gateway can publish, invalidating stale work.
   const generation = `${connectionId}:${profile}:${gatewayState}`
   const confirmations = useMemo(() => new Map<string, ConfirmationReceipt>(), [generation])
   const gateway = useMemo(() => createGateway(rest, confirmations), [rest, confirmations])
+  const artifactHostPort = useMemo(() => createArtifactHostPort(rest), [rest])
   const adapter = useMemo<RhythmHostAdapter>(() => ({
     tokens: defaultRhythmTokens,
     viewport: 'expanded',
@@ -222,14 +259,14 @@ function RhythmWorkspace({ rest }: { rest: Rest }) {
       return true
     },
     onNavigateToScreen: (screen: RhythmScreenId) => {
-      if (['tasks', 'planner', 'rhythms', 'projects'].includes(screen)) window.location.hash = rhythmRouteTarget(`?tab=${screen}`)
+      if (['tasks', 'planner', 'rhythms', 'projects', 'automations', 'integrations', 'artifacts'].includes(screen)) window.location.hash = rhythmRouteTarget(`?tab=${screen}`)
     },
     onRequestFollowUp: askHermes,
   }), [confirmations, rest])
 
   return <main className="rhythm-workspace-root" aria-label="Rhythm workspace" data-testid="rhythm-workspace-readonly" data-readonly="false">
     <RhythmWorkspaceProvider gateway={gateway} host={adapter} key={generation}>
-      {tab === 'tasks' ? <TasksScreen /> : tab === 'planner' ? <PlannerScreen /> : tab === 'rhythms' ? <RhythmsScreen /> : tab === 'projects' ? <ProjectsScreen /> : <DashboardScreen />}
+      {tab === 'tasks' ? <TasksScreen /> : tab === 'planner' ? <PlannerScreen /> : tab === 'rhythms' ? <RhythmsScreen /> : tab === 'projects' ? <ProjectsScreen /> : tab === 'automations' ? <AutomationsScreen /> : tab === 'integrations' ? <IntegrationsScreen /> : tab === 'artifacts' ? <ArtifactsScreen artifactsGateway={{ list: async () => (await read<{ items?: Array<{ id: string; title: string; kind: 'document' | 'image' | 'other' }> }>(rest, '/artifacts')).items ?? [] }} artifactHostPort={artifactHostPort} /> : <DashboardScreen />}
     </RhythmWorkspaceProvider>
   </main>
 }
@@ -245,5 +282,5 @@ const plugin: HermesPlugin = {
   },
 }
 
-export { askHermes, confirmationKey, createGateway, gatewayError, workspaceKey }
+export { askHermes, confirmationKey, createArtifactHostPort, createGateway, gatewayError, workspaceKey }
 export default plugin

@@ -124,8 +124,45 @@ function ScreenRoot({ screenName, testId, children, extraDataAttributes }) {
     }
   );
 }
-function ArtifactsScreen({ artifactsGateway }) {
+var CAPABILITIES = ["state.get", "state.update", "pco.services.read"];
+var MAX_BRIDGE_PAYLOAD_BYTES = 1024 * 1024;
+function inline(value, closingTag) {
+  return value.replace(new RegExp(`</${closingTag}`, "gi"), `<\\/${closingTag}`);
+}
+function documentSource(document2, nonce) {
+  const csp = `default-src 'none'; base-uri 'none'; connect-src 'none'; form-action 'none'; frame-src 'none'; img-src 'none'; media-src 'none'; font-src 'none'; object-src 'none'; worker-src 'none'; manifest-src 'none'; navigate-to 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}'`;
+  return `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><style nonce="${nonce}">${inline(document2.styleText, "style")}</style>${document2.bodyHtml}<script nonce="${nonce}">${inline(document2.scriptText, "script")}</script>`;
+}
+function isCapabilityMessage(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const message = value;
+  return message.type === "rhythm-artifact-capability" && ["requestId", "frameId", "artifactId", "sessionId", "bundleGeneration", "stateGeneration"].every((key) => typeof message[key] === "string" && message[key].length > 0) && typeof message.capability === "string" && CAPABILITIES.includes(message.capability) && isBoundedJson(message.payload);
+}
+function isBoundedJson(value) {
+  try {
+    return new TextEncoder().encode(JSON.stringify(value)).byteLength <= MAX_BRIDGE_PAYLOAD_BYTES;
+  } catch {
+    return false;
+  }
+}
+function documentIsBound(document2, artifactId) {
+  return document2.artifactId === artifactId && [document2.sessionId, document2.bundleGeneration, document2.stateGeneration].every((value) => value.length > 0) && document2.capabilities.every((capability) => CAPABILITIES.includes(capability));
+}
+function createNonce() {
+  if (!globalThis.crypto?.getRandomValues) return null;
+  const bytes = new Uint8Array(16);
+  globalThis.crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+function ArtifactsScreen({ artifactsGateway, artifactHostPort }) {
   const [items, setItems] = react.useState([]);
+  const [opened, setOpened] = react.useState(null);
+  const [frameId, setFrameId] = react.useState("");
+  const [nonce, setNonce] = react.useState("");
+  const frame = react.useRef(null);
+  const nextFrameId = react.useRef(0);
+  const openAttempt = react.useRef(0);
+  const seenRequestIds = react.useRef(/* @__PURE__ */ new Set());
   react.useEffect(() => {
     if (!artifactsGateway) return;
     let cancelled = false;
@@ -136,6 +173,41 @@ function ArtifactsScreen({ artifactsGateway }) {
       cancelled = true;
     };
   }, [artifactsGateway]);
+  react.useEffect(() => {
+    if (!opened || !artifactHostPort || !frameId) return;
+    const onMessage = (event) => {
+      const message = event.data;
+      if (!isCapabilityMessage(message) || event.origin !== "null" || event.source !== frame.current?.contentWindow) return;
+      if (message.frameId !== frameId || message.artifactId !== opened.artifactId || message.sessionId !== opened.sessionId || message.bundleGeneration !== opened.bundleGeneration || message.stateGeneration !== opened.stateGeneration || !opened.capabilities.includes(message.capability) || seenRequestIds.current.has(message.requestId)) return;
+      seenRequestIds.current.add(message.requestId);
+      const source = event.source;
+      if (!source) return;
+      void artifactHostPort.receive(message).then((result) => {
+        if (source === frame.current?.contentWindow) {
+          source.postMessage({ type: "rhythm-artifact-capability-result", requestId: message.requestId, frameId, artifactId: opened.artifactId, sessionId: opened.sessionId, bundleGeneration: opened.bundleGeneration, stateGeneration: opened.stateGeneration, ...result }, "*");
+        }
+      }).catch(() => {
+        if (source === frame.current?.contentWindow) {
+          source.postMessage({ type: "rhythm-artifact-capability-result", requestId: message.requestId, frameId, artifactId: opened.artifactId, sessionId: opened.sessionId, bundleGeneration: opened.bundleGeneration, stateGeneration: opened.stateGeneration, status: "error" }, "*");
+        }
+      });
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [artifactHostPort, frameId, opened]);
+  const openArtifact = (artifactId) => {
+    if (!artifactHostPort) return;
+    const attempt = ++openAttempt.current;
+    void artifactHostPort.open(artifactId).then((document2) => {
+      const nextNonce = createNonce();
+      if (attempt !== openAttempt.current || !nextNonce || !documentIsBound(document2, artifactId)) return;
+      nextFrameId.current += 1;
+      seenRequestIds.current.clear();
+      setFrameId(`rhythm-artifact-frame-${nextFrameId.current}`);
+      setNonce(nextNonce);
+      setOpened(document2);
+    });
+  };
   return /* @__PURE__ */ jsxRuntime.jsxs(
     ScreenRoot,
     {
@@ -144,7 +216,10 @@ function ArtifactsScreen({ artifactsGateway }) {
       extraDataAttributes: { "data-rhythm-artifacts-state": artifactsGateway ? "unlocked" : "locked" },
       children: [
         /* @__PURE__ */ jsxRuntime.jsx("h1", { children: "Artifacts" }),
-        artifactsGateway ? /* @__PURE__ */ jsxRuntime.jsx("ul", { "data-testid": "rhythm-artifacts-list", children: items.map((artifact) => /* @__PURE__ */ jsxRuntime.jsx("li", { "data-testid": `rhythm-artifact-row-${artifact.id}`, children: artifact.title }, artifact.id)) }) : /* @__PURE__ */ jsxRuntime.jsx("p", { role: "status", children: "Artifacts are locked until the host explicitly grants this security gate." })
+        artifactsGateway ? /* @__PURE__ */ jsxRuntime.jsxs(jsxRuntime.Fragment, { children: [
+          /* @__PURE__ */ jsxRuntime.jsx("ul", { "data-testid": "rhythm-artifacts-list", children: items.map((artifact) => /* @__PURE__ */ jsxRuntime.jsx("li", { "data-testid": `rhythm-artifact-row-${artifact.id}`, children: artifactHostPort ? /* @__PURE__ */ jsxRuntime.jsx("button", { type: "button", onClick: () => openArtifact(artifact.id), "data-testid": `rhythm-artifact-open-${artifact.id}`, children: artifact.title }) : artifact.title }, artifact.id)) }),
+          opened && frameId && nonce ? /* @__PURE__ */ jsxRuntime.jsx("iframe", { ref: frame, title: opened.artifactId, "data-testid": "rhythm-artifact-frame", "data-frame-id": frameId, sandbox: "allow-scripts", srcDoc: documentSource(opened, nonce) }) : null
+        ] }) : /* @__PURE__ */ jsxRuntime.jsx("p", { role: "status", children: "Artifacts are locked until the host explicitly grants this security gate." })
       ]
     }
   );

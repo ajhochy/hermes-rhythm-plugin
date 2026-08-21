@@ -25,6 +25,13 @@ ALLOWED_OPERATIONS = {
     ("GET", "/recurring-rules"),
     ("GET", "/project-templates"),
     ("GET", "/project-instances"),
+    ("GET", "/automations/catalog"),
+    ("GET", "/automations/rules"),
+    ("GET", "/automations/rules/{id}/preview"),
+    ("GET", "/integrations/status"),
+    ("GET", "/integrations/settings"),
+    ("GET", "/integrations/sync"),
+    ("GET", "/artifacts"),
 }
 MAX_RESPONSE_BYTES = 32_768
 REQUEST_TIMEOUT_SECONDS = 10.0
@@ -122,9 +129,13 @@ class RhythmClient:
             or (path.startswith("/recurring-rules/") and _safe_task_id(path.removeprefix("/recurring-rules/")))
             or _m5_project_read_path(path)
         )
+        is_m7_read = method == "GET" and (
+            (path.startswith("/automations/rules/") and path.endswith("/preview") and _safe_task_id(path.removeprefix("/automations/rules/").removesuffix("/preview")))
+            or (path.startswith("/artifacts/") and path.endswith("/document") and _safe_task_id(path.removeprefix("/artifacts/").removesuffix("/document")))
+        )
         is_m5_mutation = m5 and method in {"POST", "PATCH", "DELETE"} and _m5_mutation_path(method, path) and (method == "DELETE" or body is not None)
         is_task_mutation = method == "PATCH" and path.startswith("/tasks/") and _safe_task_id(path.removeprefix("/tasks/")) and body is not None
-        if (method, path) not in ALLOWED_OPERATIONS and not is_task_detail and not is_task_mutation and not is_m5_read and not is_m5_mutation:
+        if (method, path) not in ALLOWED_OPERATIONS and not is_task_detail and not is_task_mutation and not is_m5_read and not is_m5_mutation and not is_m7_read:
             raise RhythmProtocolError("operation_not_allowed")
         if is_task_mutation and not is_m5_mutation and set(body) not in ({"status"}, {"scheduledDate"}):
             raise RhythmProtocolError("operation_not_allowed")

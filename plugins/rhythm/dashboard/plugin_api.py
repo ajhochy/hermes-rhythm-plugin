@@ -27,6 +27,7 @@ from plugins.rhythm.backend.client import (
     _httpx_transport,
 )
 from plugins.rhythm.backend import store
+from plugins.rhythm.dashboard import artifact_host
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -911,6 +912,108 @@ def project_instance(instance_id: str):
         if detail.get("id") != instance_id: raise RhythmProtocolError("schema_drift")
         return detail
     except Exception as exc: raise _error(exc) from None
+
+
+def _m7_public(value: Any) -> Any:
+    """Bounded JSON projection for the declared M7 read-only resource set."""
+    forbidden = {"token", "secret", "credential", "authorization", "url", "href", "path", "cookie"}
+    if isinstance(value, str):
+        return value[:2_000]
+    if type(value) in {int, float, bool} or value is None:
+        return value
+    if isinstance(value, list):
+        return [_m7_public(item) for item in value[:100]]
+    if isinstance(value, dict):
+        return {str(key)[:80]: _m7_public(item) for key, item in list(value.items())[:100] if not any(word in str(key).lower() for word in forbidden)}
+    raise RhythmProtocolError("schema_drift")
+
+
+@router.get("/automations/catalog")
+def automations_catalog():
+    try:
+        client, _, _ = _connected_client(); return _m7_public(client.call("GET", "/automations/catalog"))
+    except Exception as exc: raise _error(exc) from None
+
+
+@router.get("/automations/rules")
+def automations_rules():
+    try:
+        client, _, _ = _connected_client(); return _m7_public(client.call("GET", "/automations/rules"))
+    except Exception as exc: raise _error(exc) from None
+
+
+@router.get("/automations/rules/{rule_id}/preview")
+def automation_preview(rule_id: str):
+    if not _safe_id(rule_id): raise _invalid_request()
+    try:
+        client, _, _ = _connected_client(); return _m7_public(client.call("GET", f"/automations/rules/{rule_id}/preview"))
+    except Exception as exc: raise _error(exc) from None
+
+
+@router.get("/integrations/status")
+def integrations_status():
+    try:
+        client, _, _ = _connected_client(); return _m7_public(client.call("GET", "/integrations/status"))
+    except Exception as exc: raise _error(exc) from None
+
+
+@router.get("/integrations/settings")
+def integrations_settings():
+    try:
+        client, _, _ = _connected_client(); return _m7_public(client.call("GET", "/integrations/settings"))
+    except Exception as exc: raise _error(exc) from None
+
+
+@router.get("/integrations/sync")
+def integrations_sync():
+    try:
+        client, _, _ = _connected_client(); return _m7_public(client.call("GET", "/integrations/sync"))
+    except Exception as exc: raise _error(exc) from None
+
+
+@router.get("/artifacts")
+def artifacts():
+    try:
+        client, _, _ = _connected_client(); return _m7_public(client.call("GET", "/artifacts"))
+    except Exception as exc: raise _error(exc) from None
+
+
+@router.get("/artifacts/{artifact_id}/document")
+def artifact_document(artifact_id: str):
+    if not _safe_id(artifact_id): raise _invalid_request()
+    try:
+        client, _, _ = _connected_client(); raw = client.call("GET", f"/artifacts/{artifact_id}/document")
+        return artifact_host.open_document(artifact_id, raw.get("bodyHtml", ""), raw.get("styleText", ""), raw.get("scriptText", ""))
+    except Exception as exc: raise _error(exc) from None
+
+
+@router.post("/artifacts/{artifact_id}/open")
+async def artifact_open(artifact_id: str, incoming_request: Request):
+    """Local test/dev entry point for a host-sanitized artifact bundle.
+
+    Production callers supply the same bounded fields through the server-side
+    artifact store; this route never accepts a URL, credential, or transport.
+    """
+    if not _safe_id(artifact_id):
+        raise _invalid_request()
+    try:
+        payload = await incoming_request.json()
+    except (TypeError, ValueError):
+        raise _invalid_request() from None
+    if not isinstance(payload, dict) or set(payload) - {"bodyHtml", "styleText", "scriptText"}:
+        raise _invalid_request()
+    return artifact_host.open_document(artifact_id, payload.get("bodyHtml", ""), payload.get("styleText", ""), payload.get("scriptText", ""))
+
+
+@router.post("/artifacts/{artifact_id}/capability")
+async def artifact_capability(artifact_id: str, incoming_request: Request):
+    if not _safe_id(artifact_id):
+        raise _invalid_request()
+    try:
+        payload = await incoming_request.json()
+    except (TypeError, ValueError):
+        raise _invalid_request() from None
+    return artifact_host.receive(artifact_id, payload)
 
 
 @router.post("/oauth/start")
