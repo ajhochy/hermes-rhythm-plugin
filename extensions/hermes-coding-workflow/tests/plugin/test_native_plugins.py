@@ -169,12 +169,12 @@ def test_nested_hcw_stage_missing_locator_still_fails_closed(nested_workflow, mo
 @pytest.mark.parametrize(
     ("stage", "profile", "task", "commands"),
     (
-        ("design", "dev-planner", "task-design", ("approve-design <repo> run-test --json <approved-design.json>",)),
-        ("plan", "dev-planner", "task-plan", ("approve-plan <repo> run-test --json <approved-plan.json>",)),
+        ("design", "dev-planner", "task-design", ("approve-design <repo> run-test --json <payload>",)),
+        ("plan", "dev-planner", "task-plan", ("approve-plan <repo> run-test --json <payload>",)),
         ("red", "dev-contract", "task-red", ("check <repo> run-test red -- <failing-test-command>",)),
         ("green", "dev-builder", "task-green", ("check <repo> run-test green -- <passing-test-command>", "commit <repo> run-test --message <quoted-commit-message>")),
-        ("spec-review", "dev-spec-reviewer", "task-spec", ("review <repo> run-test --json <spec-review.json>",)),
-        ("quality-review", "dev-quality-reviewer", "task-quality", ("review <repo> run-test --json <quality-review.json>",)),
+        ("spec-review", "dev-spec-reviewer", "task-spec", ("review <repo> run-test --json <payload>",)),
+        ("quality-review", "dev-quality-reviewer", "task-quality", ("review <repo> run-test --json <payload>",)),
         ("verify", "dev-verifier", "task-verify", ("check <repo> run-test full -- <full-test-command>", "check <repo> run-test security -- <security-test-command>", "verify <repo> run-test")),
         ("live", "dev-verifier", "task-live", ("check <repo> run-test live -- <live-acceptance-command>",)),
         ("complete", "dev-recorder", "task-complete", ("complete <repo> run-test",)),
@@ -185,7 +185,7 @@ def test_stage_worker_bootstrap_derives_registered_run_and_guides_only_its_activ
 ):
     """Removing locator-backed identity derivation would reintroduce the rejected stage bootstrap."""
     plugin = load_plugin("hermes-coding-workflow")
-    repo, _, state = workflow
+    repo, worktree, state = workflow
     state["stage_statuses"] = {name: ("active" if name == stage else "pending") for name in state["stage_statuses"]}
     (repo / ".hermes" / "workflows" / "run-test" / "run.json").write_text(json.dumps(state))
     monkeypatch.delenv("HCW_RUN_ID")
@@ -198,15 +198,25 @@ def test_stage_worker_bootstrap_derives_registered_run_and_guides_only_its_activ
     assert "run-test" in bootstrap
     assert str(repo) in bootstrap
     assert stage in bootstrap
+    payload_names = {
+        "design": "approved-design.input.json",
+        "plan": "approved-plan.input.json",
+        "spec-review": "spec-review.input.json",
+        "quality-review": "quality-review.input.json",
+    }
+    payload = worktree / ".hermes" / "hcw-inputs" / payload_names[stage] if stage in payload_names else None
     for command in commands:
-        assert command.replace("<repo>", str(repo)) in bootstrap
+        expected = command.replace("<repo>", str(repo))
+        if payload is not None:
+            expected = expected.replace("<payload>", str(payload))
+        assert expected in bootstrap
     authorized_commands = {
-        "design": f"approve-design {repo} run-test --json approved-design.json",
-        "plan": f"approve-plan {repo} run-test --json approved-plan.json",
+        "design": f"approve-design {repo} run-test --json {worktree / '.hermes' / 'hcw-inputs' / 'approved-design.input.json'}",
+        "plan": f"approve-plan {repo} run-test --json {worktree / '.hermes' / 'hcw-inputs' / 'approved-plan.input.json'}",
         "red": f"check {repo} run-test red -- pytest",
         "green": f"check {repo} run-test green -- pytest",
-        "spec-review": f"review {repo} run-test --json spec-review.json",
-        "quality-review": f"review {repo} run-test --json quality-review.json",
+        "spec-review": f"review {repo} run-test --json {worktree / '.hermes' / 'hcw-inputs' / 'spec-review.input.json'}",
+        "quality-review": f"review {repo} run-test --json {worktree / '.hermes' / 'hcw-inputs' / 'quality-review.input.json'}",
         "verify": f"check {repo} run-test full -- pytest",
         "live": f"check {repo} run-test live -- pytest",
         "complete": f"complete {repo} run-test",
@@ -215,6 +225,81 @@ def test_stage_worker_bootstrap_derives_registered_run_and_guides_only_its_activ
         tool_name="terminal",
         args={"command": f"{Path(plugin.__file__).resolve().parent / 'runtime' / 'bin' / 'hcw'} {authorized_commands[stage]}"},
     ) is None
+
+
+@pytest.mark.parametrize(
+    ("stage", "profile", "task", "subcommand", "payload_name"),
+    (
+        ("design", "dev-planner", "task-design", "approve-design", "approved-design.input.json"),
+        ("plan", "dev-planner", "task-plan", "approve-plan", "approved-plan.input.json"),
+        ("spec-review", "dev-spec-reviewer", "task-spec", "review", "spec-review.input.json"),
+        ("quality-review", "dev-quality-reviewer", "task-quality", "review", "quality-review.input.json"),
+    ),
+)
+def test_json_consuming_stages_can_write_only_their_exact_registered_payload(
+    workflow, monkeypatch, stage, profile, task, subcommand, payload_name
+):
+    plugin = load_plugin("hermes-coding-workflow")
+    repo, worktree, state = workflow
+    state["stage_statuses"] = {name: ("active" if name == stage else "pending") for name in state["stage_statuses"]}
+    (repo / ".hermes" / "workflows" / "run-test" / "run.json").write_text(json.dumps(state))
+    monkeypatch.delenv("HCW_RUN_ID")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task)
+    monkeypatch.setenv("HERMES_PROFILE", profile)
+    payload = worktree / ".hermes" / "hcw-inputs" / payload_name
+    source = worktree / "plugins" / "github-intake" / "DESIGN.md"
+    assert plugin.__file__ is not None
+    launcher = Path(plugin.__file__).resolve().parent / "runtime" / "bin" / "hcw"
+
+    bootstrap = plugin._build_bootstrap()
+
+    assert str(payload) in bootstrap
+    assert plugin._pre_tool_call(tool_name="write_file", args={"path": str(payload), "content": "{}"}) is None
+    assert plugin._pre_tool_call(tool_name="write_file", args={"path": str(source), "content": "x"}) == {
+        "action": "block", "message": "this workflow role may not mutate source"
+    }
+    assert plugin._pre_tool_call(tool_name="execute_code", args={"code": "open('source.py', 'w').write('x')"}) == {
+        "action": "block", "message": "this workflow role may not mutate source"
+    }
+    assert plugin._pre_tool_call(
+        tool_name="terminal", args={"command": f"{launcher} {subcommand} {repo} run-test --json {payload}"}
+    ) is None
+    wrong = worktree / ".hermes" / "hcw-inputs" / "other.json"
+    decision = plugin._pre_tool_call(
+        tool_name="terminal", args={"command": f"{launcher} {subcommand} {repo} run-test --json {wrong}"}
+    )
+    assert decision == {"action": "block", "message": "terminal command is not allowlisted for this workflow stage"}
+
+
+@pytest.mark.parametrize("symlink_kind", ("payload-directory", "payload-file"))
+def test_stage_payload_authority_rejects_symlink_components(workflow, monkeypatch, symlink_kind):
+    plugin = load_plugin("hermes-coding-workflow")
+    repo, worktree, state = workflow
+    state["stage_statuses"] = {name: ("active" if name == "design" else "pending") for name in state["stage_statuses"]}
+    (repo / ".hermes" / "workflows" / "run-test" / "run.json").write_text(json.dumps(state))
+    monkeypatch.delenv("HCW_RUN_ID")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-design")
+    monkeypatch.setenv("HERMES_PROFILE", "dev-planner")
+    payload_root = worktree / ".hermes" / "hcw-inputs"
+    payload = payload_root / "approved-design.input.json"
+    external = worktree.parent / "external-payload"
+    if symlink_kind == "payload-directory":
+        external.mkdir()
+        payload_root.symlink_to(external, target_is_directory=True)
+    else:
+        payload_root.mkdir()
+        external.write_text("{}")
+        payload.symlink_to(external)
+    assert plugin.__file__ is not None
+    launcher = Path(plugin.__file__).resolve().parent / "runtime" / "bin" / "hcw"
+
+    write_decision = plugin._pre_tool_call(tool_name="write_file", args={"path": str(payload), "content": "{}"})
+    terminal_decision = plugin._pre_tool_call(
+        tool_name="terminal", args={"command": f"{launcher} approve-design {repo} run-test --json {payload}"}
+    )
+
+    assert write_decision == {"action": "block", "message": "this workflow role may not mutate source"}
+    assert terminal_decision == {"action": "block", "message": "terminal command is not allowlisted for this workflow stage"}
 
 
 @pytest.mark.parametrize(

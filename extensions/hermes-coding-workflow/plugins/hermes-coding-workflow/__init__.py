@@ -14,12 +14,18 @@ from typing import Any
 
 BOOTSTRAP_MARKER = "HCW_BOOTSTRAP_V1"
 SCHEMA_VERSION = "hcw/v1"
-_WRITE_TOOLS = {"write_file", "patch", "apply_patch"}
+_WRITE_TOOLS = {"write_file", "patch", "apply_patch", "execute_code"}
 _TERMINAL_TOOLS = {"terminal", "exec_command", "run_terminal"}
 _TEST_PATH = re.compile(r"(?:^|/)(?:tests?/.*|test_[^/]+|[^/]+_test\.[^/]+|[^/]+\.(?:test|spec)\.[^/]+)$")
 _READ_ONLY_GIT = {"status", "diff", "log", "show", "rev-parse"}
 _HCW_COMMANDS = {"create-run", "show", "approve-design", "approve-plan", "check", "commit", "review", "verify", "complete", "repair", "dispatch-worker", "worker-status"}
 _CLAUDE_WORKER_COMMANDS = {"dispatch-worker", "worker-status"}
+_STAGE_PAYLOAD_NAMES = {
+    "design": "approved-design.input.json",
+    "plan": "approved-plan.input.json",
+    "spec-review": "spec-review.input.json",
+    "quality-review": "quality-review.input.json",
+}
 
 
 def _build_bootstrap() -> str:
@@ -30,13 +36,15 @@ def _build_bootstrap() -> str:
         if stage is not None:
             repo = shlex.quote(str(run["repo_root"]))
             run_id = shlex.quote(str(run["id"]))
+            payload = _stage_payload_path(run, stage)
+            payload_arg = shlex.quote(str(payload)) if payload is not None else "<invalid-payload-path>"
             guidance = {
-                "design": (f"approve-design {repo} {run_id} --json <approved-design.json>",),
-                "plan": (f"approve-plan {repo} {run_id} --json <approved-plan.json>",),
+                "design": (f"approve-design {repo} {run_id} --json {payload_arg}",),
+                "plan": (f"approve-plan {repo} {run_id} --json {payload_arg}",),
                 "red": (f"check {repo} {run_id} red -- <failing-test-command>",),
                 "green": (f"check {repo} {run_id} green -- <passing-test-command>", f"commit {repo} {run_id} --message <quoted-commit-message>"),
-                "spec-review": (f"review {repo} {run_id} --json <spec-review.json>",),
-                "quality-review": (f"review {repo} {run_id} --json <quality-review.json>",),
+                "spec-review": (f"review {repo} {run_id} --json {payload_arg}",),
+                "quality-review": (f"review {repo} {run_id} --json {payload_arg}",),
                 "verify": (f"check {repo} {run_id} full -- <full-test-command>", f"check {repo} {run_id} security -- <security-test-command>", f"verify {repo} {run_id}"),
                 "live": (f"check {repo} {run_id} live -- <live-acceptance-command>",),
                 "complete": (f"complete {repo} {run_id}",),
@@ -390,6 +398,34 @@ def _scoped_path(run: dict[str, Any], candidate: str | None, *, tests_only: bool
     return in_scope and (not tests_only or bool(_TEST_PATH.search(relative)))
 
 
+def _stage_payload_path(run: dict[str, Any], stage: str) -> Path | None:
+    """Return the sole metadata input path writable by a JSON-consuming stage."""
+    name = _STAGE_PAYLOAD_NAMES.get(stage)
+    worktree = _canonical_identity_directory(run.get("worktree_path"))
+    return worktree / ".hermes" / "hcw-inputs" / name if name is not None and worktree is not None else None
+
+
+def _stage_payload_write_allowed(run: dict[str, Any], stage: str, candidate: str | None) -> bool:
+    expected = _stage_payload_path(run, stage)
+    if expected is None or not candidate or "\0" in candidate:
+        return False
+    raw = Path(candidate)
+    if not raw.is_absolute() or candidate != os.path.normpath(candidate) or raw != expected:
+        return False
+    worktree = Path(run["worktree_path"])
+    payload_root = expected.parent
+    if not _has_no_symlink_components(expected, worktree):
+        return False
+    try:
+        if os.path.lexists(payload_root) and (payload_root.is_symlink() or not payload_root.is_dir()):
+            return False
+        if os.path.lexists(expected) and (expected.is_symlink() or not stat.S_ISREG(expected.lstat().st_mode)):
+            return False
+    except OSError:
+        return False
+    return True
+
+
 def _verified_red(run: dict[str, Any]) -> bool:
     evidence = Path(run["repo_root"]) / ".hermes" / "workflows" / run["id"] / "evidence.jsonl"
     previous = None
@@ -509,6 +545,17 @@ def _terminal_allowed(run: dict[str, Any] | None, stage: str | None, args: dict[
             return len(argv) >= 5 and (argv[4] == {"red":"red","green":"green","verify":"full","live":"live"}.get(stage) or (stage == "verify" and argv[4] == "security"))
         if subcommand in _CLAUDE_WORKER_COMMANDS:
             return len(argv) == 5 and _is_exact_authoritative_repo(argv[2], run) and argv[4] == stage
+        if subcommand in {"approve-design", "approve-plan", "review"}:
+            json_paths: list[str] = []
+            index = 4
+            while index < len(argv):
+                token = argv[index]
+                if token == "--json" and index + 1 < len(argv):
+                    json_paths.append(argv[index + 1]); index += 2; continue
+                if token.startswith("--json="):
+                    json_paths.append(token.split("=", 1)[1]); index += 1; continue
+                return False
+            return stage is not None and len(json_paths) == 1 and _stage_payload_write_allowed(run, stage, json_paths[0])
         return True
     if argv[0] != "git" or len(argv) < 2:
         return False
@@ -533,6 +580,8 @@ def _guard_decision(tool_name: str | None = None, args: dict[str, Any] | None = 
     if tool_name in _TERMINAL_TOOLS:
         return None if _terminal_allowed(run, stage, args) else {"action": "block", "message": "terminal command is not allowlisted for this workflow stage"}
     path = _explicit_path(args)
+    if _stage_payload_write_allowed(run, stage, path):
+        return None
     if stage == "red":
         if _scoped_path(run, path, tests_only=True):
             return None
