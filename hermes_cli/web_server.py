@@ -796,12 +796,18 @@ async def _plugin_api_runtime_gate(request: Request, call_next):
                     source = plugin.get("source") if plugin else "user"
                     if source == "user":
                         if plugin_name in disabled_set or plugin_name not in enabled_set:
+                            if auth_required and not _authed:
+                                from hermes_cli.dashboard_auth.middleware import _unauth_response
+                                return _unauth_response(request, reason="no_cookie")
                             return JSONResponse(
                                 status_code=404 if _authed else 401,
                                 content={"detail": "Plugin not found" if _authed else "Unauthorized"},
                             )
                     elif source == "bundled":
                         if plugin_name in disabled_set:
+                            if auth_required and not _authed:
+                                from hermes_cli.dashboard_auth.middleware import _unauth_response
+                                return _unauth_response(request, reason="no_cookie")
                             return JSONResponse(
                                 status_code=404 if _authed else 401,
                                 content={"detail": "Plugin not found" if _authed else "Unauthorized"},

@@ -72,17 +72,27 @@ def test_mounted_public_callback_is_gated_when_rhythm_is_disabled_at_runtime(mon
         assert start.status_code == 200
         state = start.json()["state"]
 
-    with patch("hermes_cli.plugins_cmd._get_enabled_set", return_value={"rhythm"}), patch(
-        "hermes_cli.plugins_cmd._get_disabled_set", return_value={"rhythm"}
-    ):
-        disabled = client.get(
-            "/api/plugins/rhythm/oauth/callback",
-            params={"state": state, "code": "disabled-code"},
-        )
-        unknown = client.get("/api/plugins/not-installed/oauth/callback")
+    previous_auth_required = getattr(web_server.app.state, "auth_required", None)
+    web_server.app.state.auth_required = True
+    gated_client = TestClient(web_server.app, base_url="https://dashboard.example.test")
+    try:
+        with patch("hermes_cli.plugins_cmd._get_enabled_set", return_value={"rhythm"}), patch(
+            "hermes_cli.plugins_cmd._get_disabled_set", return_value={"rhythm"}
+        ):
+            disabled = gated_client.get(
+                "/api/plugins/rhythm/oauth/callback",
+                params={"state": state, "code": "disabled-code"},
+            )
+            unknown = gated_client.get("/api/plugins/not-installed/oauth/callback")
 
-    assert disabled.status_code == unknown.status_code == 401
-    assert exchanges == []
+        # Regression: a disabled public callback must be indistinguishable from
+        # an unknown callback.  A plain legacy 401 disclosed that Rhythm exists.
+        assert disabled.status_code == unknown.status_code == 401
+        assert disabled.content == unknown.content
+        assert disabled.headers == unknown.headers
+        assert exchanges == []
+    finally:
+        web_server.app.state.auth_required = previous_auth_required
 
     with patch("hermes_cli.plugins_cmd._get_enabled_set", return_value={"rhythm"}), patch(
         "hermes_cli.plugins_cmd._get_disabled_set", return_value=set()
