@@ -53,11 +53,16 @@ def rhythm(monkeypatch, tmp_path):
 
     monkeypatch.setattr(mod.store, "connection", lambda: {
         "access_token": "fixture-token", "identity": {"id": "user-1"}, "workspace": {"id": "ws-1"},
+        "generation": "connection-generation-1",
     })
     monkeypatch.setattr(mod, "RhythmClient", Client)
-    monkeypatch.setattr(mod, "_canonical_home", lambda: "profile:m8")
+    monkeypatch.setattr(mod.store, "approval_scope", lambda: ("profile:m8", "connection-generation-1"))
+    from gateway.session_context import set_session_vars
+    session_tokens = set_session_vars(session_id="session-1")
     mod._clear_completion_receipts_for_tests()
-    return mod, state
+    yield mod, state
+    from gateway.session_context import clear_session_vars
+    clear_session_vars(session_tokens)
 
 
 def _result(raw):
@@ -114,7 +119,7 @@ def test_issue_12_native_tools_discover_through_plugin_manifest(monkeypatch, tmp
 def test_issue_12_missing_or_denied_acp_never_patches(rhythm, monkeypatch, decision):
     mod, state = rhythm
     monkeypatch.setattr(mod, "get_edit_approval_requester", lambda: None if decision is None else (lambda _: False))
-    result = _result(mod.rhythm_complete_task({"task_id": "task-1"}, task_id="generation-1", session_id="session-1"))
+    result = _result(mod.rhythm_complete_task({"task_id": "task-1"}, task_id="attacker-controlled-task-id"))
     assert result["error"] in {"acp_approval_required", "acp_approval_denied"}
     assert state["patches"] == 0
 
@@ -123,16 +128,26 @@ def test_issue_12_allow_once_binds_exact_prestate_and_single_use_receipt(rhythm,
     mod, state = rhythm
     proposals = []
     monkeypatch.setattr(mod, "get_edit_approval_requester", lambda: lambda proposal: proposals.append(proposal) or True)
-    result = _result(mod.rhythm_complete_task({"task_id": "task-1"}, task_id="generation-1", session_id="session-1"))
+    result = _result(mod.rhythm_complete_task({"task_id": "task-1"}, task_id="attacker-controlled-task-id"))
     assert result["status"] == "done"
     assert state["patches"] == 1
     assert proposals[0].tool_name == "rhythm_complete_task"
-    assert proposals[0].arguments == {"task_id": "task-1", "action": "complete", "payload": {"status": "done"}}
+    assert proposals[0].arguments == {
+        "task_id": "task-1", "action": "complete", "payload": {"status": "done"},
+        "profile": "profile:m8", "session_id": "session-1",
+        "generation": "connection-generation-1",
+        "prestate_digest": next(iter(mod._completion_receipts.values())).prestate_digest,
+        "remote_context_digest": next(iter(mod._completion_receipts.values())).remote_context_digest,
+        "receipt_id": next(iter(mod._completion_receipts.values())).receipt_id,
+        "expires_at": next(iter(mod._completion_receipts.values())).expires_at,
+    }
+    assert "fixture-token" not in json.dumps(proposals[0].arguments)
+    assert "https://" not in json.dumps(proposals[0].arguments)
     assert len(mod._completion_receipts) == 1
     receipt = next(iter(mod._completion_receipts.values()))
     assert receipt.used is True
     assert receipt.action == "complete" and receipt.payload == {"status": "done"}
-    assert receipt.profile == "profile:m8" and receipt.session_id == "session-1" and receipt.generation == "generation-1"
+    assert receipt.profile == "profile:m8" and receipt.session_id == "session-1" and receipt.generation == "connection-generation-1"
 
 
 def test_issue_12_changed_canonical_state_after_allow_once_performs_zero_patch(rhythm, monkeypatch):
@@ -141,7 +156,7 @@ def test_issue_12_changed_canonical_state_after_allow_once_performs_zero_patch(r
         state["task"]["title"] = "changed concurrently"
         return True
     monkeypatch.setattr(mod, "get_edit_approval_requester", lambda: approve)
-    result = _result(mod.rhythm_complete_task({"task_id": "task-1"}, task_id="generation-1", session_id="session-1"))
+    result = _result(mod.rhythm_complete_task({"task_id": "task-1"}, task_id="attacker-controlled-task-id"))
     assert result["error"] == "stale_remote_state"
     assert state["patches"] == 0
 
@@ -167,7 +182,7 @@ def test_issue_12_altered_or_cross_scope_receipt_never_patches(rhythm, monkeypat
         setattr(receipt, field, altered)
         return True
     monkeypatch.setattr(mod, "get_edit_approval_requester", lambda: approve)
-    result = _result(mod.rhythm_complete_task({"task_id": "task-1"}, task_id="generation-1", session_id="session-1"))
+    result = _result(mod.rhythm_complete_task({"task_id": "task-1"}, task_id="attacker-controlled-task-id"))
     assert result["error"] in {"stale_remote_state", "stale_confirmation"}
     assert state["patches"] == 0
 
@@ -180,6 +195,17 @@ def test_issue_12_ambiguous_transport_is_uncertain_without_retry_or_false_succes
         state["patches"] += 1
         raise RhythmRemoteError("timeout")
     monkeypatch.setattr(mod, "_mutate_complete", ambiguous)
-    result = _result(mod.rhythm_complete_task({"task_id": "task-1"}, task_id="generation-1", session_id="session-1"))
+    result = _result(mod.rhythm_complete_task({"task_id": "task-1"}, task_id="attacker-controlled-task-id"))
     assert result["error"] == "uncertain"
     assert state["patches"] == 1
+
+
+def test_issue_12_missing_trusted_connection_scope_fails_closed_without_patch(rhythm, monkeypatch):
+    mod, state = rhythm
+    monkeypatch.setattr(mod.store, "approval_scope", lambda: None)
+    monkeypatch.setattr(mod, "get_edit_approval_requester", lambda: lambda _: True)
+
+    result = _result(mod.rhythm_complete_task({"task_id": "task-1"}, task_id="connection-generation-pretender"))
+
+    assert result["error"] == "acp_approval_required"
+    assert state["patches"] == 0

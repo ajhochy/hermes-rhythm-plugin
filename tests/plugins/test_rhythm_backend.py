@@ -97,6 +97,15 @@ def test_connection_lifecycle_validates_then_persists_redacted_metadata(api, mon
     assert data["identity"] == {"id": "user-1", "email": "me@example.test"}
     assert data["workspace"] == {"id": "ws-1", "name": "Personal"}
 
+    # The backend, not a renderer/tool-call value, issues the opaque
+    # connection generation that native one-shot approvals bind to.
+    stored = mod.store.connection()
+    assert stored is not None
+    generation = stored["generation"]
+    scope = mod.store.approval_scope()
+    assert scope is not None and scope[1] == generation
+    assert generation not in json.dumps(data)
+
     assert client.get("/api/plugins/rhythm/connection").json()["connected"] is True
     assert client.get("/api/plugins/rhythm/health").json()["status"] == "ok"
     assert client.delete("/api/plugins/rhythm/connection").status_code == 204
