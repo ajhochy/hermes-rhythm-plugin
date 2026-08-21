@@ -75,6 +75,31 @@ function m5Rest() {
 afterEach(() => cleanup())
 
 describe('accepted Rhythm workspace package', () => {
+  it('issue-10-c1: messages use only pinned reads and receipt-bound state operations; creation stays unavailable', async () => {
+    const rest = vi.fn(async (path: string) => {
+      if (path === '/messages') return []
+      if (path === '/directory') return []
+      throw new Error(`unexpected ${path}`)
+    })
+    const gateway = createGateway(rest as never)
+    await expect(gateway.messages.list()).resolves.toEqual([])
+    await expect(gateway.messages.members()).resolves.toEqual([])
+    await expect(gateway.messages.markRead('thread-1')).rejects.toMatchObject({ kind: 'unavailable' })
+    await expect(gateway.messages.markUnread('thread-1')).rejects.toMatchObject({ kind: 'unavailable' })
+    await expect(gateway.messages.createThread({ participantIds: [], type: 'direct' })).rejects.toMatchObject({ kind: 'unavailable' })
+    await expect(gateway.messages.send('thread-1', 'nope')).rejects.toMatchObject({ kind: 'unavailable' })
+    await expect(gateway.messages.renameThread('thread-1', 'nope')).rejects.toMatchObject({ kind: 'unavailable' })
+    await expect(gateway.messages.deleteThread('thread-1')).rejects.toMatchObject({ kind: 'unavailable' })
+    expect(rest.mock.calls.map(([path]) => path)).toEqual(['/messages', '/directory'])
+  })
+
+  it('issue-10-c4: a Facilities operation has no background mutation without its exact foreground receipt', async () => {
+    const rest = vi.fn(async (path: string) => { throw new Error(`background transport ${path}`) })
+    const gateway = createGateway(rest as never)
+    await expect(gateway.facilities.createReservation({ facilityId: 'room-1', title: 'Quiet', requesterName: 'Hermes', start: '2026-08-21T09:00:00-07:00', end: '2026-08-21T10:00:00-07:00' })).rejects.toMatchObject({ kind: 'unavailable' })
+    expect(rest).not.toHaveBeenCalled()
+  })
+
   it('mounts the actual Dashboard and Tasks screens read-only through their provider', async () => {
     const rest = restFor(summary)
     const gateway = createGateway(rest)

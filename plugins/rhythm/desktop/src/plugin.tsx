@@ -1,7 +1,7 @@
 /**
- * Read-only host integration for the accepted @ajhochy/rhythm-workspace-ui
+ * Thin host integration for the accepted @ajhochy/rhythm-workspace-ui
  * artifact, built from accepted source revision
- * 685ab24ed67b598109fd8b5fd85b1b8292e065b1 (see vendor provenance).
+ * fa461b35489e28b940e6f529fd9df218c148efa1 (see vendor provenance).
  * The package remains the owner of Dashboard/Tasks JSX and styles; this file
  * owns only the Hermes transport, lifecycle and bounded chat handoff.
  */
@@ -19,6 +19,8 @@ import {
   PlannerScreen,
   RhythmsScreen,
   ProjectsScreen,
+  FacilitiesScreen,
+  MessagesScreen,
   type RhythmDomainGateway,
   type RhythmHostAdapter,
   type RhythmProject,
@@ -194,8 +196,30 @@ function createGateway(rest: Rest, confirmations = new Map<string, ConfirmationR
       addMilestone: (id: string, input: Record<string, unknown>) => workspaceOperation('projects.create-milestone', id, input),
       addCollaborator: unavailable, removeCollaborator: unavailable,
     },
-    messages: unavailablePort,
-    facilities: unavailablePort,
+    // Message creation remains local-only. Reads are pinned local projections;
+    // the two state changes are receipt-bound semantic PATCH operations.
+    messages: {
+      list: () => read(rest, '/messages'), members: () => read(rest, '/directory'),
+      markRead: (id: string) => workspaceOperation('messages.mark-read', id, { unreadCount: 0 }),
+      markUnread: (id: string) => workspaceOperation('messages.mark-unread', id, { unreadCount: 1 }),
+      createThread: unavailable, send: unavailable, renameThread: unavailable, deleteThread: unavailable,
+    },
+    // Facilities owns no generic write port: each write is a named, one-use
+    // workspace operation whose receipt is bound by the backend.
+    facilities: {
+      facilities: () => read(rest, '/facilities'),
+      reservations: ({ start, end }: { start: string; end: string }) => read(rest, `/facilities/reservations?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`),
+      createFacility: (input: Record<string, unknown>) => workspaceOperation('facilities.create-facility', 'new-facility', input),
+      updateFacility: (id: string, input: Record<string, unknown>) => workspaceOperation('facilities.update-facility', id, input),
+      deleteFacility: (id: string) => workspaceOperation('facilities.delete-facility', id, {}),
+      createReservation: (input: Record<string, unknown>) => workspaceOperation('facilities.create-reservation', 'new-reservation', input),
+      updateReservation: (id: string, input: Record<string, unknown>) => workspaceOperation('facilities.update-reservation', id, input),
+      deleteReservation: (id: string) => workspaceOperation('facilities.delete-reservation', id, {}),
+      updateGroup: (id: string, input: Record<string, unknown>) => workspaceOperation('facilities.update-group', id, input),
+      deleteGroup: (id: string) => workspaceOperation('facilities.delete-group', id, {}),
+      deleteSeries: (id: string) => workspaceOperation('facilities.delete-series', id, {}),
+      deleteReservations: (ids: string[]) => workspaceOperation('facilities.delete-reservations', 'automation-reservations', { ids }),
+    },
     integrations: {
       accounts: async () => (await read<{ accounts?: unknown[] }>(rest, '/integrations/status')).accounts ?? [],
       calendarSources: async () => (await read<{ calendarSources?: unknown[] }>(rest, '/integrations/settings')).calendarSources ?? [],
@@ -235,7 +259,7 @@ function RhythmWorkspace({ rest }: { rest: Rest }) {
   const connectionId = useValue(host.state.connectionId) ?? 'local'
   const gatewayState = useValue(host.state.gateway)
   const target = rhythmRouteTarget(window.location.hash.split('?')[1] ? `?${window.location.hash.split('?')[1]}` : '')
-  const tab = (['tasks', 'planner', 'rhythms', 'projects', 'automations', 'integrations', 'artifacts'] as const).find(candidate => target.includes(`tab=${candidate}`)) ?? 'overview'
+  const tab = (['tasks', 'planner', 'rhythms', 'projects', 'facilities', 'messages', 'automations', 'integrations', 'artifacts'] as const).find(candidate => target.includes(`tab=${candidate}`)) ?? 'overview'
   // A changed identity is a synchronous re-home: React unmounts old screen
   // state before the replacement gateway can publish, invalidating stale work.
   const generation = `${connectionId}:${profile}:${gatewayState}`
@@ -247,7 +271,7 @@ function RhythmWorkspace({ rest }: { rest: Rest }) {
     viewport: 'expanded',
     // M5 grants are semantic and receipt-bound.  The renderer never receives a
     // bearer token, URL, workspace, or user identity.
-    currentUser: { id: 'current-user', displayName: 'Hermes', initials: 'H', collaborationCapability: 'read', capabilities: ['planner.schedule-task', 'planner.update-task', 'planner.update-project-step', 'planner.schedule-project-step', 'rhythms.create-rule', 'rhythms.update-rule', 'rhythms.delete-rule', 'rhythms.create-step', 'rhythms.update-step', 'projects.create-template', 'projects.update-template', 'projects.delete-template', 'projects.create-instance', 'projects.update-step', 'projects.update-template-step', 'projects.create-step', 'projects.delete-step', 'projects.create-milestone'] },
+    currentUser: { id: 'current-user', displayName: 'Hermes', initials: 'H', collaborationCapability: 'read', capabilities: ['planner.schedule-task', 'planner.update-task', 'planner.update-project-step', 'planner.schedule-project-step', 'rhythms.create-rule', 'rhythms.update-rule', 'rhythms.delete-rule', 'rhythms.create-step', 'rhythms.update-step', 'projects.create-template', 'projects.update-template', 'projects.delete-template', 'projects.create-instance', 'projects.update-step', 'projects.update-template-step', 'projects.create-step', 'projects.delete-step', 'projects.create-milestone', 'facilities.manage', 'facilities.reserve', 'facilities.create-facility', 'facilities.update-facility', 'facilities.delete-facility', 'facilities.create-reservation', 'facilities.update-reservation', 'facilities.delete-reservation', 'facilities.update-group', 'facilities.delete-group', 'facilities.delete-series', 'facilities.delete-reservations'] },
     confirmTaskOperation: async (confirmation: RhythmTaskOperationConfirmation) => {
       const payload = await write<{ confirmation: string }>(rest, `/tasks/${confirmation.taskId}/confirmation`, { ...confirmation })
       confirmations.set(confirmationKey(confirmation), payload.confirmation)
@@ -259,14 +283,14 @@ function RhythmWorkspace({ rest }: { rest: Rest }) {
       return true
     },
     onNavigateToScreen: (screen: RhythmScreenId) => {
-      if (['tasks', 'planner', 'rhythms', 'projects', 'automations', 'integrations', 'artifacts'].includes(screen)) window.location.hash = rhythmRouteTarget(`?tab=${screen}`)
+      if (['tasks', 'planner', 'rhythms', 'projects', 'facilities', 'messages', 'automations', 'integrations', 'artifacts'].includes(screen)) window.location.hash = rhythmRouteTarget(`?tab=${screen}`)
     },
     onRequestFollowUp: askHermes,
   }), [confirmations, rest])
 
   return <main className="rhythm-workspace-root" aria-label="Rhythm workspace" data-testid="rhythm-workspace-readonly" data-readonly="false">
     <RhythmWorkspaceProvider gateway={gateway} host={adapter} key={generation}>
-      {tab === 'tasks' ? <TasksScreen /> : tab === 'planner' ? <PlannerScreen /> : tab === 'rhythms' ? <RhythmsScreen /> : tab === 'projects' ? <ProjectsScreen /> : tab === 'automations' ? <AutomationsScreen /> : tab === 'integrations' ? <IntegrationsScreen /> : tab === 'artifacts' ? <ArtifactsScreen artifactsGateway={{ list: async () => (await read<{ items?: Array<{ id: string; title: string; kind: 'document' | 'image' | 'other' }> }>(rest, '/artifacts')).items ?? [] }} artifactHostPort={artifactHostPort} /> : <DashboardScreen />}
+      {tab === 'tasks' ? <TasksScreen /> : tab === 'planner' ? <PlannerScreen /> : tab === 'rhythms' ? <RhythmsScreen /> : tab === 'projects' ? <ProjectsScreen /> : tab === 'facilities' ? <FacilitiesScreen /> : tab === 'messages' ? <MessagesScreen /> : tab === 'automations' ? <AutomationsScreen /> : tab === 'integrations' ? <IntegrationsScreen /> : tab === 'artifacts' ? <ArtifactsScreen artifactsGateway={{ list: async () => (await read<{ items?: Array<{ id: string; title: string; kind: 'document' | 'image' | 'other' }> }>(rest, '/artifacts')).items ?? [] }} artifactHostPort={artifactHostPort} /> : <DashboardScreen />}
     </RhythmWorkspaceProvider>
   </main>
 }
