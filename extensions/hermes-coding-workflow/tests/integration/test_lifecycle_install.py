@@ -132,6 +132,62 @@ def test_source_profile_role_collision_fails_before_mutation(tmp_path: Path) -> 
     assert after == before
 
 
+def _legacy_managed_home(tmp_path: Path) -> Path:
+    home = tmp_path / "hermes"
+    source = home / "profiles" / "hcw-dev"
+    source.mkdir(parents=True)
+    (source / "config.yaml").write_text(
+        "model:\n  provider: openai-codex\n  default: gpt-5.6-sol\n  openai_runtime: auto\n  api_mode: codex_responses\n",
+        encoding="utf-8",
+    )
+    routes = {
+        **installer.ACCOUNT_OAUTH_TIERS,
+        "dev-contract": ("anthropic", "claude-sonnet-4-6", "anthropic_messages"),
+        "dev-builder": ("anthropic", "claude-sonnet-4-6", "anthropic_messages"),
+        "dev-quality-reviewer": ("anthropic", "claude-opus-4-6", "anthropic_messages"),
+        "dev-recorder": ("anthropic", "claude-haiku-4-5", "anthropic_messages"),
+    }
+    for role, description in installer.ROLE_DESCRIPTIONS.items():
+        target = home / "profiles" / role
+        target.mkdir(parents=True)
+        provider, model, api_mode = routes[role]
+        (target / "profile.yaml").write_text(
+            installer.yaml.safe_dump({"description": description}), encoding="utf-8"
+        )
+        (target / "config.yaml").write_text(
+            f"model:\n  provider: {provider}\n  default: {model}\n  openai_runtime: auto\n  api_mode: {api_mode}\n",
+            encoding="utf-8",
+        )
+    return home
+
+
+def test_explicit_account_oauth_migration_accepts_only_exact_legacy_managed_routes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    home = _legacy_managed_home(tmp_path)
+    monkeypatch.setattr(installer, "_hermes", lambda: "hermes")
+
+    targets = installer._preflight(
+        home, "hcw-dev", "hcw-dev", account_oauth_tiers=True
+    )
+
+    assert {target.name for target in targets} == {"hermes", "hcw-dev", *ROLES}
+    with pytest.raises(RuntimeError, match=installer.PROVIDER_BOUNDARY_ERROR):
+        installer._preflight(home, "hcw-dev", "hcw-dev")
+
+
+def test_account_oauth_migration_rejects_unknown_anthropic_role_route(
+    tmp_path: Path, monkeypatch
+) -> None:
+    home = _legacy_managed_home(tmp_path)
+    monkeypatch.setattr(installer, "_hermes", lambda: "hermes")
+    contract = home / "profiles" / "dev-contract" / "config.yaml"
+    contract.write_text(contract.read_text().replace("claude-sonnet-4-6", "claude-opus-4-6"))
+
+    with pytest.raises(RuntimeError, match=installer.PROVIDER_BOUNDARY_ERROR):
+        installer._preflight(home, "hcw-dev", "hcw-dev", account_oauth_tiers=True)
+
+
 def test_doctor_rejects_source_profile_role_collision_before_scanning(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(doctor, "_check_home", lambda *args, **kwargs: pytest.fail("scan must not start"))
     with pytest.raises(RuntimeError, match="collides with a managed workflow role"):

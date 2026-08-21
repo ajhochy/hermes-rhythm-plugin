@@ -46,6 +46,15 @@ ACCOUNT_OAUTH_TIERS = {
     "dev-verifier": ("openai-codex", "gpt-5.6-terra", "codex_responses"),
     "dev-recorder": ("openai-codex", "gpt-5.6-sol", "codex_responses"),
 }
+# Exact routes written by the previous account-tier installer. They are accepted
+# only as migration inputs when --account-oauth-tiers is explicit; ordinary
+# preflight still rejects every Hermes-native Anthropic profile.
+LEGACY_ACCOUNT_OAUTH_TIERS = {
+    "dev-contract": ("anthropic", "claude-sonnet-4-6", "auto", "anthropic_messages"),
+    "dev-builder": ("anthropic", "claude-sonnet-4-6", "auto", "anthropic_messages"),
+    "dev-quality-reviewer": ("anthropic", "claude-opus-4-6", "auto", "anthropic_messages"),
+    "dev-recorder": ("anthropic", "claude-haiku-4-5", "auto", "anthropic_messages"),
+}
 OWNERSHIP_FILE = ".hcw-lifecycle.json"
 
 # Hermes invokes native pre_tool_call hooks only for tools dispatched by its
@@ -118,6 +127,27 @@ def _assert_safe_provider(home: Path, label: str) -> None:
     )
 
 
+def _is_exact_legacy_account_oauth_route(home: Path, profile: str) -> bool:
+    expected = LEGACY_ACCOUNT_OAUTH_TIERS.get(profile)
+    if expected is None:
+        return False
+    config = _read_config(home / "config.yaml")
+    model = config.get("model", {}) if isinstance(config, dict) else {}
+    if not isinstance(model, dict):
+        return False
+    actual = (
+        str(model.get("provider", "")).strip().lower(),
+        str(model.get("default", "")).strip(),
+        str(model.get("openai_runtime", "")).strip().lower(),
+        str(model.get("api_mode", "")).strip().lower(),
+    )
+    return (
+        actual == expected
+        and not config.get("fallback_providers")
+        and not config.get("fallback_model")
+    )
+
+
 def _profile_metadata(home: Path, name: str) -> dict[str, Any]:
     path = home / "profiles" / name / "profile.yaml"
     if not path.is_file():
@@ -129,7 +159,13 @@ def _profile_metadata(home: Path, name: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _preflight(home: Path, source_profile: str, worker_source_profile: str) -> list[Path]:
+def _preflight(
+    home: Path,
+    source_profile: str,
+    worker_source_profile: str,
+    *,
+    account_oauth_tiers: bool = False,
+) -> list[Path]:
     if not home.is_dir():
         raise RuntimeError(f"Hermes home does not exist: {home}")
     if source_profile in ROLE_DESCRIPTIONS:
@@ -170,7 +206,14 @@ def _preflight(home: Path, source_profile: str, worker_source_profile: str) -> l
             # an unexpected identity or provider is a preflight failure.
             if _profile_metadata(home, name).get("description", "") != description:
                 raise RuntimeError(f"existing role profile '{name}' has an unexpected description")
-            _assert_safe_provider(target, f"existing role profile '{name}'")
+            try:
+                _assert_safe_provider(target, f"existing role profile '{name}'")
+            except RuntimeError:
+                if not (
+                    account_oauth_tiers
+                    and _is_exact_legacy_account_oauth_route(target, name)
+                ):
+                    raise
             if target not in targets:
                 targets.append(target)
     return targets
@@ -343,7 +386,12 @@ def _enable_dashboard(home: Path) -> None:
 def install(home: Path, *, source_profile: str = "dev", worker_source_profile: str | None = None, account_oauth_tiers: bool = False, fail_at: str | None = None) -> int:
     home = Path(home).resolve()
     worker_source_profile = worker_source_profile or source_profile
-    targets = _preflight(home, source_profile, worker_source_profile)
+    targets = _preflight(
+        home,
+        source_profile,
+        worker_source_profile,
+        account_oauth_tiers=account_oauth_tiers,
+    )
     with tempfile.TemporaryDirectory(prefix="hcw-lifecycle-", dir=home.parent) as temporary:
         transaction = Transaction(Path(temporary))
         for target in targets:
