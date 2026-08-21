@@ -20,6 +20,7 @@ _TEST_PATH = re.compile(r"(?:^|/)(?:tests?/.*|test_[^/]+|[^/]+_test\.[^/]+|[^/]+
 _READ_ONLY_GIT = {"status", "diff", "log", "show", "rev-parse"}
 _HCW_COMMANDS = {"create-run", "show", "approve-design", "approve-plan", "check", "commit", "review", "verify", "complete", "repair", "dispatch-worker", "worker-status"}
 _CLAUDE_WORKER_COMMANDS = {"dispatch-worker", "worker-status"}
+_CLAUDE_WORKER_STAGES = {"red", "green", "quality-review", "complete"}
 _STAGE_PAYLOAD_NAMES = {
     "design": "approved-design.input.json",
     "plan": "approved-plan.input.json",
@@ -41,19 +42,25 @@ def _build_bootstrap() -> str:
             guidance = {
                 "design": (f"approve-design {repo} {run_id} --json {payload_arg}",),
                 "plan": (f"approve-plan {repo} {run_id} --json {payload_arg}",),
-                "red": (f"check {repo} {run_id} red -- <failing-test-command>",),
-                "green": (f"check {repo} {run_id} green -- <passing-test-command>", f"commit {repo} {run_id} --message <quoted-commit-message>"),
+                "red": (f"dispatch-worker {repo} {run_id} red", f"worker-status {repo} {run_id} red", f"check {repo} {run_id} red -- <failing-test-command>"),
+                "green": (f"dispatch-worker {repo} {run_id} green", f"worker-status {repo} {run_id} green", f"check {repo} {run_id} green -- <passing-test-command>", f"commit {repo} {run_id} --message <quoted-commit-message>"),
                 "spec-review": (f"review {repo} {run_id} --json {payload_arg}",),
-                "quality-review": (f"review {repo} {run_id} --json {payload_arg}",),
+                "quality-review": (f"dispatch-worker {repo} {run_id} quality-review", f"worker-status {repo} {run_id} quality-review", f"review {repo} {run_id} --json {payload_arg}"),
                 "verify": (f"check {repo} {run_id} full -- <full-test-command>", f"check {repo} {run_id} security -- <security-test-command>", f"verify {repo} {run_id}"),
                 "live": (f"check {repo} {run_id} live -- <live-acceptance-command>",),
-                "complete": (f"complete {repo} {run_id}",),
+                "complete": (f"dispatch-worker {repo} {run_id} complete", f"worker-status {repo} {run_id} complete", f"complete {repo} {run_id}"),
             }
             commands = "; ".join(f"{shlex.quote(str(launcher))} {command}" for command in guidance[stage])
+            external = (
+                " For this external stage, dispatch exactly once, poll worker-status at bounded intervals until "
+                "the state is succeeded or failed, and run the later authoritative transition only after succeeded; "
+                "on failed, do not transition HCW and block the Kanban task with the worker note."
+                if stage in _CLAUDE_WORKER_STAGES else ""
+            )
             return (
                 f"{BOOTSTRAP_MARKER}: registered HCW stage {stage} for run {run['id']} in repository {run['repo_root']}. "
                 f"Use only this active-stage command guidance; do not prefix environment assignments: {commands}. "
-                "Apply hcw orchestration and pinned superpowers:brainstorming principles."
+                f"Apply hcw orchestration and pinned superpowers:brainstorming principles.{external}"
             )
         error = binding_error
     if error is not None:

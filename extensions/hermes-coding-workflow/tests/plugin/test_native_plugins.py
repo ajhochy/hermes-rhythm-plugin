@@ -110,6 +110,25 @@ def test_planner_skill_names_the_exact_raw_plan_payload_keys():
     assert "exactly `argv` and `requirement_ids`" in planner
 
 
+@pytest.mark.parametrize(
+    ("skill", "stage", "transition"),
+    (
+        ("contract-writer", "red", "check"),
+        ("builder", "green", "check"),
+        ("quality-reviewer", "quality-review", "review"),
+        ("recorder", "complete", "complete"),
+    ),
+)
+def test_external_stage_skills_require_dispatch_poll_and_controller_transition(
+    skill: str, stage: str, transition: str
+) -> None:
+    text = (ROOT / "skills" / skill / "SKILL.md").read_text()
+    assert f"dispatch-worker <repo-or-worktree> <run-id> {stage}" in text
+    assert f"worker-status <repo-or-worktree> <run-id> {stage}" in text
+    assert "`succeeded`" in text and "`failed`" in text
+    assert f"authoritative `{transition}`" in text
+
+
 def test_bootstrap_context_gives_dispatcher_a_complete_matching_create_run_shape(tmp_path, monkeypatch):
     hcw = load_plugin("hermes-coding-workflow")
     monkeypatch.chdir(tmp_path)
@@ -177,13 +196,13 @@ def test_nested_hcw_stage_missing_locator_still_fails_closed(nested_workflow, mo
     (
         ("design", "dev-planner", "task-design", ("approve-design <repo> run-test --json <payload>",)),
         ("plan", "dev-planner", "task-plan", ("approve-plan <repo> run-test --json <payload>",)),
-        ("red", "dev-contract", "task-red", ("check <repo> run-test red -- <failing-test-command>",)),
-        ("green", "dev-builder", "task-green", ("check <repo> run-test green -- <passing-test-command>", "commit <repo> run-test --message <quoted-commit-message>")),
+        ("red", "dev-contract", "task-red", ("dispatch-worker <repo> run-test red", "worker-status <repo> run-test red", "check <repo> run-test red -- <failing-test-command>")),
+        ("green", "dev-builder", "task-green", ("dispatch-worker <repo> run-test green", "worker-status <repo> run-test green", "check <repo> run-test green -- <passing-test-command>", "commit <repo> run-test --message <quoted-commit-message>")),
         ("spec-review", "dev-spec-reviewer", "task-spec", ("review <repo> run-test --json <payload>",)),
-        ("quality-review", "dev-quality-reviewer", "task-quality", ("review <repo> run-test --json <payload>",)),
+        ("quality-review", "dev-quality-reviewer", "task-quality", ("dispatch-worker <repo> run-test quality-review", "worker-status <repo> run-test quality-review", "review <repo> run-test --json <payload>")),
         ("verify", "dev-verifier", "task-verify", ("check <repo> run-test full -- <full-test-command>", "check <repo> run-test security -- <security-test-command>", "verify <repo> run-test")),
         ("live", "dev-verifier", "task-live", ("check <repo> run-test live -- <live-acceptance-command>",)),
-        ("complete", "dev-recorder", "task-complete", ("complete <repo> run-test",)),
+        ("complete", "dev-recorder", "task-complete", ("dispatch-worker <repo> run-test complete", "worker-status <repo> run-test complete", "complete <repo> run-test")),
     ),
 )
 def test_stage_worker_bootstrap_derives_registered_run_and_guides_only_its_active_stage(
