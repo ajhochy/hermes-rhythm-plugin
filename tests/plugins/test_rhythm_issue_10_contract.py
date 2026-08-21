@@ -143,3 +143,28 @@ def test_m6_reservation_group_and_series_reauthorize_actual_targets_and_never_mu
     response = client.post("/api/plugins/rhythm/workspace-operations", json={**request, "confirmation": receipt})
     assert response.status_code == 403, (response.text, calls)
     assert not any(method in {"PATCH", "DELETE"} for method, _, _ in calls)
+
+
+def test_m6_bulk_delete_proves_every_submitted_id_absent_and_binds_workspace(tmp_path, monkeypatch):
+    """Bulk cleanup succeeds only after a canonical collection read proves every requested ID absent."""
+    client, _ = _api(tmp_path, monkeypatch)
+    module = importlib.import_module("plugins.rhythm.dashboard.plugin_api")
+    calls = []
+
+    def transport(method, url, headers, body, timeout):
+        path = url.removeprefix("https://api.rhythm.app")
+        calls.append((method, path, json.loads(body) if body else None))
+        if path == "/auth/me": return 200, {}, {"id": "user-1", "isFacilitiesManager": True}
+        if path == "/workspaces/me": return 200, {}, {"id": "ws-1", "role": "facilities_manager"}
+        if path == "/facilities/automation-reservations" and method == "DELETE":
+            return 200, {}, {"deletedIds": ["reservation-1", "reservation-2"]}
+        if path == "/facilities/reservations" and method == "GET": return 200, {}, {"items": []}
+        raise AssertionError((method, path))
+
+    module.request = transport
+    request = {"operation": "facilities.delete-reservations", "entityId": "automation-reservations", "payload": {"ids": ["reservation-1", "reservation-2"]}, "generation": "generation-1"}
+    receipt = client.post("/api/plugins/rhythm/workspace-operations/confirmation", json=request).json()["confirmation"]
+    response = client.post("/api/plugins/rhythm/workspace-operations", json={**request, "confirmation": receipt})
+    assert response.status_code == 200, response.text
+    assert calls[-1][:2] == ("GET", "/facilities/reservations")
+    assert module._m6_authorized("facilities.update-reservation", {"workspaceId": "other-ws", "creatorId": "user-1"}, {"id": "user-1", "isFacilitiesManager": True}, {"id": "ws-1"}) is False
