@@ -2,10 +2,10 @@
 
 Source: `@ajhochy/rhythm-workspace-ui` 0.2.0
 
-Source revision: `b20f5112de024fecffd199129cb9d297435fb36c` (accepted shared package source; copied without local source edits).
+Source revision: `704fd53e73f985bfa5eeeb08f1bc499762742dd3` (accepted shared package source; copied without local source edits).
 
 Transformation: none. `dist/` and `package.json` are copied verbatim from the source build, including ESM/CJS source maps and every npm-published file.
 
 This directory is the package's production `dist/` output plus its published manifest. It is intentionally imported as one externalized React peer graph; the host Vite configuration aliases and deduplicates React/React DOM.
 
-M5 artifact SHA-256: `index.js e0cc8f82f0d6c70f6ccbc61dcbbe4efa93d7a58d1aea498acffea413550a9979`; `index.cjs 60a98fbb45317c35d61bcf064511f5fe3389f4515b3e36fef1683562d7c8d136`; `index.d.ts 33d802c0d68138bd23d36d3e85755d98816b6c2d7bfd9298f959a4e259e2a16a`. React/React DOM are external peers: `^18.3.1 || ^19.2.0`.
+M6 artifact SHA-256: `index.js 0f00b178fc46335d35bf1c4a26a7d328c4fce4031f9a18ab3e12e6e371bd9a64`; `index.cjs 7c5ae845fd3ca4bc5d8455ccecd36cf630a6ba7a994790732d946707d789ceda`; `index.d.ts 795ef1e000d361f19d911174211e886d919e2fefd5798de83af3364601d555c0`. React/React DOM are external peers: `^18.3.1 || ^19.2.0`.

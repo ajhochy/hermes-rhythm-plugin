@@ -69,6 +69,26 @@
       "write_gate": "server_bearer_profile_workspace_actor_generation_payload_digest_one_use_ttl_intent_lease",
       "fail_closed": true,
       "notes": "Hermes exposes only canonical local DTOs and the two local workspace-operation endpoints. The server maps a receipt-bound semantic operation to one exact upstream method/path/body; collaborator and member routes are not represented. Local fixture verification is available; live credential evidence remains unavailable."
+    },
+    "M6": {
+      "transport": "bounded_local_rest_to_pinned_upstream_v1",
+      "allowed_operations": [
+        {"method": "GET", "path": "/messages", "upstream_path": "/message-threads", "dto": "message-thread-list-v1"},
+        {"method": "GET", "path": "/messages/{thread_id}/history", "upstream_path": "/message-threads/{thread_id}/messages", "dto": "message-history-v1"},
+        {"method": "GET", "path": "/directory", "upstream_path": "/users", "dto": "workspace-directory-v1"},
+        {"method": "GET", "path": "/facilities", "upstream_path": "/facilities", "dto": "facility-list-v1"},
+        {"method": "GET", "path": "/facilities/reservations?start={start}&end={end}", "upstream_path": "/facilities/reservations?start={start}&end={end}", "dto": "reservation-list-v1"},
+        {"method": "GET", "path": "/facilities/{facility_id}/series", "upstream_path": "/facilities/{facility_id}/reservation-series", "dto": "reservation-series-v1"}
+      ],
+      "approved_write_operations": [
+        "messages.mark-read", "messages.mark-unread",
+        "facilities.create-facility", "facilities.update-facility", "facilities.delete-facility",
+        "facilities.create-reservation", "facilities.update-reservation", "facilities.delete-reservation",
+        "facilities.update-group", "facilities.delete-group", "facilities.delete-series", "facilities.delete-reservations"
+      ],
+      "write_gate": "server_bearer_profile_workspace_actor_generation_payload_digest_one_use_ttl_intent_lease",
+      "fail_closed": true,
+      "notes": "Message creation, sending, renaming, and deletion have no local route or upstream allowlist entry. Message state and facility operations are exact receipt-bound semantic operations; facility manager or reservation creator authority is re-derived from canonical upstream data before one mutation."
     }
   },
   "forbidden": [

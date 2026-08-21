@@ -516,7 +516,7 @@ interface RhythmCurrentUser {
     /** Host-neutral, affirmative capabilities. An absent list is intentionally read-only. */
     capabilities?: readonly RhythmWorkspaceCapability[];
 }
-type RhythmWorkspaceCapability = 'facilities.manage' | 'facilities.reserve' | 'automations.write' | 'integrations.write' | 'dashboard.write' | 'tasks.write'
+type RhythmWorkspaceCapability = 'facilities.manage' | 'facilities.reserve' | 'facilities.create-facility' | 'facilities.update-facility' | 'facilities.delete-facility' | 'facilities.create-reservation' | 'facilities.update-reservation' | 'facilities.delete-reservation' | 'facilities.update-group' | 'facilities.delete-group' | 'facilities.delete-series' | 'facilities.delete-reservations' | 'automations.write' | 'integrations.write' | 'dashboard.write' | 'tasks.write'
 /** Narrow task mutation grants for hosts such as Hermes.  They deliberately do not
  * imply create/delete/edit/collaboration access. */
  | 'tasks.complete' | 'tasks.reschedule'
@@ -544,7 +544,7 @@ interface RhythmTaskOperationConfirmation {
 interface RhythmWorkspaceOperationConfirmation {
     operation: Exclude<RhythmWorkspaceCapability, 'facilities.manage' | 'facilities.reserve' | 'automations.write' | 'integrations.write' | 'dashboard.write' | 'tasks.write'>;
     entityId: string;
-    payload: Record<string, string | number | boolean | null | Array<Record<string, string | null>>>;
+    payload: Record<string, string | number | boolean | null | string[] | Array<Record<string, string | null>>>;
     generation: string;
 }
 /** The ten non-agent screens this package exposes — used only for host-owned, in-package
