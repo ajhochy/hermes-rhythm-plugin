@@ -1,0 +1,38 @@
+{
+  "action": "opened",
+  "issue": {
+    "number": 42,
+    "title": "Fix login redirect loop",
+    "body": "When the user logs in, they get stuck in a redirect loop. Steps: 1) Navigate to /login 2) Enter credentials 3) Observe loop.",
+    "state": "open",
+    "created_at": "2026-08-21T10:00:00Z",
+    "updated_at": "2026-08-21T10:00:00Z",
+    "html_url": "https://github.com/allowed-org/allowed-repo/issues/42",
+    "user": {
+      "login": "reporter-alice",
+      "type": "User"
+    },
+    "labels": [
+      {"name": "bug"},
+      {"name": "priority:high"}
+    ],
+    "assignees": []
+  },
+  "repository": {
+    "id": 100001,
+    "name": "allowed-repo",
+    "full_name": "allowed-org/allowed-repo",
+    "owner": {
+      "login": "allowed-org",
+      "type": "Organization"
+    },
+    "private": false
+  },
+  "sender": {
+    "login": "reporter-alice",
+    "type": "User"
+  },
+  "installation": {
+    "id": 99001
+  }
+}
