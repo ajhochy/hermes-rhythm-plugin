@@ -3687,7 +3687,7 @@ function ProjectsScreen() {
             " \xB7 ",
             members.find((person) => person.id === step.assigneeId)?.name ?? "Unassigned"
           ] }),
-          /* @__PURE__ */ jsx("button", { className: "text-button", type: "button", disabled: !can("projects.update-step"), onClick: () => setTemplateStepEditor({ templateId: templateEditor.id, step }), "data-testid": `project-template-step-edit-${step.id}`, children: "Edit" }),
+          /* @__PURE__ */ jsx("button", { className: "text-button", type: "button", disabled: !can("projects.update-template-step"), onClick: () => setTemplateStepEditor({ templateId: templateEditor.id, step }), "data-testid": `project-template-step-edit-${step.id}`, children: "Edit" }),
           /* @__PURE__ */ jsx("button", { className: "text-danger-button", type: "button", disabled: !can("projects.delete-step"), onClick: () => void deleteTemplateStep(templateEditor.id, step.id), "data-testid": `project-template-step-delete-${step.id}`, children: "Delete" })
         ] }, step.id))
       ] })
@@ -3702,7 +3702,7 @@ function ProjectsScreen() {
       ] }) }),
       /* @__PURE__ */ jsxs("div", { className: "dialog-actions", children: [
         /* @__PURE__ */ jsx("button", { className: "secondary-button", type: "button", onClick: () => setTemplateStepEditor(null), children: "Cancel" }),
-        /* @__PURE__ */ jsx("button", { className: "primary-button", type: "submit", disabled: mutationPending || !can(templateStepEditor.step ? "projects.update-step" : "projects.create-step"), "data-testid": "project-template-step-save", children: "Save step" })
+        /* @__PURE__ */ jsx("button", { className: "primary-button", type: "submit", disabled: mutationPending || !can(templateStepEditor.step ? "projects.update-template-step" : "projects.create-step"), "data-testid": "project-template-step-save", children: "Save step" })
       ] })
     ] }) }),
     /* @__PURE__ */ jsx(FocusDialog, { open: milestoneOpen, onClose: () => setMilestoneOpen(false), title: "Add milestone", description: "Milestones group steps inside this project only.", testId: "project-milestone-dialog", children: /* @__PURE__ */ jsxs("form", { className: "project-dialog-form", onSubmit: addMilestone, children: [

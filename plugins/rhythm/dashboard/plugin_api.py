@@ -597,7 +597,7 @@ def _canonical_m5_result(operation: str, entity_id: str, result: dict[str, Any])
     return result
 
 
-def _m5_readback_path(operation: str, entity_id: str, payload: dict[str, Any]) -> str:
+def _m5_readback_path(operation: str, entity_id: str, payload: dict[str, Any], *, parent_id: str | None = None) -> str:
     if operation.startswith("planner."):
         return f"/tasks/{entity_id}" if "task" in operation else f"/project-instances/steps/{entity_id}"
     if operation.startswith("rhythms."):
@@ -608,7 +608,11 @@ def _m5_readback_path(operation: str, entity_id: str, payload: dict[str, Any]) -
         return f"/project-templates/{entity_id}"
     if operation == "projects.update-step":
         return f"/project-instances/steps/{entity_id}"
-    return "/project-instances" if "instance" in operation or "milestone" in operation else "/project-templates"
+    if operation == "projects.create-template": return f"/project-templates/{entity_id}"
+    if operation == "projects.create-instance": return f"/project-instances/{entity_id}"
+    if operation == "projects.create-step": return f"/project-templates/{parent_id}/steps/{entity_id}"
+    if operation == "projects.create-milestone": return f"/project-instances/{parent_id}/milestones/{entity_id}"
+    return f"/project-templates/{entity_id}"
 
 
 def _m5_authorization_path(operation: str, entity_id: str, payload: dict[str, Any]) -> str | None:
@@ -639,97 +643,129 @@ def _m5_desired(raw: Any, entity_id: str, body: dict[str, Any]) -> bool:
     return isinstance(raw, dict) and raw.get("id") == entity_id and all(raw.get(key) == value for key, value in body.items())
 
 
-def _m5_text(value: Any, maximum: int = 2_000) -> str:
-    if not isinstance(value, str) or not value.strip() or len(value) > maximum:
-        raise RhythmProtocolError("schema_drift")
+def _m5_text(value: Any, maximum: int = 2_000, default: str | None = None) -> str:
+    if value is None and default is not None: return default
+    if value == "" and default == "": return ""
+    if not isinstance(value, str) or not value.strip() or len(value) > maximum: raise RhythmProtocolError("schema_drift")
     return value.strip()
 
 
-def _m5_fields(raw: Any, fields: dict[str, tuple[type, int | None]]) -> dict[str, Any]:
-    """Strict allowlist projection; unknown fields never cross this boundary."""
-    if not isinstance(raw, dict):
-        raise RhythmProtocolError("schema_drift")
-    result: dict[str, Any] = {}
-    for name, (kind, maximum) in fields.items():
-        value = raw.get(name)
-        if value is None:
-            continue
-        if kind is str:
-            result[name] = _m5_text(value, maximum or 2_000)
-        elif kind is int:
-            if type(value) is not int or (maximum is not None and not 0 <= value <= maximum): raise RhythmProtocolError("schema_drift")
-            result[name] = value
-        elif kind is bool:
-            if type(value) is not bool: raise RhythmProtocolError("schema_drift")
-            result[name] = value
+def _m5_id(raw: dict[str, Any], name: str = "id") -> str:
+    value = raw.get(name)
+    if not isinstance(value, str) or not _safe_id(value): raise RhythmProtocolError("schema_drift")
+    return value
+
+
+def _m5_list(raw: dict[str, Any], name: str, projector: Any, maximum: int = 500) -> list[dict[str, Any]]:
+    value = raw.get(name, [])
+    if not isinstance(value, list) or len(value) > maximum: raise RhythmProtocolError("schema_drift")
+    return [projector(row) for row in value]
+
+
+def _m5_member(raw: Any) -> dict[str, str]:
+    if not isinstance(raw, dict): raise RhythmProtocolError("schema_drift")
+    return {"id": _m5_id(raw), "name": _m5_text(raw.get("name"), 256, "Unknown"), "initials": _m5_text(raw.get("initials"), 16, "?")}
+
+
+def _planner_task(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict): raise RhythmProtocolError("schema_drift")
+    source = raw.get("source", "task")
+    status = raw.get("status", "open")
+    if source not in {"task", "project-step"} or status not in {"open", "done"}: raise RhythmProtocolError("schema_drift")
+    result = {"id": _m5_id(raw), "source": source, "title": _m5_text(raw.get("title"), 512, "Untitled"), "notes": _m5_text(raw.get("notes"), 8_192, ""), "status": status, "scheduledOrder": raw.get("scheduledOrder", 0), "collaborators": _m5_list(raw, "collaborators", _m5_member, 32), "readonly": raw.get("readonly", False)}
+    if type(result["scheduledOrder"]) is not int or result["scheduledOrder"] < 0 or type(result["readonly"]) is not bool: raise RhythmProtocolError("schema_drift")
+    for name in ("projectStepId", "scheduledDate", "dueDate", "projectName", "energy"):
+        if name in raw:
+            result[name] = _m5_text(raw[name], 128)
     return result
 
 
-_M5_ENTITY_FIELDS = {
-    "id": (str, 128), "title": (str, 512), "name": (str, 512), "notes": (str, 8_192),
-    "description": (str, 2_000), "status": (str, 64), "dueDate": (str, 32), "scheduledDate": (str, 32),
-    "date": (str, 32), "enabled": (bool, None), "offsetDays": (int, 3650), "order": (int, 10_000),
-}
-
-
-def _m5_entity(raw: Any) -> dict[str, Any]:
-    return _m5_fields(raw, _M5_ENTITY_FIELDS)
-
-
-def _m5_item_list(value: Any, projector: Any = _m5_entity) -> list[dict[str, Any]]:
-    if not isinstance(value, list) or len(value) > 500: raise RhythmProtocolError("schema_drift")
-    return [projector(row) for row in value]
+def _planner_event(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict): raise RhythmProtocolError("schema_drift")
+    all_day = raw.get("allDay", True)
+    if type(all_day) is not bool: raise RhythmProtocolError("schema_drift")
+    return {"id": _m5_id(raw), "title": _m5_text(raw.get("title"), 512, "Untitled"), "date": _m5_text(raw.get("date"), 32), "timeLabel": _m5_text(raw.get("timeLabel"), 128, "All day"), "notes": _m5_text(raw.get("notes"), 8_192, ""), "allDay": all_day}
 
 
 def _planner_week_public(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict): raise RhythmProtocolError("schema_drift")
-    result = _m5_fields(value, {"weekStart": (str, 32), "weekLabel": (str, 128)})
-    if "weekStart" not in result: raise RhythmProtocolError("schema_drift")
-    for name in ("days", "backlog"):
-        rows = value.get(name, [])
-        if not isinstance(rows, list) or len(rows) > 100: raise RhythmProtocolError("schema_drift")
-        if name == "days":
-            projected = []
-            for row in rows:
-                day = _m5_fields(row, {"date": (str, 32), "label": (str, 128)})
-                tasks = row.get("tasks", []) if isinstance(row, dict) else None
-                if not isinstance(tasks, list) or len(tasks) > 200: raise RhythmProtocolError("schema_drift")
-                day["tasks"] = _m5_item_list(tasks)
-                projected.append(day)
-            result[name] = projected
-        else:
-            result[name] = _m5_item_list(rows)
+    days = value.get("days", [])
+    if not isinstance(days, list) or len(days) > 100: raise RhythmProtocolError("schema_drift")
+    projected_days = []
+    for raw in days:
+        if not isinstance(raw, dict): raise RhythmProtocolError("schema_drift")
+        projected_days.append({"date": _m5_text(raw.get("date"), 32), "label": _m5_text(raw.get("label"), 128, _m5_text(raw.get("date"), 32)), "tasks": _m5_list(raw, "tasks", _planner_task, 200), "events": _m5_list(raw, "events", _planner_event, 200)})
+    return {"weekStart": _m5_text(value.get("weekStart"), 32), "weekLabel": _m5_text(value.get("weekLabel"), 128, _m5_text(value.get("weekStart"), 32)), "days": projected_days, "backlog": _m5_list(value, "backlog", _planner_task, 200)}
+
+
+def _rhythm_step(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict): raise RhythmProtocolError("schema_drift")
+    result = {"id": _m5_id(raw), "title": _m5_text(raw.get("title"), 512, "Untitled")}
+    if raw.get("assigneeId") is not None: result["assigneeId"] = _m5_id(raw, "assigneeId")
     return result
 
 
 def _rhythm_rule(raw: Any) -> dict[str, Any]:
-    result = _m5_entity(raw)
-    if isinstance(raw, dict) and "steps" in raw: result["steps"] = _m5_item_list(raw["steps"])
+    if not isinstance(raw, dict): raise RhythmProtocolError("schema_drift")
+    frequency = raw.get("frequency", "weekly")
+    if frequency not in {"weekly", "monthly", "annual"}: frequency = "annual" if frequency == "yearly" else (_ for _ in ()).throw(RhythmProtocolError("schema_drift"))
+    result = {"id": _m5_id(raw), "title": _m5_text(raw.get("title"), 512, "Untitled"), "frequency": frequency, "dayOfWeek": raw.get("dayOfWeek", 0), "dayOfMonth": raw.get("dayOfMonth", 1), "month": raw.get("month", 1), "sequential": raw.get("sequential", False), "enabled": raw.get("enabled", True), "ownerId": _m5_text(raw.get("ownerId"), 128, "unknown"), "ownerName": _m5_text(raw.get("ownerName"), 256, "Unknown"), "collaborators": _m5_list(raw, "collaborators", _m5_member, 32), "steps": _m5_list(raw, "steps", _rhythm_step, 100), "generatedCount": raw.get("generatedCount", 0), "completedCount": raw.get("completedCount", 0), "remainingCount": raw.get("remainingCount", 0), "waitingOn": raw.get("waitingOn", None), "nextDueDate": raw.get("nextDueDate", None), "completionRatio": raw.get("completionRatio", 0), "createdAt": _m5_text(raw.get("createdAt"), 64, "1970-01-01")}
+    if not all(type(result[key]) is int and result[key] >= 0 for key in ("dayOfWeek", "dayOfMonth", "month", "generatedCount", "completedCount", "remainingCount")) or type(result["completionRatio"]) not in {int, float} or not all(type(result[key]) is bool for key in ("sequential", "enabled")) or result["waitingOn"] is not None and not isinstance(result["waitingOn"], str) or result["nextDueDate"] is not None and not isinstance(result["nextDueDate"], str): raise RhythmProtocolError("schema_drift")
+    return result
+
+
+def _template_step(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict): raise RhythmProtocolError("schema_drift")
+    result = {"id": _m5_id(raw), "title": _m5_text(raw.get("title"), 512, "Untitled"), "offsetDays": raw.get("offsetDays", 0), "offsetDescription": _m5_text(raw.get("offsetDescription"), 256, "")}
+    if type(result["offsetDays"]) is not int or not -3650 <= result["offsetDays"] <= 3650: raise RhythmProtocolError("schema_drift")
+    if raw.get("assigneeId") is not None: result["assigneeId"] = _m5_id(raw, "assigneeId")
     return result
 
 
 def _template(raw: Any) -> dict[str, Any]:
-    result = _m5_entity(raw)
-    if isinstance(raw, dict) and "steps" in raw: result["steps"] = _m5_item_list(raw["steps"])
+    if not isinstance(raw, dict): raise RhythmProtocolError("schema_drift")
+    return {"id": _m5_id(raw), "name": _m5_text(raw.get("name"), 512, "Untitled"), "description": _m5_text(raw.get("description"), 2_000, ""), "anchorType": _m5_text(raw.get("anchorType"), 64, "start_date"), "steps": _m5_list(raw, "steps", _template_step, 100)}
+
+
+def _project_step(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict): raise RhythmProtocolError("schema_drift")
+    status = raw.get("status", "open")
+    if status not in {"open", "done"}: raise RhythmProtocolError("schema_drift")
+    result = {"id": _m5_id(raw), "title": _m5_text(raw.get("title"), 512, "Untitled"), "notes": _m5_text(raw.get("notes"), 8_192, ""), "status": status}
+    for name in ("dueDate", "scheduledDate", "assigneeId", "milestoneId"):
+        if raw.get(name) is not None: result[name] = _m5_id(raw, name) if name in {"assigneeId", "milestoneId"} else _m5_text(raw[name], 32)
     return result
+
+
+def _milestone(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict): raise RhythmProtocolError("schema_drift")
+    sort_order = raw.get("sortOrder", 0)
+    if type(sort_order) is not int or sort_order < 0: raise RhythmProtocolError("schema_drift")
+    return {"id": _m5_id(raw), "title": _m5_text(raw.get("title"), 512, "Untitled"), "sortOrder": sort_order}
 
 
 def _instance(raw: Any) -> dict[str, Any]:
-    result = _m5_entity(raw)
-    if isinstance(raw, dict):
-        for name in ("steps", "milestones"):
-            if name in raw: result[name] = _m5_item_list(raw[name])
-    return result
+    if not isinstance(raw, dict): raise RhythmProtocolError("schema_drift")
+    status = raw.get("status", "planning")
+    if status not in {"planning", "active", "on_hold", "complete"}: raise RhythmProtocolError("schema_drift")
+    return {"id": _m5_id(raw), "templateId": _m5_text(raw.get("templateId"), 128, "unknown"), "name": _m5_text(raw.get("name"), 512, "Untitled"), "anchorDate": _m5_text(raw.get("anchorDate"), 32, "1970-01-01"), "status": status, "ownerId": _m5_text(raw.get("ownerId"), 128, "unknown"), "collaborators": _m5_list(raw, "collaborators", _m5_member, 32), "milestones": _m5_list(raw, "milestones", _milestone, 100), "steps": _m5_list(raw, "steps", _project_step, 500)}
+
+
+def _m5_operation_kind(operation: str) -> str:
+    if operation.startswith("rhythms."): return "rule"
+    if operation in {"projects.update-step", "planner.update-project-step", "planner.schedule-project-step"}: return "project_step"
+    if operation in {"projects.create-step", "projects.update-template-step"}: return "template_step"
+    if operation == "projects.create-milestone": return "milestone"
+    if operation == "projects.create-instance": return "instance"
+    return "template"
 
 
 def _m5_public(kind: str, value: Any) -> dict[str, Any]:
     if kind == "planner": return _planner_week_public(value)
     if not isinstance(value, dict): raise RhythmProtocolError("schema_drift")
-    projector = {"rules": _rhythm_rule, "templates": _template, "instances": _instance, "rule": _rhythm_rule, "template": _template, "instance": _instance}[kind]
-    if kind in {"rules", "templates", "instances"}:
-        items = value.get("items")
-        return {"items": _m5_item_list(items, projector)}
-    return projector(value)
+    projectors = {"rules": _rhythm_rule, "templates": _template, "instances": _instance, "rule": _rhythm_rule, "template": _template, "instance": _instance, "project_step": _project_step, "template_step": _template_step, "milestone": _milestone}
+    if kind in {"rules", "templates", "instances"}: return {"items": _m5_list(value, "items", projectors[kind], 500)}
+    return projectors[kind](value)
 
 
 @router.post("/workspace-operations/confirmation")
@@ -798,7 +834,7 @@ async def workspace_operation(incoming_request: Request):
             # force the renderer to reload before retrying.
             if exc.kind in {"timeout", "network", "dns", "upstream_unavailable"}:
                 try:
-                    client.call("GET", _m5_readback_path(payload.operation, payload.entityId, payload.payload))
+                    client.call("GET", _m5_readback_path(payload.operation, payload.entityId, payload.payload, parent_id=payload.entityId))
                 except Exception:
                     pass
                 raise RhythmRemoteError("uncertain", exc.status_code) from exc
@@ -813,9 +849,9 @@ async def workspace_operation(incoming_request: Request):
                 raise
             raise RhythmRemoteError("conflict", 409)
         readback_id = result["id"] if payload.operation in {"rhythms.create-rule", "projects.create-template", "projects.create-instance", "projects.create-step", "projects.create-milestone"} else payload.entityId
-        raw = client.call("GET", _m5_readback_path(payload.operation, readback_id, payload.payload))
+        raw = client.call("GET", _m5_readback_path(payload.operation, readback_id, payload.payload, parent_id=payload.entityId))
         if not _m5_desired(raw, readback_id, body): raise RhythmRemoteError("conflict", 409)
-        kind = "rule" if payload.operation.startswith("rhythms.") else "instance" if "instance" in payload.operation or "project-step" in payload.operation or payload.operation == "projects.update-step" else "template"
+        kind = _m5_operation_kind(payload.operation)
         return _m5_public(kind, raw)
     except Exception as exc:
         raise _error(exc) from None

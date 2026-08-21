@@ -120,8 +120,7 @@ class RhythmClient:
         is_m5_read = method == "GET" and (
             (path.startswith("/planner/weeks/") and _safe_date(path.removeprefix("/planner/weeks/")))
             or (path.startswith("/recurring-rules/") and _safe_task_id(path.removeprefix("/recurring-rules/")))
-            or (path.startswith("/project-instances/") and _safe_task_id(path.removeprefix("/project-instances/")))
-            or (path.startswith("/project-templates/") and all(_safe_task_id(part) for part in path.removeprefix("/project-templates/").split("/") if part != "steps"))
+            or _m5_project_read_path(path)
         )
         is_m5_mutation = m5 and method in {"POST", "PATCH", "DELETE"} and _m5_mutation_path(method, path) and (method == "DELETE" or body is not None)
         is_task_mutation = method == "PATCH" and path.startswith("/tasks/") and _safe_task_id(path.removeprefix("/tasks/")) and body is not None
@@ -246,6 +245,20 @@ def _safe_date(value: str) -> bool:
         return date.fromisoformat(value).isoformat() == value
     except (TypeError, ValueError):
         return False
+
+
+def _m5_project_read_path(path: str) -> bool:
+    """Exact M5 project entity reads; collection envelopes are never entities."""
+    parts = path.split("/")[1:]
+    if len(parts) == 2 and parts[0] in {"project-templates", "project-instances"}:
+        return _safe_task_id(parts[1])
+    if len(parts) == 3 and parts[0] == "project-instances" and parts[1] == "steps":
+        return _safe_task_id(parts[2])
+    if len(parts) == 4 and parts[0] == "project-templates" and parts[2] == "steps":
+        return _safe_task_id(parts[1]) and _safe_task_id(parts[3])
+    if len(parts) == 4 and parts[0] == "project-instances" and parts[2] == "milestones":
+        return _safe_task_id(parts[1]) and _safe_task_id(parts[3])
+    return False
 
 
 def _m5_mutation_path(method: str, path: str) -> bool:

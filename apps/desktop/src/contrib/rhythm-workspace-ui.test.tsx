@@ -49,7 +49,7 @@ function restFor(value: unknown | Error) {
 
 const plannerWeek = {
   weekLabel: 'Aug 17 – Aug 23', weekStart: '2026-08-17', backlog: [],
-  days: [{ date: '2026-08-17', tasks: [{ id: 'planner-task-1', title: 'Plan launch', notes: '', status: 'open', source: 'task' }], events: [] }],
+  days: [{ date: '2026-08-17', label: 'Monday', tasks: [{ id: 'planner-task-1', title: 'Plan launch', notes: '', status: 'open', source: 'task', scheduledOrder: 0, collaborators: [], readonly: false }], events: [] }],
 }
 
 const rhythmRules = [{
@@ -64,9 +64,9 @@ const projectInstances = [{ id: 'project-1', templateId: 'template-1', name: 'Au
 function m5Rest() {
   return vi.fn(async (path: string) => {
     if (path === '/planner/weeks/2026-08-17') return plannerWeek
-    if (path === '/rhythm-rules') return rhythmRules
-    if (path === '/project-templates') return projectTemplates
-    if (path === '/project-instances') return projectInstances
+    if (path === '/rhythm-rules') return { items: rhythmRules }
+    if (path === '/project-templates') return { items: projectTemplates }
+    if (path === '/project-instances') return { items: projectInstances }
     throw new Error(`unexpected M5 GET ${path}`)
   })
 }
