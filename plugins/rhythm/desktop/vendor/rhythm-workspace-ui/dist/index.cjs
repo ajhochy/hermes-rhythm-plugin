@@ -4299,8 +4299,15 @@ function TasksScreen() {
   const [draggedId, setDraggedId] = react.useState(null);
   const [mutationPending, setMutationPending] = react.useState(false);
   const [operationTarget, setOperationTarget] = react.useState(null);
+  const [operationError, setOperationError] = react.useState(null);
   const createTitleRef = react.useRef(null);
   const operationGeneration = react.useRef(0);
+  const operationEpoch = react.useRef(0);
+  const mounted = react.useRef(true);
+  react.useEffect(() => () => {
+    mounted.current = false;
+    operationEpoch.current += 1;
+  }, []);
   const currentUserId = host.currentUser.initials;
   const handleError = (error) => {
     const kind = error instanceof RhythmGatewayError ? error.kind : "server_error";
@@ -4367,7 +4374,26 @@ function TasksScreen() {
   const requestTaskOperation = (task, operation) => {
     if (operation === "complete" && !canComplete || operation === "reschedule" && !canReschedule || mutationPending) return;
     operationGeneration.current += 1;
+    operationEpoch.current += 1;
+    setOperationError(null);
     setOperationTarget({ task, operation, scheduledDate: operation === "reschedule" ? task.scheduledDate ?? (/* @__PURE__ */ new Date()).toISOString().slice(0, 10) : void 0, generation: `${task.id}:${operation}:${operationGeneration.current}:${Date.now()}` });
+  };
+  const retryTaskOperation = () => {
+    if (!operationTarget || mutationPending) return;
+    operationGeneration.current += 1;
+    operationEpoch.current += 1;
+    setOperationError(null);
+    setOperationTarget((target) => target && { ...target, generation: `${target.task.id}:${target.operation}:${operationGeneration.current}:${Date.now()}` });
+  };
+  const reloadTaskOperationContext = async () => {
+    try {
+      const [loadedTasks, loadedMembers] = await Promise.all([gateway.list(), gateway.members()]);
+      setTasks(loadedTasks);
+      setMembers(loadedMembers);
+      setSurfaceState(loadedTasks.length ? "ready" : "empty");
+    } catch (error) {
+      handleError(error);
+    }
   };
   const isIsoCalendarDate = (value) => Boolean(value && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) && (/* @__PURE__ */ new Date(`${value}T00:00:00Z`)).toISOString().slice(0, 10) === value);
   const confirmTaskOperation = async () => {
@@ -4377,15 +4403,24 @@ function TasksScreen() {
       return;
     }
     const confirmation = { taskId: operationTarget.task.id, generation: operationTarget.generation, operation: operationTarget.operation, scheduledDate: operationTarget.scheduledDate };
+    const target = operationTarget;
+    const epoch = operationEpoch.current;
     setMutationPending(true);
     try {
       if (host.confirmTaskOperation && !await host.confirmTaskOperation(confirmation)) return;
-      const updated = operationTarget.operation === "complete" ? gateway.complete ? await gateway.complete(operationTarget.task.id, operationTarget.generation) : canWrite ? await gateway.update(operationTarget.task.id, { status: "done" }) : null : gateway.reschedule && operationTarget.scheduledDate ? await gateway.reschedule(operationTarget.task.id, operationTarget.scheduledDate, operationTarget.generation) : canWrite && operationTarget.scheduledDate ? await gateway.update(operationTarget.task.id, { scheduledDate: operationTarget.scheduledDate }) : null;
+      if (!mounted.current || operationEpoch.current !== epoch || operationTarget !== target) return;
+      const updated = target.operation === "complete" ? gateway.complete ? await gateway.complete(target.task.id, target.generation) : canWrite ? await gateway.update(target.task.id, { status: "done" }) : null : gateway.reschedule && target.scheduledDate ? await gateway.reschedule(target.task.id, target.scheduledDate, target.generation) : canWrite && target.scheduledDate ? await gateway.update(target.task.id, { scheduledDate: target.scheduledDate }) : null;
+      if (!mounted.current || operationEpoch.current !== epoch || operationTarget !== target) return;
       if (!updated) throw new RhythmGatewayError("forbidden", "This host does not expose the requested task operation.");
       setTasks((current) => current.map((task) => task.id === updated.id ? updated : task));
       setOperationTarget(null);
     } catch (error) {
-      handleError(error);
+      const outcome = error?.kind;
+      if (outcome === "conflict" || outcome === "uncertain") {
+        setOperationError(outcome);
+      } else {
+        handleError(error);
+      }
     } finally {
       setMutationPending(false);
     }
@@ -4804,14 +4839,29 @@ function TasksScreen() {
         /* @__PURE__ */ jsxRuntime.jsx("button", { className: "danger-button", type: "button", disabled: !canWrite || mutationPending, onClick: () => void confirmDelete(), "data-testid": "task-delete-confirm", children: "Delete task" })
       ] })
     ] }),
-    /* @__PURE__ */ jsxRuntime.jsxs(FocusDialog, { open: Boolean(operationTarget), onClose: () => setOperationTarget(null), title: operationTarget?.operation === "complete" ? `Complete \u201C${operationTarget.task.title}\u201D?` : `Reschedule \u201C${operationTarget?.task.title ?? ""}\u201D?`, description: "This action is sent only after you confirm it.", testId: "task-operation-confirmation", children: [
+    /* @__PURE__ */ jsxRuntime.jsxs(FocusDialog, { open: Boolean(operationTarget), onClose: () => {
+      operationEpoch.current += 1;
+      setOperationError(null);
+      setOperationTarget(null);
+    }, title: operationTarget?.operation === "complete" ? `Complete \u201C${operationTarget.task.title}\u201D?` : `Reschedule \u201C${operationTarget?.task.title ?? ""}\u201D?`, description: "This action is sent only after you confirm it.", testId: "task-operation-confirmation", children: [
       operationTarget?.operation === "reschedule" && /* @__PURE__ */ jsxRuntime.jsxs("label", { children: [
         "Scheduled date",
         /* @__PURE__ */ jsxRuntime.jsx("input", { type: "date", value: operationTarget.scheduledDate ?? "", onChange: (event) => setOperationTarget((current) => current ? { ...current, scheduledDate: event.target.value } : current), "data-testid": "task-operation-date" })
       ] }),
       /* @__PURE__ */ jsxRuntime.jsx("p", { role: "status", children: operationTarget?.operation === "complete" ? "Mark this task complete." : `Set the scheduled date to ${operationTarget?.scheduledDate ?? ""}.` }),
+      operationError && /* @__PURE__ */ jsxRuntime.jsxs("div", { role: "alert", "data-testid": "task-operation-outcome", children: [
+        /* @__PURE__ */ jsxRuntime.jsx("p", { children: operationError === "conflict" ? "This task changed elsewhere. Reload before retrying." : "We could not verify whether the task operation was applied. Reload before retrying." }),
+        /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "dialog-actions", children: [
+          /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", onClick: () => void reloadTaskOperationContext(), "data-testid": "task-operation-reload", children: "Reload" }),
+          /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", onClick: retryTaskOperation, "data-testid": "task-operation-retry", children: "Retry" })
+        ] })
+      ] }),
       /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "dialog-actions", children: [
-        /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", onClick: () => setOperationTarget(null), children: "Cancel" }),
+        /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", onClick: () => {
+          operationEpoch.current += 1;
+          setOperationError(null);
+          setOperationTarget(null);
+        }, children: "Cancel" }),
         /* @__PURE__ */ jsxRuntime.jsx("button", { className: "primary-button", type: "button", disabled: mutationPending || operationTarget?.operation === "reschedule" && !isIsoCalendarDate(operationTarget.scheduledDate), onClick: () => void confirmTaskOperation(), "data-autofocus": true, "data-testid": "task-operation-confirm", children: "Confirm" })
       ] })
     ] })

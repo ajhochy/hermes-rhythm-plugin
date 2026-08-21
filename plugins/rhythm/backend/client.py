@@ -161,7 +161,7 @@ class RhythmClient:
             return payload
         raise RhythmRemoteError("upstream_unavailable")
 
-    def mutate_task(self, task_id: str, operation: str, scheduled_date: str | None = None) -> dict[str, Any]:
+    def mutate_task(self, task_id: str, operation: str, scheduled_date: str | None = None, *, idempotency_key: str | None = None) -> dict[str, Any]:
         """Perform one semantic PATCH and succeed only after canonical GET reconciliation."""
         if operation == "complete":
             body = {"status": "done"}
@@ -169,7 +169,10 @@ class RhythmClient:
             body = {"scheduledDate": scheduled_date}
         else:
             raise RhythmProtocolError("operation_not_allowed")
-        key = hashlib.sha256(f"rhythm-m4b:{task_id}:{operation}:{scheduled_date or ''}".encode()).hexdigest()
+        # The caller supplies an identity-bound intent key.  Keep the fallback
+        # deterministic for direct callers, but never derive it from credentials.
+        key = idempotency_key or hashlib.sha256(f"rhythm-m4b:{task_id}:{operation}:{scheduled_date or ''}".encode()).hexdigest()
+        uncertain: RhythmRemoteError | None = None
         try:
             self.call("PATCH", f"/tasks/{task_id}", body=body, idempotency_key=key)
         except RhythmRemoteError as exc:
@@ -182,7 +185,9 @@ class RhythmClient:
             uncertain = exc
         canonical = self.call("GET", f"/tasks/{task_id}")
         matched = canonical.get("status") == "done" if operation == "complete" else canonical.get("scheduledDate") == scheduled_date
-        if matched:
+        # A transport ambiguity is never upgraded to success from readback: the
+        # upstream might have applied a concurrent actor's identical state.
+        if matched and uncertain is None:
             return canonical
         raise RhythmRemoteError("uncertain", uncertain.status_code) if uncertain is not None else RhythmRemoteError("conflict", 409)
 

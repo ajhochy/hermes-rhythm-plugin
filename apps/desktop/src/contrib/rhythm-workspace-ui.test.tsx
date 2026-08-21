@@ -64,8 +64,15 @@ describe('accepted Rhythm workspace package', () => {
     ['forbidden', { statusCode: 403 }],
     ['unavailable', { status: 503 }],
     ['server_error', { statusCode: 500 }],
+    ['conflict', { statusCode: 409, detail: { error: 'conflict' } }],
+    ['uncertain', { statusCode: 409, response: { body: JSON.stringify({ detail: { error: 'uncertain' } }) } }],
   ])('maps the real bridge error shape to %s', (kind, shape) => {
     expect(gatewayError(shape).kind).toBe(kind)
+  })
+
+  it('does not reflect arbitrary backend error text into operation outcomes', () => {
+    expect(gatewayError({ statusCode: 409, detail: { error: 'unexpected upstream diagnostic' } }).kind).toBe('conflict')
+    expect(gatewayError({ statusCode: 500, detail: { error: 'uncertain-but-untrusted' } }).kind).toBe('server_error')
   })
 
   it('maps accepted follow-up context to exactly one bounded unsent host draft', () => {
