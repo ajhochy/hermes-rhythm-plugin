@@ -6,12 +6,15 @@ import json
 import socket
 import ssl
 import time
+import zlib
 from dataclasses import dataclass
 from typing import Any, Callable
 from urllib.parse import urljoin, urlparse
 
 APPROVED_ORIGIN = "https://api.rhythm.app"
 GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
+OAUTH_CLIENT_ID = "hermes-desktop"
+OAUTH_REDIRECT_URI = "http://127.0.0.1/api/plugins/rhythm/oauth/callback"
 ALLOWED_OPERATIONS = {("GET", "/auth/me"), ("GET", "/workspaces/me")}
 MAX_RESPONSE_BYTES = 32_768
 REQUEST_TIMEOUT_SECONDS = 10.0
@@ -33,7 +36,48 @@ def _httpx_transport(method: str, url: str, headers: dict[str, str], body: bytes
     import httpx
 
     try:
-        response = httpx.request(method, url, headers=headers, content=body, timeout=timeout, follow_redirects=False)
+        with httpx.Client(timeout=timeout, follow_redirects=False) as client:
+            with client.stream(method, url, headers=headers, content=body) as response:
+                content_length = response.headers.get("content-length")
+                if content_length is not None:
+                    try:
+                        if int(content_length) > MAX_RESPONSE_BYTES:
+                            raise RhythmProtocolError("response_too_large")
+                    except ValueError as exc:
+                        raise RhythmProtocolError("invalid_content_length") from exc
+
+                encoding = response.headers.get("content-encoding", "identity").lower().strip()
+                if encoding in ("", "identity"):
+                    decoder = None
+                elif encoding == "gzip":
+                    decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+                elif encoding == "deflate":
+                    decoder = zlib.decompressobj()
+                else:
+                    raise RhythmProtocolError("unsupported_content_encoding")
+
+                content = bytearray()
+                raw_bytes = 0
+                for raw_chunk in response.iter_raw():
+                    raw_bytes += len(raw_chunk)
+                    if raw_bytes > MAX_RESPONSE_BYTES:
+                        raise RhythmProtocolError("response_too_large")
+                    decoded_chunk = (
+                        raw_chunk
+                        if decoder is None
+                        else decoder.decompress(
+                            raw_chunk, MAX_RESPONSE_BYTES - len(content) + 1
+                        )
+                    )
+                    content.extend(decoded_chunk)
+                    if len(content) > MAX_RESPONSE_BYTES:
+                        raise RhythmProtocolError("response_too_large")
+                if decoder is not None:
+                    content.extend(decoder.flush(MAX_RESPONSE_BYTES - len(content) + 1))
+                    if len(content) > MAX_RESPONSE_BYTES:
+                        raise RhythmProtocolError("response_too_large")
+                payload = json.loads(bytes(content).decode("utf-8")) if content else {}
+                return response.status_code, dict(response.headers), payload
     except httpx.TimeoutException as exc:
         raise RhythmRemoteError("timeout") from exc
     except httpx.ConnectError as exc:
@@ -45,14 +89,8 @@ def _httpx_transport(method: str, url: str, headers: dict[str, str], body: bytes
         raise RhythmRemoteError("network") from exc
     except ssl.SSLError as exc:
         raise RhythmRemoteError("tls") from exc
-    content = response.content
-    if len(content) > MAX_RESPONSE_BYTES:
-        raise RhythmProtocolError("response_too_large")
-    try:
-        payload = response.json() if content else {}
     except ValueError as exc:
         raise RhythmProtocolError("invalid_json") from exc
-    return response.status_code, dict(response.headers), payload
 
 
 def _remote_error(status: int) -> RhythmRemoteError:
@@ -102,8 +140,22 @@ class RhythmClient:
         """Perform the one explicitly-defined OAuth exchange; never redirect."""
         if not code or not verifier:
             raise RhythmProtocolError("invalid_oauth_callback")
-        body = json.dumps({"grant_type": "authorization_code", "code": code, "code_verifier": verifier}).encode()
-        status, headers, payload = self.transport("POST", GOOGLE_TOKEN_ENDPOINT, {"Accept": "application/json", "Content-Type": "application/json"}, body, REQUEST_TIMEOUT_SECONDS)
+        body = json.dumps(
+            {
+                "grant_type": "authorization_code",
+                "code": code,
+                "code_verifier": verifier,
+                "client_id": OAUTH_CLIENT_ID,
+                "redirect_uri": OAUTH_REDIRECT_URI,
+            }
+        ).encode()
+        status, headers, payload = self.transport(
+            "POST",
+            GOOGLE_TOKEN_ENDPOINT,
+            {"Accept": "application/json", "Content-Type": "application/json"},
+            body,
+            REQUEST_TIMEOUT_SECONDS,
+        )
         if 300 <= status < 400 or headers.get("location") or headers.get("Location"):
             raise RhythmProtocolError("redirect_rejected")
         if status != 200:

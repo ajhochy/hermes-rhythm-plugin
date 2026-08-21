@@ -7,6 +7,7 @@ redaction cannot be accidentally bypassed by a future route change.
 
 from __future__ import annotations
 
+import gzip
 import importlib
 import json
 import os
@@ -15,6 +16,8 @@ import sys
 import threading
 import time
 from pathlib import Path
+from unittest.mock import ANY
+from urllib.parse import parse_qsl
 
 import pytest
 from fastapi import FastAPI
@@ -179,6 +182,96 @@ def test_schema_bounds_and_redaction(api, monkeypatch, caplog):
     assert TOKEN not in caplog.text and JOIN_CODE not in caplog.text
 
 
+@pytest.mark.parametrize(
+    ("path", "payload", "secret"),
+    [
+        ("/api/plugins/rhythm/connection", {"access_token": "t" * 2049}, "t" * 2049),
+        ("/api/plugins/rhythm/oauth/callback", {"state": "s" * 16, "code": "c" * 2049}, "c" * 2049),
+    ],
+)
+def test_validation_errors_are_generic_and_do_not_echo_secrets(api, path, payload, secret, caplog):
+    client, _ = api
+    response = client.post(path, json=payload) if path.endswith("callback") else client.put(path, json=payload)
+    assert response.status_code == 422
+    assert response.json() == {"detail": {"error": "invalid_request", "recoverable": True}}
+    assert secret not in response.text
+    assert secret not in caplog.text
+
+
+def test_httpx_streaming_rejects_oversized_body_without_reading_tail(monkeypatch):
+    import httpx
+    from plugins.rhythm.backend.client import MAX_RESPONSE_BYTES, RhythmProtocolError, _httpx_transport
+
+    class TailPreservingStream(httpx.SyncByteStream):
+        def __init__(self):
+            self.yielded = []
+
+        def __iter__(self):
+            for index, chunk in enumerate((b"x" * MAX_RESPONSE_BYTES, b"x", b"unread-tail")):
+                self.yielded.append(index)
+                yield chunk
+
+    stream = TailPreservingStream()
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, stream=stream))
+    real_client = httpx.Client
+
+    def mock_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "Client", mock_client)
+    with pytest.raises(RhythmProtocolError, match="response_too_large"):
+        _httpx_transport("GET", "https://api.rhythm.app/auth/me", {}, None, 1.0)
+    assert stream.yielded == [0, 1]
+
+
+def test_httpx_streaming_rejects_oversized_content_length_before_reading_body(monkeypatch):
+    import httpx
+    from plugins.rhythm.backend.client import MAX_RESPONSE_BYTES, RhythmProtocolError, _httpx_transport
+
+    class UnreadStream(httpx.SyncByteStream):
+        def __iter__(self):
+            raise AssertionError("response body must not be consumed")
+
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            headers={"content-length": str(MAX_RESPONSE_BYTES + 1)},
+            stream=UnreadStream(),
+        )
+    )
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda *args, **kwargs: real_client(*args, transport=transport, **kwargs),
+    )
+    with pytest.raises(RhythmProtocolError, match="response_too_large"):
+        _httpx_transport("GET", "https://api.rhythm.app/auth/me", {}, None, 1.0)
+
+
+def test_httpx_streaming_enforces_decoded_size_bound(monkeypatch):
+    import httpx
+    from plugins.rhythm.backend.client import MAX_RESPONSE_BYTES, RhythmProtocolError, _httpx_transport
+
+    compressed = gzip.compress(b"x" * (MAX_RESPONSE_BYTES + 1))
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            headers={"content-encoding": "gzip"},
+            stream=httpx.ByteStream(compressed),
+        )
+    )
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda *args, **kwargs: real_client(*args, transport=transport, **kwargs),
+    )
+    with pytest.raises(RhythmProtocolError, match="response_too_large"):
+        _httpx_transport("GET", "https://api.rhythm.app/auth/me", {}, None, 1.0)
+
+
 def test_pkce_expiry_replay_and_concurrent_exchange(api, monkeypatch):
     client, mod = api
     monkeypatch.setattr(mod, "request", _ok_transport)
@@ -203,3 +296,124 @@ def test_pkce_expiry_replay_and_concurrent_exchange(api, monkeypatch):
     [thread.start() for thread in threads]
     [thread.join() for thread in threads]
     assert sorted(results) == [200, 409]
+
+
+def test_pkce_wire_contract_and_get_handoff(api, monkeypatch):
+    client, mod = api
+    seen = []
+
+    def transport(method, url, headers, body, timeout):
+        if url == "https://oauth2.googleapis.com/token":
+            seen.append(json.loads(body))
+        return _ok_transport(method, url, headers, body, timeout)
+
+    monkeypatch.setattr(mod, "request", transport)
+    start = client.post("/api/plugins/rhythm/oauth/start").json()
+    query = dict(parse_qsl(start["authorization_url"].split("?", 1)[1]))
+    assert query["client_id"] == mod.OAUTH_CLIENT_ID
+    assert query["redirect_uri"] == mod.OAUTH_REDIRECT_URI
+    response = client.get(
+        "/api/plugins/rhythm/oauth/callback",
+        params={"state": start["state"], "code": "handoff-code"},
+    )
+    assert response.status_code == 200
+    assert "handoff-code" not in response.text and TOKEN not in response.text
+    assert seen == [
+        {
+            "grant_type": "authorization_code",
+            "code": "handoff-code",
+            "code_verifier": ANY,
+            "client_id": mod.OAUTH_CLIENT_ID,
+            "redirect_uri": mod.OAUTH_REDIRECT_URI,
+        }
+    ]
+
+
+def test_pkce_binds_callback_to_starting_home_and_prunes_states(api, monkeypatch, rhythm_home, tmp_path):
+    client, mod = api
+    monkeypatch.setattr(mod, "request", _ok_transport)
+    first = client.post("/api/plugins/rhythm/oauth/start").json()["state"]
+    other = tmp_path / ".hermes" / "profiles" / "other"
+    other.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(other))
+    assert client.get(
+        "/api/plugins/rhythm/oauth/callback", params={"state": first, "code": "code"}
+    ).status_code == 409
+    assert not (other / "auth.json").exists()
+    assert not (rhythm_home / "auth.json").exists()
+
+    monkeypatch.setenv("HERMES_HOME", str(rhythm_home))
+    states = [
+        client.post("/api/plugins/rhythm/oauth/start").json()["state"]
+        for _ in range(mod.MAX_PENDING_OAUTH_STATES - 1)
+    ]
+    assert client.post("/api/plugins/rhythm/oauth/start").status_code == 429
+    mod._oauth_states[states[0]].expires_at = time.monotonic() - 1
+    assert client.post("/api/plugins/rhythm/oauth/start").status_code == 200
+    assert states[0] not in mod._oauth_states
+
+
+def test_pkce_concurrent_profiles_persist_only_to_their_bound_homes(api, monkeypatch, tmp_path):
+    _, mod = api
+    monkeypatch.setattr(mod, "request", _ok_transport)
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    homes = [tmp_path / ".hermes" / "profiles" / name for name in ("one", "two")]
+    for home in homes:
+        home.mkdir(parents=True)
+    outcomes = []
+
+    def complete(home):
+        token = set_hermes_home_override(home)
+        try:
+            state = mod.oauth_start()["state"]
+            outcomes.append(mod._complete_oauth_callback(state, "code"))
+        finally:
+            reset_hermes_home_override(token)
+
+    threads = [threading.Thread(target=complete, args=(home,)) for home in homes]
+    [thread.start() for thread in threads]
+    [thread.join() for thread in threads]
+    assert outcomes == [
+        {
+            "connected": True,
+            "identity": {"id": "user-1", "email": "me@example.test"},
+            "workspace": {"id": "ws-1", "name": "Personal"},
+        }
+    ] * 2
+    for home in homes:
+        assert TOKEN in (home / "auth.json").read_text()
+
+
+def test_pkce_pending_states_do_not_survive_router_restart(api, monkeypatch):
+    client, mod = api
+    monkeypatch.setattr(mod, "request", _ok_transport)
+    state = client.post("/api/plugins/rhythm/oauth/start").json()["state"]
+    reloaded = _router_module()
+    app = FastAPI()
+    app.include_router(reloaded.router, prefix="/api/plugins/rhythm")
+    response = TestClient(app).get(
+        "/api/plugins/rhythm/oauth/callback", params={"state": state, "code": "code"}
+    )
+    assert response.status_code == 409
+
+
+def test_dashboard_manifest_discovers_mounts_api_and_serves_its_local_asset(rhythm_home):
+    from hermes_cli import web_server
+
+    plugins = web_server._get_dashboard_plugins(force_rescan=True)
+    rhythm = next(plugin for plugin in plugins if plugin["name"] == "rhythm")
+    assert rhythm["entry"] == "dist/index.js"
+    assert rhythm["has_api"] is True
+    assert rhythm["tab"]["hidden"] is True
+
+    client = TestClient(web_server.app)
+    asset = client.get("/dashboard-plugins/rhythm/dist/index.js")
+    assert asset.status_code == 200
+    assert "RhythmApiOnlyPlugin" in asset.text
+    api = client.get(
+        "/api/plugins/rhythm/health",
+        headers={web_server._SESSION_HEADER_NAME: web_server._SESSION_TOKEN},
+    )
+    assert api.status_code == 200
+    assert api.json() == {"status": "disconnected"}

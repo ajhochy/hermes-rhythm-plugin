@@ -8,20 +8,29 @@ import logging
 import secrets
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, Field, ValidationError
 
-from plugins.rhythm.backend.client import RhythmClient, RhythmProtocolError, RhythmRemoteError, _httpx_transport
+from plugins.rhythm.backend.client import (
+    OAUTH_CLIENT_ID,
+    OAUTH_REDIRECT_URI,
+    RhythmClient,
+    RhythmProtocolError,
+    RhythmRemoteError,
+    _httpx_transport,
+)
 from plugins.rhythm.backend import store
 
 router = APIRouter()
 log = logging.getLogger(__name__)
 request = _httpx_transport
 _OAUTH_TTL_SECONDS = 300
+MAX_PENDING_OAUTH_STATES = 32
 _oauth_lock = threading.Lock()
 
 
@@ -29,6 +38,7 @@ _oauth_lock = threading.Lock()
 class _OAuthState:
     verifier: str
     expires_at: float
+    home: str
     consumed: bool = False
 
 
@@ -42,6 +52,43 @@ class ConnectionInput(BaseModel):
 class OAuthCallback(BaseModel):
     state: str = Field(min_length=16, max_length=256)
     code: str = Field(min_length=1, max_length=2048)
+
+
+def _invalid_request() -> HTTPException:
+    return HTTPException(422, detail={"error": "invalid_request", "recoverable": True})
+
+
+async def _validated_body(request: Request, model: type[BaseModel]) -> BaseModel:
+    try:
+        payload = await request.json()
+        return model.model_validate(payload)
+    except (TypeError, ValueError, ValidationError):
+        raise _invalid_request() from None
+
+
+def _canonical_home() -> str:
+    from hermes_constants import get_hermes_home
+
+    return str(get_hermes_home().resolve(strict=False))
+
+
+@contextmanager
+def _home_scope(home: str):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    token = set_hermes_home_override(home)
+    try:
+        yield
+    finally:
+        reset_hermes_home_override(token)
+
+
+def _prune_oauth_states_locked() -> set[str]:
+    now = time.monotonic()
+    expired = {key for key, value in _oauth_states.items() if value.expires_at <= now}
+    for key in expired:
+        _oauth_states.pop(key, None)
+    return expired
 
 
 def _safe_identity(payload: dict[str, Any]) -> dict[str, str]:
@@ -89,7 +136,8 @@ def _public(connection: dict[str, Any] | None) -> dict[str, Any]:
 
 
 @router.put("/connection")
-def put_connection(payload: ConnectionInput):
+async def put_connection(request: Request):
+    payload = await _validated_body(request, ConnectionInput)
     try:
         identity, workspace = _validated_connection(payload.access_token)
         store.save(payload.access_token, identity, workspace)
@@ -132,28 +180,65 @@ def oauth_start():
     state = secrets.token_urlsafe(32)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
     with _oauth_lock:
-        _oauth_states[state] = _OAuthState(verifier, time.monotonic() + _OAUTH_TTL_SECONDS)
-    query = urlencode({"response_type": "code", "client_id": "hermes-desktop", "redirect_uri": "http://127.0.0.1/rhythm/callback", "scope": "openid email profile", "code_challenge_method": "S256", "code_challenge": challenge, "state": state})
+        _prune_oauth_states_locked()
+        if len(_oauth_states) >= MAX_PENDING_OAUTH_STATES:
+            raise HTTPException(429, detail={"error": "oauth_pending_limit", "recoverable": True})
+        _oauth_states[state] = _OAuthState(
+            verifier, time.monotonic() + _OAUTH_TTL_SECONDS, _canonical_home()
+        )
+    query = urlencode(
+        {
+            "response_type": "code",
+            "client_id": OAUTH_CLIENT_ID,
+            "redirect_uri": OAUTH_REDIRECT_URI,
+            "scope": "openid email profile",
+            "code_challenge_method": "S256",
+            "code_challenge": challenge,
+            "state": state,
+        }
+    )
     return {"state": state, "authorization_url": f"https://accounts.google.com/o/oauth2/v2/auth?{query}"}
 
 
-@router.post("/oauth/callback")
-def oauth_callback(payload: OAuthCallback):
+def _complete_oauth_callback(state_key: str, code: str):
     with _oauth_lock:
-        state = _oauth_states.get(payload.state)
+        expired = _prune_oauth_states_locked()
+        if state_key in expired:
+            raise HTTPException(410, detail={"error": "oauth_state_expired", "recoverable": True})
+        state = _oauth_states.get(state_key)
         if state is None or state.consumed:
             raise HTTPException(409, detail={"error": "oauth_state_replayed", "recoverable": True})
-        if state.expires_at <= time.monotonic():
-            _oauth_states.pop(payload.state, None)
-            raise HTTPException(410, detail={"error": "oauth_state_expired", "recoverable": True})
+        if state.home != _canonical_home():
+            raise HTTPException(409, detail={"error": "oauth_state_profile_mismatch", "recoverable": True})
         state.consumed = True
     try:
-        token = RhythmClient("", transport=request).exchange_code(payload.code, state.verifier)
+        token = RhythmClient("", transport=request).exchange_code(code, state.verifier)
         identity, workspace = _validated_connection(token)
-        store.save(token, identity, workspace)
+        with _home_scope(state.home):
+            store.save(token, identity, workspace)
         return _public({"identity": identity, "workspace": workspace})
     except Exception as exc:
         raise _error(exc) from None
     finally:
         with _oauth_lock:
-            _oauth_states.pop(payload.state, None)
+            _oauth_states.pop(state_key, None)
+
+
+@router.post("/oauth/callback")
+async def oauth_callback(request: Request):
+    payload = await _validated_body(request, OAuthCallback)
+    return _complete_oauth_callback(payload.state, payload.code)
+
+
+@router.get("/oauth/callback")
+def oauth_callback_handoff(request: Request):
+    try:
+        payload = OAuthCallback.model_validate(
+            {
+                "state": request.query_params.get("state"),
+                "code": request.query_params.get("code"),
+            }
+        )
+    except ValidationError:
+        raise _invalid_request() from None
+    return _complete_oauth_callback(payload.state, payload.code)
