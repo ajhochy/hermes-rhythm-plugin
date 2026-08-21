@@ -2,6 +2,7 @@
 
 import asyncio
 import inspect
+import json
 from concurrent.futures import Future
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,7 +12,7 @@ from acp.schema import (
     RequestPermissionResponse,
 )
 
-from acp_adapter.permissions import make_approval_callback
+from acp_adapter.permissions import _build_permission_tool_call, make_approval_callback
 from tools.approval import prompt_dangerous_approval
 
 
@@ -63,6 +64,23 @@ def _invoke_callback(
 
 
 class TestApprovalBridge:
+    def test_permission_payload_is_redacted_and_bounded_at_every_wire_field(self):
+        """Command approval progress must not bypass ACP's shared safety helpers."""
+        secret = "sk-abcdefghijklmnopqrstuvwx1234567890"
+        filler = "x" * 21000
+
+        tool_call = _build_permission_tool_call(
+            f"curl -H 'Authorization: Bearer {secret}' {filler}",
+            f"deploy {secret} {filler}",
+        )
+        serialized = tool_call.model_dump_json(by_alias=True)
+
+        assert secret not in serialized
+        assert len(tool_call.title) <= 200
+        assert len(tool_call.content[0].content.text) <= 10000
+        assert len(json.dumps(tool_call.raw_input, default=str)) <= 4000
+        assert tool_call.raw_input["description"].startswith("deploy")
+
     def test_bridge_schedules_request_on_the_given_loop(self):
         result, kwargs, scheduled, _, loop = _invoke_callback(
             AllowedOutcome(option_id="allow_once", outcome="selected"),

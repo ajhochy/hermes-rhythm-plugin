@@ -64,6 +64,34 @@ def test_acp_permission_diff_is_redacted_and_bounded():
     assert len(diff.newText or "") <= 20000
 
 
+def test_acp_edit_approval_payload_is_redacted_and_bounded_at_every_wire_field():
+    """Approval progress must use the same ACP safety boundary as tool events."""
+    secret = "sk-abcdefghijklmnopqrstuvwx1234567890"
+    filler = "x" * 21000
+    proposal = EditProposal(
+        tool_name="write_file",
+        path=f"/tmp/{secret}-{filler}",
+        old_text=f"OLD={secret}{filler}",
+        new_text=f"NEW={secret}{filler}",
+        arguments={
+            "path": f"/tmp/{secret}-{filler}",
+            "content": f"API_KEY={secret}{filler}",
+            "nested": {"token": secret, "values": [f"{secret}{filler}"]},
+            "safe_metadata": "keep-me",
+        },
+    )
+
+    tool_call = build_acp_edit_tool_call(proposal)
+    serialized = tool_call.model_dump_json(by_alias=True)
+
+    assert secret not in serialized
+    assert len(tool_call.title) <= 200
+    assert len(tool_call.content[0].path) <= 200
+    assert len(tool_call.content[0].oldText or "") <= 20000
+    assert len(tool_call.content[0].newText or "") <= 20000
+    assert len(json.dumps(tool_call.rawInput, default=str)) <= 4000
+    assert tool_call.rawInput["arguments"]["safe_metadata"] == "keep-me"
+
 
 
 

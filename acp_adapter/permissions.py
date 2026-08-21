@@ -81,17 +81,18 @@ def _build_permission_tool_call(command: str, description: str):
     gets a unique ``perm-check-N`` id so concurrent requests don't collide.
     """
     import acp as _acp
+    from acp_adapter.tools import bounded_raw_input, safe_text, safe_title
 
     tool_call_id = f"perm-check-{next(_PERMISSION_REQUEST_IDS)}"
     title = f"{description}: {command}" if description else command
     content_text = f"{description}\n$ {command}" if description else f"$ {command}"
     return _acp.update_tool_call(
         tool_call_id,
-        title=title,
+        title=safe_title(title),
         kind="execute",
         status="pending",
-        content=[_acp.tool_content(_acp.text_block(content_text))],
-        raw_input={"command": command, "description": description},
+        content=[safe_text(content_text)],
+        raw_input=bounded_raw_input({"command": command, "description": description}),
     )
 
 
