@@ -104,6 +104,12 @@ def test_native_packages_register_bare_role_skills_hooks_and_bootstrap():
         assert f"hcw {command}" in bootstrap
 
 
+def test_planner_skill_names_the_exact_raw_plan_payload_keys():
+    planner = (ROOT / "skills" / "planner" / "SKILL.md").read_text()
+    assert "exactly `id`, `description`, `paths`, `test_command`, and `requirement_ids`" in planner
+    assert "exactly `argv` and `requirement_ids`" in planner
+
+
 def test_bootstrap_context_gives_dispatcher_a_complete_matching_create_run_shape(tmp_path, monkeypatch):
     hcw = load_plugin("hermes-coding-workflow")
     monkeypatch.chdir(tmp_path)
