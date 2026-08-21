@@ -23,6 +23,31 @@ _CLAUDE_WORKER_COMMANDS = {"dispatch-worker", "worker-status"}
 
 def _build_bootstrap() -> str:
     launcher = (Path(__file__).resolve().parent / "runtime" / "bin" / "hcw").resolve()
+    run, error = _load_matching_run()
+    if run is not None:
+        stage, binding_error = _bound_active_stage(run)
+        if stage is not None:
+            repo = shlex.quote(str(run["repo_root"]))
+            run_id = shlex.quote(str(run["id"]))
+            guidance = {
+                "design": (f"approve-design {repo} {run_id} --json <approved-design.json>",),
+                "plan": (f"approve-plan {repo} {run_id} --json <approved-plan.json>",),
+                "red": (f"check {repo} {run_id} red -- <failing-test-command>",),
+                "green": (f"check {repo} {run_id} green -- <passing-test-command>", f"commit {repo} {run_id} --message <quoted-commit-message>"),
+                "spec-review": (f"review {repo} {run_id} --json <spec-review.json>",),
+                "quality-review": (f"review {repo} {run_id} --json <quality-review.json>",),
+                "verify": (f"check {repo} {run_id} full -- <full-test-command>", f"check {repo} {run_id} security -- <security-test-command>", f"verify {repo} {run_id}"),
+                "live": (f"check {repo} {run_id} live -- <live-acceptance-command>",),
+                "complete": (f"complete {repo} {run_id}",),
+            }
+            commands = "; ".join(f"{shlex.quote(str(launcher))} {command}" for command in guidance[stage])
+            return (
+                f"{BOOTSTRAP_MARKER}: registered HCW stage {stage} for run {run['id']} in repository {run['repo_root']}. "
+                f"Use only this active-stage command guidance; do not prefix environment assignments: {commands}. "
+                "Apply hcw orchestration and pinned superpowers:brainstorming principles."
+            )
+    if error is not None and os.path.lexists(Path.cwd() / ".hermes" / "hcw-run.json"):
+        return f"{BOOTSTRAP_MARKER}: registered HCW workflow identity is invalid; do not run lifecycle commands."
     commands = "; ".join(f"{launcher} {command}" for command in ("create-run", "approve-design", "approve-plan", "check", "commit", "review", "verify", "complete"))
     task = os.getenv("HERMES_KANBAN_TASK", "")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", task):
@@ -76,13 +101,13 @@ def _load_matching_run() -> tuple[dict[str, Any] | None, str | None]:
     identity = {name: os.getenv(name) for name in ("HCW_RUN_ID", "HERMES_KANBAN_TASK", "HERMES_PROFILE")}
     if not any(identity.values()):
         return None, None
-    if not all(identity.values()):
+    if not identity["HERMES_KANBAN_TASK"] or not identity["HERMES_PROFILE"]:
         return None, "incomplete workflow identity"
-    run_id = identity["HCW_RUN_ID"]
-    if not isinstance(run_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", run_id):
-        return None, "invalid workflow run id"
     cwd = Path.cwd().resolve()
-    locator = _object(cwd / ".hermes" / "hcw-run.json")
+    locator_path = cwd / ".hermes" / "hcw-run.json"
+    if locator_path.is_symlink():
+        return None, "untrusted workflow locator"
+    locator = _object(locator_path)
     if locator is None:
         return None, "malformed matching workflow locator"
     try:
@@ -90,7 +115,11 @@ def _load_matching_run() -> tuple[dict[str, Any] | None, str | None]:
         worktree = Path(locator["worktree_path"]).resolve()
     except (KeyError, TypeError, OSError):
         return None, "malformed matching workflow locator"
-    if locator.get("schema_version") != SCHEMA_VERSION or locator.get("run_id") != run_id or cwd != worktree:
+    locator_run_id = locator.get("run_id")
+    run_id = identity["HCW_RUN_ID"] or locator_run_id
+    if not isinstance(run_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", run_id):
+        return None, "invalid workflow run id"
+    if locator.get("schema_version") != SCHEMA_VERSION or locator_run_id != run_id or cwd != worktree:
         return None, "workflow locator mismatch"
     if not _git_worktree_is_registered(repo, worktree):
         return None, "untrusted workflow worktree"
@@ -100,6 +129,17 @@ def _load_matching_run() -> tuple[dict[str, Any] | None, str | None]:
     if Path(str(run.get("repo_root", ""))).resolve() != repo or Path(str(run.get("worktree_path", ""))).resolve() != worktree:
         return None, "workflow state locator mismatch"
     return run, None
+
+
+def _bound_active_stage(run: dict[str, Any]) -> tuple[str | None, str | None]:
+    task, profile = os.getenv("HERMES_KANBAN_TASK"), os.getenv("HERMES_PROFILE")
+    matches = [stage for stage, task_id in run.get("kanban_task_ids", {}).items() if task_id == task]
+    if len(matches) != 1 or run.get("stage_profiles", {}).get(matches[0]) != profile:
+        return None, "task/profile binding mismatch"
+    stage = matches[0]
+    if run.get("stage_statuses", {}).get(stage) != "active":
+        return None, "workflow stage is not active"
+    return stage, None
 
 
 def _explicit_path(args: dict[str, Any] | None) -> str | None:
@@ -226,6 +266,8 @@ def _terminal_allowed(run: dict[str, Any] | None, stage: str | None, args: dict[
             return subcommand == "show"
         if len(argv) < 4 or argv[3] != run.get("id"):
             return False
+        if not _is_exact_authoritative_repo(argv[2], run):
+            return False
         expected = {"design":{"approve-design"}, "plan":{"approve-plan"}, "red":{"check","dispatch-worker","worker-status"}, "green":{"check","commit","dispatch-worker","worker-status"}, "spec-review":{"review"}, "quality-review":{"review","dispatch-worker","worker-status"}, "verify":{"check","verify"}, "live":{"check"}, "complete":{"complete","dispatch-worker","worker-status"}}
         if subcommand not in expected.get(stage, set()):
             return False
@@ -251,13 +293,9 @@ def _guard_decision(tool_name: str | None = None, args: dict[str, Any] | None = 
         if tool_name in _TERMINAL_TOOLS and error is None and _terminal_allowed(None, None, args):
             return None
         return {"action": "block", "message": error or "workflow identity required for mutation"}
-    task, profile = os.environ["HERMES_KANBAN_TASK"], os.environ["HERMES_PROFILE"]
-    matches = [stage for stage, task_id in run.get("kanban_task_ids", {}).items() if task_id == task]
-    if len(matches) != 1 or run.get("stage_profiles", {}).get(matches[0]) != profile:
-        return {"action": "block", "message": "task/profile binding mismatch"}
-    stage = matches[0]
-    if run.get("stage_statuses", {}).get(stage) != "active":
-        return {"action": "block", "message": "workflow stage is not active"}
+    stage, binding_error = _bound_active_stage(run)
+    if stage is None:
+        return {"action": "block", "message": binding_error or "task/profile binding mismatch"}
     if tool_name in _TERMINAL_TOOLS:
         return None if _terminal_allowed(run, stage, args) else {"action": "block", "message": "terminal command is not allowlisted for this workflow stage"}
     path = _explicit_path(args)

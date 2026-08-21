@@ -30,6 +30,13 @@ Build the complete standalone Hermes coding workflow package, including the cont
 
 ## Recent coding-agent runs
 
+### 2026-08-21 — Stage bootstrap locator identity repair
+- Files modified: `plugins/hermes-coding-workflow/__init__.py` derives stage identity only from a non-symlinked registered locator and authoritative manifest, gates bootstrap guidance by active task/profile/stage binding, and binds lifecycle commands to the canonical repository; `tests/plugin/test_native_plugins.py` adds nine-stage bootstrap coverage and a symlink-locator rejection; `README.md` documents root versus stage bootstrap behavior.
+- Checks run: RED: nine stage-worker assertions failed because bootstrap emitted `create-run`; security RED: a symlinked locator was accepted. GREEN: 10 focused assertions passed; full isolated-home Python suite: 171 passed (one existing FastAPI/TestClient deprecation warning); Node tests/build: 3 passed; Python compile, diff check, and strict added-line secret scan passed.
+- Decisions made: derive a missing `HCW_RUN_ID` only after validating the current worktree's non-symlinked locator and authoritative run record; preserve the initial root `create-run` path when no locator exists.
+- Deviations from spec: no push, merge, live-profile mutation, or Kanban mutation.
+- Concerns: fresh immutable rereview and targeted deployment remain required.
+
 ### 2026-08-21 — Alias TOCTOU repair
 - Files modified: `plugins/hermes-coding-workflow/__init__.py`, `tests/plugin/test_native_plugins.py`, `README.md`, and this state record.
 - Checks run: focused RED showed six failures across both worker commands (symlink alias, deterministic alias swap before CLI resolution, and `..` spelling); focused GREEN passed. Complete Python suite: 161 passed; Node/Desktop: 3 passed; production build, Python compilation, diff check, and added-line secret scan passed.

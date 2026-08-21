@@ -101,6 +101,77 @@ def test_bootstrap_context_gives_dispatcher_a_complete_matching_create_run_shape
     assert "do not omit arguments or prefix environment assignments" in bootstrap
 
 
+@pytest.mark.parametrize(
+    ("stage", "profile", "task", "commands"),
+    (
+        ("design", "dev-planner", "task-design", ("approve-design <repo> run-test --json <approved-design.json>",)),
+        ("plan", "dev-planner", "task-plan", ("approve-plan <repo> run-test --json <approved-plan.json>",)),
+        ("red", "dev-contract", "task-red", ("check <repo> run-test red -- <failing-test-command>",)),
+        ("green", "dev-builder", "task-green", ("check <repo> run-test green -- <passing-test-command>", "commit <repo> run-test --message <quoted-commit-message>")),
+        ("spec-review", "dev-spec-reviewer", "task-spec", ("review <repo> run-test --json <spec-review.json>",)),
+        ("quality-review", "dev-quality-reviewer", "task-quality", ("review <repo> run-test --json <quality-review.json>",)),
+        ("verify", "dev-verifier", "task-verify", ("check <repo> run-test full -- <full-test-command>", "check <repo> run-test security -- <security-test-command>", "verify <repo> run-test")),
+        ("live", "dev-verifier", "task-live", ("check <repo> run-test live -- <live-acceptance-command>",)),
+        ("complete", "dev-recorder", "task-complete", ("complete <repo> run-test",)),
+    ),
+)
+def test_stage_worker_bootstrap_derives_registered_run_and_guides_only_its_active_stage(
+    workflow, monkeypatch, stage, profile, task, commands
+):
+    """Removing locator-backed identity derivation would reintroduce the rejected stage bootstrap."""
+    plugin = load_plugin("hermes-coding-workflow")
+    repo, _, state = workflow
+    state["stage_statuses"] = {name: ("active" if name == stage else "pending") for name in state["stage_statuses"]}
+    (repo / ".hermes" / "workflows" / "run-test" / "run.json").write_text(json.dumps(state))
+    monkeypatch.delenv("HCW_RUN_ID")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task)
+    monkeypatch.setenv("HERMES_PROFILE", profile)
+
+    bootstrap = plugin._build_bootstrap()
+
+    assert "create-run" not in bootstrap
+    assert "run-test" in bootstrap
+    assert str(repo) in bootstrap
+    assert stage in bootstrap
+    for command in commands:
+        assert command.replace("<repo>", str(repo)) in bootstrap
+    authorized_commands = {
+        "design": f"approve-design {repo} run-test --json approved-design.json",
+        "plan": f"approve-plan {repo} run-test --json approved-plan.json",
+        "red": f"check {repo} run-test red -- pytest",
+        "green": f"check {repo} run-test green -- pytest",
+        "spec-review": f"review {repo} run-test --json spec-review.json",
+        "quality-review": f"review {repo} run-test --json quality-review.json",
+        "verify": f"check {repo} run-test full -- pytest",
+        "live": f"check {repo} run-test live -- pytest",
+        "complete": f"complete {repo} run-test",
+    }
+    assert plugin._pre_tool_call(
+        tool_name="terminal",
+        args={"command": f"{Path(plugin.__file__).resolve().parent / 'runtime' / 'bin' / 'hcw'} {authorized_commands[stage]}"},
+    ) is None
+
+
+def test_locator_derived_stage_identity_rejects_a_symlinked_locator(workflow, monkeypatch):
+    """Following a symlinked locator would let an alternate worktree borrow the active stage binding."""
+    plugin = load_plugin("hermes-coding-workflow")
+    repo, worktree, _ = workflow
+    monkeypatch.delenv("HCW_RUN_ID")
+    locator = worktree / ".hermes" / "hcw-run.json"
+    alternate = worktree.parent / "alternate-locator.json"
+    alternate.write_text(locator.read_text())
+    locator.unlink()
+    locator.symlink_to(alternate)
+    launcher = Path(plugin.__file__).resolve().parent / "runtime" / "bin" / "hcw"
+
+    decision = plugin._pre_tool_call(
+        tool_name="terminal",
+        args={"command": f"{launcher} check {repo} run-test red -- pytest"},
+    )
+
+    assert decision and decision["action"] == "block"
+
+
 def test_guard_fails_closed_without_identity_and_enforces_exact_lifecycle_commands(workflow, monkeypatch):
     plugin = load_plugin("hermes-coding-workflow"); repo, worktree, state = workflow
     assert plugin._pre_tool_call(tool_name="write_file", args={"path":"app.py"})["action"] == "block"
