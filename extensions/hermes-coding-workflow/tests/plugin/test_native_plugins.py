@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from hermes_coding_workflow import cli
+
 ROOT = Path(__file__).parents[2]
 
 
@@ -241,15 +243,44 @@ def test_claude_worker_commands_reject_other_repo_even_when_run_and_stage_match(
 
 
 @pytest.mark.parametrize("command", ("dispatch-worker", "worker-status"))
-def test_claude_worker_commands_accept_repo_symlink_alias_but_reject_nonexistent_path(workflow, command):
+def test_claude_worker_commands_reject_repo_symlink_alias_and_nonexistent_path(workflow, command):
     plugin = load_plugin("hermes-coding-workflow"); repo, _, _ = workflow
     alias = repo.parent / "repo-alias"; alias.symlink_to(repo, target_is_directory=True)
     launcher = (ROOT / "plugins" / "hermes-coding-workflow" / "runtime" / "bin" / "hcw").resolve()
-    allowed = plugin._pre_tool_call(tool_name="terminal", args={"command": f"{launcher} {command} {alias} run-test red"})
-    assert allowed is None
+    decision = plugin._pre_tool_call(tool_name="terminal", args={"command": f"{launcher} {command} {alias} run-test red"})
+    assert decision and decision["action"] == "block"
     missing = repo.parent / "does-not-exist"
     decision = plugin._pre_tool_call(tool_name="terminal", args={"command": f"{launcher} {command} {missing} run-test red"})
     assert decision and decision["action"] == "block"
+
+
+@pytest.mark.parametrize("command", ("dispatch-worker", "worker-status"))
+def test_claude_worker_alias_swap_cannot_retarget_cli_after_hook_authorization(workflow, command):
+    """The hook must reject an alias before the CLI can resolve it again."""
+    plugin = load_plugin("hermes-coding-workflow"); repo, _, _ = workflow
+    other = repo.parent / "other-repo"
+    subprocess.run(["git", "init", str(other)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(other), "config", "user.email", "test@example.invalid"], check=True)
+    subprocess.run(["git", "-C", str(other), "config", "user.name", "Test"], check=True)
+    (other / "app.py").write_text("value = 2\n")
+    subprocess.run(["git", "-C", str(other), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(other), "commit", "-m", "other"], check=True, capture_output=True)
+    other_state = run(other, "run-test", other)
+    other_state["stage_statuses"]["red"] = "active"
+    (other / ".hermes" / "workflows" / "run-test" / "run.json").write_text(json.dumps(other_state))
+    alias = repo.parent / "repo-alias"; alias.symlink_to(repo, target_is_directory=True)
+    launcher = (ROOT / "plugins" / "hermes-coding-workflow" / "runtime" / "bin" / "hcw").resolve()
+
+    authorization = plugin._pre_tool_call(
+        tool_name="terminal", args={"command": f"{launcher} {command} {alias} run-test red"}
+    )
+    alias.unlink()
+    alias.symlink_to(other, target_is_directory=True)
+    cli_repo, cli_run_id = cli._repo_and_run(alias, "run-test")
+
+    assert cli_repo == other
+    assert cli_run_id == "run-test"
+    assert authorization and authorization["action"] == "block"
 
 
 @pytest.mark.parametrize("command", ("dispatch-worker", "worker-status"))
@@ -260,6 +291,8 @@ def test_claude_worker_commands_reject_wrong_identity_shape_and_shell_escapes(wo
     for candidate in (
         f"{launcher} {command} {repo} wrong-run red",
         f"{launcher} {command} {repo} run-test green",
+        f"{launcher} {command} . run-test red",
+        f"{launcher} {command} {repo.parent / repo.name / '..' / repo.name} run-test red",
         f"{launcher} {command} {repo} run-test",
         f"{valid} extra",
         f"HCW_RUN_ID=run-test {valid}",

@@ -185,6 +185,25 @@ def _bootstrap_create_run_allowed(args: dict[str, Any] | None) -> bool:
     return not os.path.lexists(locator) and not os.path.lexists(manifest)
 
 
+def _is_exact_authoritative_repo(path_text: str, run: dict[str, Any]) -> bool:
+    """Accept only the immutable spelling stored in the authoritative run."""
+    authoritative_text = run.get("repo_root")
+    if not isinstance(authoritative_text, str):
+        return False
+    supplied = Path(path_text)
+    authoritative = Path(authoritative_text)
+    if not supplied.is_absolute() or not authoritative.is_absolute():
+        return False
+    if path_text != os.path.normpath(path_text) or authoritative_text != os.path.normpath(authoritative_text):
+        return False
+    try:
+        resolved = supplied.resolve(strict=True)
+        authoritative_resolved = authoritative.resolve(strict=True)
+    except OSError:
+        return False
+    return path_text == str(resolved) == authoritative_text == str(authoritative_resolved)
+
+
 def _terminal_allowed(run: dict[str, Any] | None, stage: str | None, args: dict[str, Any] | None) -> bool:
     values = args or {}
     command = values.get("command", values.get("cmd", ""))
@@ -213,12 +232,7 @@ def _terminal_allowed(run: dict[str, Any] | None, stage: str | None, args: dict[
         if subcommand == "check":
             return len(argv) >= 5 and (argv[4] == {"red":"red","green":"green","verify":"full","live":"live"}.get(stage) or (stage == "verify" and argv[4] == "security"))
         if subcommand in _CLAUDE_WORKER_COMMANDS:
-            try:
-                command_repo = Path(argv[2]).resolve()
-                authoritative_repo = Path(str(run["repo_root"])).resolve()
-            except OSError:
-                return False
-            return len(argv) == 5 and command_repo == authoritative_repo and argv[4] == stage
+            return len(argv) == 5 and _is_exact_authoritative_repo(argv[2], run) and argv[4] == stage
         return True
     if argv[0] != "git" or len(argv) < 2:
         return False

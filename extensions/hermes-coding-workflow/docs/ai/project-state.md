@@ -25,15 +25,22 @@ Build the complete standalone Hermes coding workflow package, including the cont
 ## Test status
 
 - Control plane, native plugins, role profiles, installer, read-only API, Desktop UI, public installed lifecycle, and the async Claude Code CLI worker dispatch/runner are implemented.
-- Branch gates: `159 passed` (Python) with zero skipped/xfailed/xpassed; Node `3/3`, production ESM build, Python compilation, diff check, installed-runner importability, source/profile rollback, OpenAI runtime/API-mode allowlists, account-auth parsing, credential-minimal worker/probe environments, descriptor-bound atomic writes, registered-worktree identity, authoritative brief binding, stale-process reconciliation, and authoritative worker-repository binding all pass.
+- Branch gates: `161 passed` (Python) with zero skipped/xfailed/xpassed; Node `3/3`, production ESM build, Python compilation, diff check, installed-runner importability, source/profile rollback, OpenAI runtime/API-mode allowlists, account-auth parsing, credential-minimal worker/probe environments, descriptor-bound atomic writes, registered-worktree identity, authoritative brief binding, stale-process reconciliation, and authoritative worker-repository binding all pass.
 - The older `live-tracer-1787210374` proof validates the pre-pivot workflow only. A fresh real Team-account asynchronous dispatch smoke is still required for this adapter; the first matcher probe reached the account's normal session cap and reported a 17:30 PDT reset.
 
 ## Recent coding-agent runs
 
+### 2026-08-21 — Alias TOCTOU repair
+- Files modified: `plugins/hermes-coding-workflow/__init__.py`, `tests/plugin/test_native_plugins.py`, `README.md`, and this state record.
+- Checks run: focused RED showed six failures across both worker commands (symlink alias, deterministic alias swap before CLI resolution, and `..` spelling); focused GREEN passed. Complete Python suite: 161 passed; Node/Desktop: 3 passed; production build, Python compilation, diff check, and added-line secret scan passed.
+- Decisions made: reject the authorization-critical repository argument unless it is the existing, lexically normalized, exact canonical absolute spelling stored in `run.repo_root`; no service-side inode binding was added because the existing actor-less CLI has no trusted descriptor handoff and the requested alias class is closed at the guard boundary.
+- Deviations from spec: no push, deployment, profile mutation, or Kanban retry.
+- Concerns: a fresh immutable rereview and a real installed-profile worker dispatch remain pending.
+
 ### 2026-08-21 — OAuth tier-routing authoritative worker repository binding
-- Files modified: `plugins/hermes-coding-workflow/__init__.py` binds `dispatch-worker` and `worker-status` to the canonical authoritative `run.repo_root`; `tests/plugin/test_native_plugins.py` covers canonical, alias, and rejected worker-command paths.
+- Files modified: `plugins/hermes-coding-workflow/__init__.py` binds `dispatch-worker` and `worker-status` to the exact canonical absolute `run.repo_root` spelling; `tests/plugin/test_native_plugins.py` covers canonical and rejected alternate worker-command paths.
 - Checks run: focused RED: 14 selected tests, 4 expected failures proving both commands allowed different/nonexistent repositories; focused GREEN: 14 passed. Parent full Python suite: 159 passed with one dependency deprecation warning. Node/Desktop: 3 passed; production build: 3 passed. Python compilation, diff check, and added-line secret scan passed.
-- Decisions made: follow the CLI/run established `Path.resolve()` policy, accepting canonical-equivalent symlink aliases but requiring the resolved command repository equal the run's controlling `repo_root`; do not bind it to the isolated implementation worktree.
+- Decisions made: reject symlink aliases and every alternate/mutable path spelling before the CLI can resolve a user-controlled repository argument again; bind only the exact canonical `run.repo_root`, not the isolated implementation worktree.
 - Deviations from spec: no push, deployment, profile mutation, or Kanban retry before a fresh immutable rereview.
 - Concerns: fresh immutable rereview remains required; real installed-profile worker dispatch remains pending.
 
