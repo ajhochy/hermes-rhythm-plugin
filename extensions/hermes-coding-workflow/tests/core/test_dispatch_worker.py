@@ -485,6 +485,19 @@ def test_tampered_success_artifact_relocks_the_authoritative_transition(repo: Pa
         svc.check("run-1", act("red"), "red", payloads()[1]["commands"]["red"]["argv"])
 
 
+def test_tampered_authoritative_intent_relocks_a_succeeded_worker_transition(repo: Path, fake_claude: Path) -> None:
+    svc, _ = ready(repo)
+    svc.dispatch_worker("run-1", "red")
+    assert wait_terminal(svc, "run-1", "red")["state"] == "succeeded"
+    store = RunStore(repo, "run-1")
+    internal = store.read("internal.json")
+    internal["create_intent"]["brief_hashes"]["red"] = "f" * 64
+    RunStore._atomic(store._path("internal.json"), internal)
+
+    with pytest.raises(WorkflowError, match="worker_not_succeeded"):
+        svc.check("run-1", act("red"), "red", payloads()[1]["commands"]["red"]["argv"])
+
+
 def test_dispatch_worker_records_failure_from_nonzero_exit(repo: Path, fake_claude: Path, monkeypatch) -> None:
     monkeypatch.setenv("FAKE_CLAUDE_EXIT", "3")
     svc, run = ready(repo)

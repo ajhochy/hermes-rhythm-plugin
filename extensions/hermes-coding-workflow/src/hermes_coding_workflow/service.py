@@ -78,6 +78,8 @@ class WorkflowService:
   record=s.read_worker(stage,attempt,latest) if latest else None;dispatch=run["dispatches"].get(stage) or {}
   expected_dispatch=full_sha_hash({"run_id":run["id"],"stage":stage,"task_id":run["kanban_task_ids"][stage],"profile":PROFILES[stage],"attempt":attempt,"brief_hash":dispatch.get("brief_hash")})
   if not record or validate_record(record) or record.get("state")!="succeeded" or record.get("exit_code")!=0:raise WorkflowError("worker_not_succeeded")
+  internal=s.read("internal.json") if s._path("internal.json").exists() else {};intent=_authoritative_intent(internal,attempt);intent_tasks=intent.get("task_ids") if isinstance(intent,dict) else None;intent_hashes=intent.get("brief_hashes") if isinstance(intent,dict) else None
+  if not isinstance(intent_tasks,dict) or intent_tasks.get(stage)!=run["kanban_task_ids"][stage] or not isinstance(intent_hashes,dict) or intent_hashes.get(stage)!=dispatch.get("brief_hash"):raise WorkflowError("worker_not_succeeded")
   if record.get("run_id")!=run["id"] or record.get("stage")!=stage or record.get("task_id")!=run["kanban_task_ids"][stage] or record.get("profile")!=PROFILES[stage] or record.get("attempt")!=attempt or record.get("worker_attempt")!=latest or record.get("brief_hash")!=dispatch.get("brief_hash") or record.get("backend")!=CLAUDE_BACKEND or record.get("model")!=CLAUDE_TIER_MODELS[stage] or record.get("worktree_path")!=run["worktree_path"]:raise WorkflowError("worker_not_succeeded")
   if record.get("design_sha256")!=full_sha_hash(s.read("approved-design.json")) or record.get("plan_sha256")!=full_sha_hash(s.read("plan.json")) or record.get("dispatch_sha256")!=expected_dispatch:raise WorkflowError("worker_not_succeeded")
   artifact_root=s.root/"artifacts"
