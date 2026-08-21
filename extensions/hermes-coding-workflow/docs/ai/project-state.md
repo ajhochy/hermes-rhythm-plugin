@@ -34,6 +34,7 @@ Build the complete standalone Hermes coding workflow package, including the cont
 - Immutable review of `00dc34078593f0c318737f2ae7d8da565c11d6dc` found two P1 defects before activation: external-stage transitions were instruction-gated rather than service-gated, and GREEN guidance placed `check` before the only legal `commit` window.
 - The service now requires the latest exact, schema-valid, identity-bound, durable create/repair-intent-bound, design/plan/dispatch-bound, successful worker record with intact hashed stdout/stderr artifacts before RED/GREEN check, GREEN commit, quality review, or completion. Redispatch after success is idempotent.
 - GREEN bootstrap and builder guidance now dispatch, poll, commit, then check. The installed lifecycle E2E exercises the complete external worker path instead of bypassing it.
+- The first real RED external run reached Claude's hard 12-turn cap with zero permission denials; RED now uses the same 30-turn implementation budget as GREEN, covered by an exact argv regression.
 - Focused authority tests, core service suites, and the final `220 passed` aggregate gate all pass.
 
 ### 2026-08-21 — External stage controller contract repair

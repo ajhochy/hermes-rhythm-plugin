@@ -76,6 +76,11 @@ def test_build_argv_is_safe_mode_no_bare_no_session_persistence_with_explicit_mo
     assert all(isinstance(part, str) for part in argv)
 
 
+def test_red_worker_has_the_full_implementation_turn_budget():
+    argv = claude_worker.build_argv("/usr/local/bin/claude", "red")
+    assert argv[argv.index("--max-turns") + 1] == "30"
+
+
 def test_build_argv_rejects_stages_outside_the_claude_tier_map() -> None:
     with pytest.raises(ValueError, match="unsupported_claude_stage"):
         claude_worker.build_argv("/usr/local/bin/claude", "verify")
