@@ -338,6 +338,20 @@ def test_task_mutation_returns_conflict_for_successful_patch_with_stale_readback
     assert exc.value.status_code == 409
 
 
+def test_task_mutation_rejects_matching_state_for_a_different_canonical_task():
+    from plugins.rhythm.backend.client import RhythmClient, RhythmRemoteError
+
+    for operation, scheduled_date, canonical in (
+        ("complete", None, {"id": "task-2", "status": "done"}),
+        ("reschedule", "2026-02-28", {"id": "task-2", "scheduledDate": "2026-02-28"}),
+    ):
+        def transport(method, url, headers, body, timeout, canonical=canonical):
+            return (200, {}, {}) if method == "PATCH" else (200, {}, canonical)
+
+        with pytest.raises(RhythmRemoteError, match="conflict"):
+            RhythmClient(TOKEN, transport=transport).mutate_task("task-1", operation, scheduled_date)
+
+
 def test_task_mutation_409_is_not_misreported_as_success_or_replayed():
     from plugins.rhythm.backend.client import RhythmClient, RhythmRemoteError
 

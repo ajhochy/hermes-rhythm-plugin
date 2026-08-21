@@ -1,7 +1,7 @@
 /**
  * Read-only host integration for the accepted @ajhochy/rhythm-workspace-ui
  * artifact, built from accepted source revision
- * f3ee7f346edbcb840838a786d2e2543e5c952eea (see vendor provenance).
+ * 03d831fec7d78d380c7fffebe82edabdf3ab77c3 (see vendor provenance).
  * The package remains the owner of Dashboard/Tasks JSX and styles; this file
  * owns only the Hermes transport, lifecycle and bounded chat handoff.
  */

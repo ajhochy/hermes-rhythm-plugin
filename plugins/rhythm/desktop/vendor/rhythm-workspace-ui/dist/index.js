@@ -4513,25 +4513,27 @@ function TasksScreen() {
     const isOwner = !task.isShared;
     const readonly = !canWrite || isSourceReadonly(task) || mutationPending;
     return /* @__PURE__ */ jsxs("div", { className: "task-row", role: "row", "aria-selected": selectedId === task.id, "data-status": task.status, "data-testid": `task-row-${task.id}`, children: [
-      /* @__PURE__ */ jsx("span", { className: "task-cell complete-cell", role: "gridcell", children: /* @__PURE__ */ jsxs("label", { className: "task-complete-label", children: [
-        /* @__PURE__ */ jsxs("span", { className: "sr-only", children: [
-          task.status === "done" ? "Reopen" : "Complete",
-          " ",
-          task.title
+      /* @__PURE__ */ jsxs("span", { className: "task-cell complete-cell", role: "gridcell", children: [
+        /* @__PURE__ */ jsxs("label", { className: "task-complete-label", children: [
+          /* @__PURE__ */ jsxs("span", { className: "sr-only", children: [
+            task.status === "done" ? "Reopen" : "Complete",
+            " ",
+            task.title
+          ] }),
+          /* @__PURE__ */ jsx(
+            "input",
+            {
+              type: "checkbox",
+              checked: task.status === "done",
+              disabled: !canComplete || isSourceReadonly(task) || mutationPending,
+              "aria-describedby": !canComplete || isSourceReadonly(task) ? readonlyReasonId : void 0,
+              onChange: () => requestTaskOperation(task, "complete"),
+              "data-testid": `task-complete-${task.id}`
+            }
+          )
         ] }),
-        /* @__PURE__ */ jsx(
-          "input",
-          {
-            type: "checkbox",
-            checked: task.status === "done",
-            disabled: !canComplete || isSourceReadonly(task) || mutationPending,
-            "aria-describedby": !canComplete || isSourceReadonly(task) ? readonlyReasonId : void 0,
-            onChange: () => requestTaskOperation(task, "complete"),
-            "data-testid": `task-complete-${task.id}`
-          }
-        ),
-        canReschedule && !isSourceReadonly(task) && /* @__PURE__ */ jsx("button", { className: "text-button", type: "button", onClick: () => requestTaskOperation(task, "reschedule"), "data-testid": `task-reschedule-${task.id}`, children: "Reschedule" })
-      ] }) }),
+        canReschedule && !isSourceReadonly(task) && /* @__PURE__ */ jsx("button", { className: "text-button", type: "button", disabled: mutationPending, onClick: () => requestTaskOperation(task, "reschedule"), "data-testid": `task-reschedule-${task.id}`, children: "Reschedule" })
+      ] }),
       /* @__PURE__ */ jsx("span", { className: "task-cell main-cell", role: "gridcell", children: /* @__PURE__ */ jsxs("button", { className: "task-row-main", type: "button", onClick: () => openInspector(task), "data-testid": `task-select-${task.id}`, children: [
         /* @__PURE__ */ jsxs("span", { className: "task-row-copy", children: [
           /* @__PURE__ */ jsx("span", { className: "task-kicker", children: task.sourceName ?? taskStatusLabels[task.status] }),
@@ -4824,7 +4826,7 @@ function TasksScreen() {
     }, title: operationTarget?.operation === "complete" ? `Complete \u201C${operationTarget.task.title}\u201D?` : `Reschedule \u201C${operationTarget?.task.title ?? ""}\u201D?`, description: "This action is sent only after you confirm it.", testId: "task-operation-confirmation", children: [
       operationTarget?.operation === "reschedule" && /* @__PURE__ */ jsxs("label", { children: [
         "Scheduled date",
-        /* @__PURE__ */ jsx("input", { type: "date", value: operationTarget.scheduledDate ?? "", onChange: (event) => setOperationTarget((current) => current ? { ...current, scheduledDate: event.target.value } : current), "data-testid": "task-operation-date" })
+        /* @__PURE__ */ jsx("input", { type: "date", value: operationTarget.scheduledDate ?? "", disabled: mutationPending, onChange: (event) => setOperationTarget((current) => current ? { ...current, scheduledDate: event.target.value } : current), "data-testid": "task-operation-date" })
       ] }),
       /* @__PURE__ */ jsx("p", { role: "status", children: operationTarget?.operation === "complete" ? "Mark this task complete." : `Set the scheduled date to ${operationTarget?.scheduledDate ?? ""}.` }),
       operationError && /* @__PURE__ */ jsxs("div", { role: "alert", "data-testid": "task-operation-outcome", children: [
