@@ -213,7 +213,12 @@ def _terminal_allowed(run: dict[str, Any] | None, stage: str | None, args: dict[
         if subcommand == "check":
             return len(argv) >= 5 and (argv[4] == {"red":"red","green":"green","verify":"full","live":"live"}.get(stage) or (stage == "verify" and argv[4] == "security"))
         if subcommand in _CLAUDE_WORKER_COMMANDS:
-            return len(argv) == 5 and argv[4] == stage
+            try:
+                command_repo = Path(argv[2]).resolve()
+                authoritative_repo = Path(str(run["repo_root"])).resolve()
+            except OSError:
+                return False
+            return len(argv) == 5 and command_repo == authoritative_repo and argv[4] == stage
         return True
     if argv[0] != "git" or len(argv) < 2:
         return False

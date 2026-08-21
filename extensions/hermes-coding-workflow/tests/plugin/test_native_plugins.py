@@ -205,31 +205,80 @@ def test_post_bootstrap_source_mutation_requires_full_registered_lifecycle(workf
     assert source and source["action"] == "block"
 
 
-def test_dispatch_worker_and_worker_status_are_scoped_to_the_bound_active_claude_stage(workflow, monkeypatch):
-    plugin = load_plugin("hermes-coding-workflow"); repo, worktree, state = workflow
+CLAUDE_WORKER_STAGES = {
+    "red": ("dev-contract", "task-red"),
+    "green": ("dev-builder", "task-green"),
+    "quality-review": ("dev-quality-reviewer", "task-quality"),
+    "complete": ("dev-recorder", "task-complete"),
+}
+
+
+def _activate_claude_stage(repo: Path, state: dict, monkeypatch, stage: str) -> None:
+    profile, task_id = CLAUDE_WORKER_STAGES[stage]
+    state["stage_statuses"] = {name: ("active" if name == stage else "pending") for name in state["stage_statuses"]}
+    (repo / ".hermes" / "workflows" / "run-test" / "run.json").write_text(json.dumps(state))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    monkeypatch.setenv("HERMES_PROFILE", profile)
+
+
+@pytest.mark.parametrize("stage", CLAUDE_WORKER_STAGES)
+@pytest.mark.parametrize("command", ("dispatch-worker", "worker-status"))
+def test_claude_worker_commands_allow_only_the_authoritative_canonical_repo(workflow, monkeypatch, stage, command):
+    plugin = load_plugin("hermes-coding-workflow"); repo, _, state = workflow
+    _activate_claude_stage(repo, state, monkeypatch, stage)
     launcher = (ROOT / "plugins" / "hermes-coding-workflow" / "runtime" / "bin" / "hcw").resolve()
-    dispatch = f"{launcher} dispatch-worker {repo} run-test red"
-    status = f"{launcher} worker-status {repo} run-test red"
+    exact = f"{launcher} {command} {repo.resolve()} run-test {stage}"
+    assert plugin._pre_tool_call(tool_name="terminal", args={"command": exact}) is None
 
-    assert plugin._pre_tool_call(tool_name="terminal", args={"command": dispatch}) is None
-    assert plugin._pre_tool_call(tool_name="terminal", args={"command": status}) is None
 
-    other_stage = plugin._pre_tool_call(tool_name="terminal", args={"command": f"{launcher} dispatch-worker {repo} run-test green"})
-    assert other_stage and other_stage["action"] == "block"
-    other_stage = plugin._pre_tool_call(tool_name="terminal", args={"command": f"{launcher} worker-status {repo} run-test green"})
-    assert other_stage and other_stage["action"] == "block"
+@pytest.mark.parametrize("command", ("dispatch-worker", "worker-status"))
+def test_claude_worker_commands_reject_other_repo_even_when_run_and_stage_match(workflow, command):
+    plugin = load_plugin("hermes-coding-workflow"); repo, _, _ = workflow
+    other = repo.parent / "other-repo"; other.mkdir()
+    launcher = (ROOT / "plugins" / "hermes-coding-workflow" / "runtime" / "bin" / "hcw").resolve()
+    decision = plugin._pre_tool_call(tool_name="terminal", args={"command": f"{launcher} {command} {other} run-test red"})
+    assert decision and decision["action"] == "block"
 
-    wrong_run = plugin._pre_tool_call(tool_name="terminal", args={"command": f"{launcher} dispatch-worker {repo} wrong-run red"})
-    assert wrong_run and wrong_run["action"] == "block"
 
-    extra_argv = plugin._pre_tool_call(tool_name="terminal", args={"command": f"{dispatch} extra"})
-    assert extra_argv and extra_argv["action"] == "block"
+@pytest.mark.parametrize("command", ("dispatch-worker", "worker-status"))
+def test_claude_worker_commands_accept_repo_symlink_alias_but_reject_nonexistent_path(workflow, command):
+    plugin = load_plugin("hermes-coding-workflow"); repo, _, _ = workflow
+    alias = repo.parent / "repo-alias"; alias.symlink_to(repo, target_is_directory=True)
+    launcher = (ROOT / "plugins" / "hermes-coding-workflow" / "runtime" / "bin" / "hcw").resolve()
+    allowed = plugin._pre_tool_call(tool_name="terminal", args={"command": f"{launcher} {command} {alias} run-test red"})
+    assert allowed is None
+    missing = repo.parent / "does-not-exist"
+    decision = plugin._pre_tool_call(tool_name="terminal", args={"command": f"{launcher} {command} {missing} run-test red"})
+    assert decision and decision["action"] == "block"
 
+
+@pytest.mark.parametrize("command", ("dispatch-worker", "worker-status"))
+def test_claude_worker_commands_reject_wrong_identity_shape_and_shell_escapes(workflow, monkeypatch, command):
+    plugin = load_plugin("hermes-coding-workflow"); repo, _, state = workflow
+    launcher = (ROOT / "plugins" / "hermes-coding-workflow" / "runtime" / "bin" / "hcw").resolve()
+    valid = f"{launcher} {command} {repo} run-test red"
+    for candidate in (
+        f"{launcher} {command} {repo} wrong-run red",
+        f"{launcher} {command} {repo} run-test green",
+        f"{launcher} {command} {repo} run-test",
+        f"{valid} extra",
+        f"HCW_RUN_ID=run-test {valid}",
+        f"hcw {command} {repo} run-test red",
+        f"{valid} && true",
+        f"{valid} > output.txt",
+    ):
+        decision = plugin._pre_tool_call(tool_name="terminal", args={"command": candidate})
+        assert decision and decision["action"] == "block", candidate
+    _activate_claude_stage(repo, state, monkeypatch, "red")
+    decision = plugin._pre_tool_call(tool_name="terminal", args={"command": valid})
+    assert decision is None
+    state["stage_statuses"]["red"] = "completed"
+    (repo / ".hermes" / "workflows" / "run-test" / "run.json").write_text(json.dumps(state))
+    decision = plugin._pre_tool_call(tool_name="terminal", args={"command": valid})
+    assert decision and decision["action"] == "block"
     monkeypatch.delenv("HCW_RUN_ID"); monkeypatch.delenv("HERMES_PROFILE"); monkeypatch.delenv("HERMES_KANBAN_TASK")
-    no_identity = plugin._pre_tool_call(tool_name="terminal", args={"command": dispatch})
-    assert no_identity and no_identity["action"] == "block"
-    no_identity = plugin._pre_tool_call(tool_name="terminal", args={"command": status})
-    assert no_identity and no_identity["action"] == "block"
+    decision = plugin._pre_tool_call(tool_name="terminal", args={"command": valid})
+    assert decision and decision["action"] == "block"
 
 
 def test_dispatch_worker_blocked_once_its_bound_stage_is_no_longer_active(workflow):
