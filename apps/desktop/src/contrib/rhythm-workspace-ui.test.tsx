@@ -2,7 +2,7 @@ import { host as hermesHost } from '@hermes/plugin-sdk'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { askHermes, confirmationKey, createGateway, gatewayError } from '../../../../plugins/rhythm/desktop/src/plugin'
+import { askHermes, confirmationKey, createGateway, gatewayError, workspaceKey } from '../../../../plugins/rhythm/desktop/src/plugin'
 import {
   DashboardScreen,
   defaultRhythmTokens,
@@ -111,18 +111,19 @@ describe('accepted Rhythm workspace package', () => {
       if (path === '/workspace-operations') return { id: entityId, ...payload }
       throw new Error(`unexpected route ${path}`)
     })
-    const confirmations = new Map<string, string>()
+    const confirmations = new Map<string, { receipt: string, generation: string }>()
     const gateway = createGateway(rest as never, confirmations)
     await expect(gateway.planner.update(entityId, payload)).rejects.toMatchObject({ kind: 'unavailable' })
     expect(rest).not.toHaveBeenCalled()
 
-    const key = JSON.stringify([operation, entityId, payload])
-    confirmations.set(key, 'receipt-never-rendered')
+    const generation = 'generation-accepted-1'
+    const key = workspaceKey(operation, entityId, payload)
+    confirmations.set(key, { receipt: 'receipt-never-rendered', generation })
     await expect(gateway.planner.update(entityId, payload)).resolves.toMatchObject({ id: entityId })
-    expect(rest).toHaveBeenCalledWith('/workspace-operations', { method: 'POST', body: { operation, entityId, payload, confirmation: 'receipt-never-rendered' } })
+    expect(rest).toHaveBeenCalledWith('/workspace-operations', { method: 'POST', body: { operation, entityId, payload, generation, confirmation: 'receipt-never-rendered' } })
     await expect(gateway.planner.update(entityId, payload)).rejects.toMatchObject({ kind: 'unavailable' })
 
-    confirmations.set(key, 'receipt-for-different-payload')
+    confirmations.set(key, { receipt: 'receipt-for-different-payload', generation })
     await expect(gateway.planner.update(entityId, { ...payload, notes: 'changed' })).rejects.toMatchObject({ kind: 'unavailable' })
     const rehomedGateway = createGateway(rest as never, new Map())
     await expect(rehomedGateway.planner.update(entityId, payload)).rejects.toMatchObject({ kind: 'unavailable' })
@@ -309,6 +310,36 @@ describe('accepted Rhythm workspace package', () => {
     expect(view.container.textContent).not.toContain(token)
     await expect(gateway.tasks.complete?.('task-1', 'changed-generation')).rejects.toMatchObject({ kind: 'unavailable' })
     expect(confirmations.size).toBe(0)
+    view.unmount()
+  })
+
+  it('mounts Planner: the visible confirmation and operation carry one identical generation', async () => {
+    const confirmations = new Map<string, string | { receipt: string, generation: string }>()
+    const rest = vi.fn(async (path: string, init?: { method: string, body: unknown }) => {
+      if (path === '/planner/weeks/2026-08-17') return plannerWeek
+      if (path === '/workspace-operations/confirmation') return { confirmation: 'workspace-receipt-secret' }
+      if (path === '/workspace-operations') return { id: 'planner-task-1', status: 'done' }
+      throw new Error(`unexpected route ${path}`)
+    })
+    const gateway = createGateway(rest as never, confirmations)
+    const adapter: RhythmHostAdapter = {
+      ...host,
+      currentUser: { displayName: 'Hermes', initials: 'H', id: 'user-1', capabilities: ['planner.update-task'] },
+      confirmWorkspaceOperation: async confirmation => {
+        const response = await rest('/workspace-operations/confirmation', { method: 'POST', body: confirmation }) as { confirmation: string }
+        confirmations.set(workspaceKey(confirmation.operation, confirmation.entityId, confirmation.payload), { receipt: response.confirmation, generation: confirmation.generation })
+        return true
+      },
+    }
+    const view = renderScreen(<PlannerScreen />, gateway, adapter)
+    await screen.findByTestId('planner-complete-planner-task-1')
+    fireEvent.click(screen.getByTestId('planner-complete-planner-task-1'))
+    fireEvent.click(await screen.findByTestId('planner-operation-confirm'))
+    await waitFor(() => expect(rest.mock.calls.map(([path]) => path)).toEqual(['/planner/weeks/2026-08-17', '/workspace-operations/confirmation', '/workspace-operations']))
+    const confirm = rest.mock.calls[1][1]?.body as { generation: string, operation: string, entityId: string, payload: unknown }
+    const mutate = rest.mock.calls[2][1]?.body as { generation: string, confirmation: string, operation: string, entityId: string, payload: unknown }
+    expect(mutate).toMatchObject({ operation: confirm.operation, entityId: confirm.entityId, payload: confirm.payload, generation: confirm.generation, confirmation: 'workspace-receipt-secret' })
+    expect(view.container.textContent).not.toContain('workspace-receipt-secret')
     view.unmount()
   })
 })

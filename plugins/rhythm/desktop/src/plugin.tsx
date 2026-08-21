@@ -86,17 +86,29 @@ function confirmationKey(confirmation: RhythmTaskOperationConfirmation | RhythmW
   return JSON.stringify([confirmation.entityId, confirmation.operation, confirmation.payload, confirmation.generation])
 }
 
-function workspaceKey(operation: string, entityId: string, payload: Record<string, unknown>): string {
-  return JSON.stringify([operation, entityId, payload])
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    return `{${Object.keys(record).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
 }
 
-function createGateway(rest: Rest, confirmations = new Map<string, string>()): RhythmDomainGateway {
+function workspaceKey(operation: string, entityId: string, payload: Record<string, unknown>): string {
+  return canonicalJson([operation, entityId, payload])
+}
+
+interface WorkspaceReceipt { receipt: string; generation: string }
+type ConfirmationReceipt = string | WorkspaceReceipt
+
+function createGateway(rest: Rest, confirmations = new Map<string, ConfirmationReceipt>()): RhythmDomainGateway {
   async function workspaceOperation<T>(operation: string, entityId: string, payload: Record<string, unknown>): Promise<T> {
     const key = workspaceKey(operation, entityId, payload)
-    const confirmation = confirmations.get(key)
-    if (!confirmation) return unavailable()
+    const bound = confirmations.get(key)
+    if (!bound || typeof bound === 'string') return unavailable()
     confirmations.delete(key)
-    return write<T>(rest, '/workspace-operations', { operation, entityId, payload, confirmation })
+    return write<T>(rest, '/workspace-operations', { operation, entityId, payload, generation: bound.generation, confirmation: bound.receipt })
   }
   return {
     dashboard: {
@@ -117,14 +129,14 @@ function createGateway(rest: Rest, confirmations = new Map<string, string>()): R
       complete: async (id: string, generation?: string) => {
         const request = { taskId: id, operation: 'complete' as const, generation: generation ?? '' }
         const confirmation = confirmations.get(confirmationKey(request))
-        if (!confirmation) return unavailable()
+        if (!confirmation || typeof confirmation !== 'string') return unavailable()
         confirmations.delete(confirmationKey(request))
         return write<RhythmTask>(rest, `/tasks/${id}/operations`, { operation: 'complete', generation: request.generation, confirmation })
       },
       reschedule: async (id: string, scheduledDate: string, generation?: string) => {
         const request = { taskId: id, operation: 'reschedule' as const, scheduledDate, generation: generation ?? '' }
         const confirmation = confirmations.get(confirmationKey(request))
-        if (!confirmation) return unavailable()
+        if (!confirmation || typeof confirmation !== 'string') return unavailable()
         confirmations.delete(confirmationKey(request))
         return write<RhythmTask>(rest, `/tasks/${id}/operations`, { operation: 'reschedule', scheduledDate, generation: request.generation, confirmation })
       },
@@ -153,7 +165,7 @@ function createGateway(rest: Rest, confirmations = new Map<string, string>()): R
       updateTemplate: (id: string, input: Record<string, unknown>) => workspaceOperation('projects.update-template', id, input),
       deleteTemplate: (id: string) => workspaceOperation('projects.delete-template', id, {}),
       addTemplateStep: (id: string, input: Record<string, unknown>) => workspaceOperation('projects.create-step', id, input),
-      updateTemplateStep: (templateId: string, stepId: string, input: Record<string, unknown>) => workspaceOperation('projects.update-step', stepId, { templateId, ...input }),
+      updateTemplateStep: (templateId: string, stepId: string, input: Record<string, unknown>) => workspaceOperation('projects.update-template-step', stepId, { templateId, ...input }),
       deleteTemplateStep: (templateId: string, stepId: string) => workspaceOperation('projects.delete-step', stepId, { templateId }),
       // Instance deletion has no M5 semantic grant or server operation.
       delete: unavailable,
@@ -186,14 +198,14 @@ function RhythmWorkspace({ rest }: { rest: Rest }) {
   // A changed identity is a synchronous re-home: React unmounts old screen
   // state before the replacement gateway can publish, invalidating stale work.
   const generation = `${connectionId}:${profile}:${gatewayState}`
-  const confirmations = useMemo(() => new Map<string, string>(), [generation])
+  const confirmations = useMemo(() => new Map<string, ConfirmationReceipt>(), [generation])
   const gateway = useMemo(() => createGateway(rest, confirmations), [rest, confirmations])
   const adapter = useMemo<RhythmHostAdapter>(() => ({
     tokens: defaultRhythmTokens,
     viewport: 'expanded',
     // M5 grants are semantic and receipt-bound.  The renderer never receives a
     // bearer token, URL, workspace, or user identity.
-    currentUser: { displayName: 'Hermes', initials: 'H', collaborationCapability: 'read', capabilities: ['planner.schedule-task', 'planner.update-task', 'planner.update-project-step', 'planner.schedule-project-step', 'rhythms.create-rule', 'rhythms.update-rule', 'rhythms.delete-rule', 'rhythms.create-step', 'rhythms.update-step', 'projects.create-template', 'projects.update-template', 'projects.delete-template', 'projects.create-instance', 'projects.update-step', 'projects.create-step', 'projects.delete-step', 'projects.create-milestone'] },
+    currentUser: { displayName: 'Hermes', initials: 'H', collaborationCapability: 'read', capabilities: ['planner.schedule-task', 'planner.update-task', 'planner.update-project-step', 'planner.schedule-project-step', 'rhythms.create-rule', 'rhythms.update-rule', 'rhythms.delete-rule', 'rhythms.create-step', 'rhythms.update-step', 'projects.create-template', 'projects.update-template', 'projects.delete-template', 'projects.create-instance', 'projects.update-step', 'projects.update-template-step', 'projects.create-step', 'projects.delete-step', 'projects.create-milestone'] },
     confirmTaskOperation: async (confirmation: RhythmTaskOperationConfirmation) => {
       const payload = await write<{ confirmation: string }>(rest, `/tasks/${confirmation.taskId}/confirmation`, { ...confirmation })
       confirmations.set(confirmationKey(confirmation), payload.confirmation)
@@ -201,7 +213,7 @@ function RhythmWorkspace({ rest }: { rest: Rest }) {
     },
     confirmWorkspaceOperation: async (confirmation: RhythmWorkspaceOperationConfirmation) => {
       const payload = await write<{ confirmation: string }>(rest, '/workspace-operations/confirmation', confirmation)
-      confirmations.set(workspaceKey(confirmation.operation, confirmation.entityId, confirmation.payload), payload.confirmation)
+      confirmations.set(workspaceKey(confirmation.operation, confirmation.entityId, confirmation.payload), { receipt: payload.confirmation, generation: confirmation.generation })
       return true
     },
     onNavigateToScreen: (screen: RhythmScreenId) => {
@@ -228,5 +240,5 @@ const plugin: HermesPlugin = {
   },
 }
 
-export { askHermes, confirmationKey, createGateway, gatewayError }
+export { askHermes, confirmationKey, createGateway, gatewayError, workspaceKey }
 export default plugin

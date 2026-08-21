@@ -17,7 +17,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from plugins.rhythm.backend.client import (
     OAUTH_CLIENT_ID,
@@ -82,12 +82,20 @@ class WorkspaceOperation(BaseModel):
         "planner.schedule-task", "planner.update-task", "planner.update-project-step", "planner.schedule-project-step",
         "rhythms.create-rule", "rhythms.update-rule", "rhythms.delete-rule", "rhythms.create-step", "rhythms.update-step",
         "projects.create-template", "projects.update-template", "projects.delete-template", "projects.create-instance",
-        "projects.update-step", "projects.create-step", "projects.delete-step", "projects.create-milestone",
+        "projects.update-step", "projects.update-template-step", "projects.create-step", "projects.delete-step", "projects.create-milestone",
     ]
     entityId: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
     payload: dict[str, str | int | bool | None | list[dict[str, str | int | bool | None]]] = Field(default_factory=dict, max_length=16)
     generation: str = Field(min_length=8, max_length=256)
     confirmation: str | None = Field(default=None, min_length=32, max_length=128)
+
+    @model_validator(mode="after")
+    def _operation_payload_is_exact(self):
+        # Keep the envelope closed at Pydantic's ingress as well as at the
+        # route boundary.  The normalized value is what receipt hashing and
+        # mutation use, so equivalent payload ordering cannot change intent.
+        self.payload = _m5_payload(self.operation, self.payload)
+        return self
 
 
 _M5_UPSTREAM: dict[str, tuple[str, str]] = {
@@ -96,7 +104,7 @@ _M5_UPSTREAM: dict[str, tuple[str, str]] = {
     "rhythms.create-rule": ("POST", "/recurring-rules"), "rhythms.update-rule": ("PATCH", "/recurring-rules/{id}"), "rhythms.delete-rule": ("DELETE", "/recurring-rules/{id}"),
     "rhythms.create-step": ("POST", "/recurring-rules/{id}/steps"), "rhythms.update-step": ("PATCH", "/recurring-rules/{id}"),
     "projects.create-template": ("POST", "/project-templates"), "projects.update-template": ("PATCH", "/project-templates/{id}"), "projects.delete-template": ("DELETE", "/project-templates/{id}"),
-    "projects.create-instance": ("POST", "/project-templates/{id}/generate"), "projects.update-step": ("PATCH", "/project-instances/steps/{id}"),
+    "projects.create-instance": ("POST", "/project-templates/{id}/generate"), "projects.update-step": ("PATCH", "/project-instances/steps/{id}"), "projects.update-template-step": ("PATCH", "/project-templates/{templateId}/steps/{id}"),
     "projects.create-step": ("POST", "/project-templates/{id}/steps"), "projects.delete-step": ("DELETE", "/project-templates/{templateId}/steps/{id}"),
     "projects.create-milestone": ("POST", "/project-instances/{id}/milestones"),
 }
@@ -192,28 +200,99 @@ def _prune_task_confirmations_locked() -> None:
 
 
 def _m5_payload(operation: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """Project the renderer's bounded semantic values onto exact wire fields."""
-    allowed = {
-        "planner.schedule-task": {"scheduledDate"}, "planner.update-task": {"notes", "dueDate", "scheduledDate", "status"},
-        "planner.update-project-step": {"notes", "dueDate", "status"}, "planner.schedule-project-step": {"dueDate"},
-        "rhythms.create-rule": {"title", "frequency", "dayOfWeek", "dayOfMonth", "month", "sequential", "enabled", "steps"},
-        "rhythms.update-rule": {"title", "frequency", "dayOfWeek", "dayOfMonth", "month", "sequential", "enabled"}, "rhythms.delete-rule": set(),
-        "rhythms.create-step": {"title", "assigneeId"}, "rhythms.update-step": {"steps"},
-        "projects.create-template": {"name", "description", "anchorType"}, "projects.update-template": {"name", "description", "anchorType"}, "projects.delete-template": set(),
-        "projects.create-instance": {"anchorDate", "name"}, "projects.update-step": {"title", "notes", "dueDate", "scheduledDate", "status", "assigneeId", "milestoneId", "instanceId", "templateId"},
-        "projects.create-step": {"title", "offsetDays", "offsetDescription", "assigneeId"}, "projects.delete-step": {"templateId"}, "projects.create-milestone": {"title"},
-    }[operation]
-    if set(payload) - allowed or (operation in {"planner.schedule-task", "projects.create-instance", "rhythms.create-rule", "projects.create-template", "rhythms.create-step", "projects.create-step", "projects.create-milestone"} and not payload):
+    """Validate one discriminated M5 operation and return its canonical body.
+
+    This intentionally is not a generic ``dict`` sanitizer: unknown fields are
+    rejected before a digest, confirmation, or upstream request exists.
+    """
+    schemas = {
+        "planner.schedule-task": ({"scheduledDate": "date"}, {"scheduledDate"}),
+        "planner.update-task": ({"notes": "text", "dueDate": "date?", "scheduledDate": "date?", "status": "task_status"}, set()),
+        "planner.update-project-step": ({"notes": "text", "dueDate": "date?", "status": "step_status"}, set()),
+        "planner.schedule-project-step": ({"dueDate": "date"}, {"dueDate"}),
+        "rhythms.create-rule": ({"title": "short", "frequency": "frequency", "dayOfWeek": "weekday", "dayOfMonth": "day", "month": "month", "sequential": "bool", "enabled": "bool", "steps": "steps"}, {"title", "frequency"}),
+        "rhythms.update-rule": ({"title": "short", "frequency": "frequency", "dayOfWeek": "weekday", "dayOfMonth": "day", "month": "month", "sequential": "bool", "enabled": "bool"}, set()),
+        "rhythms.delete-rule": ({}, set()),
+        "rhythms.create-step": ({"title": "short", "assigneeId": "id?"}, {"title"}),
+        "rhythms.update-step": ({"steps": "steps"}, {"steps"}),
+        "projects.create-template": ({"name": "short", "description": "text?", "anchorType": "anchor"}, {"name"}),
+        "projects.update-template": ({"name": "short", "description": "text?", "anchorType": "anchor"}, set()),
+        "projects.delete-template": ({}, set()),
+        "projects.create-instance": ({"anchorDate": "date", "name": "short?"}, {"anchorDate"}),
+        "projects.update-step": ({"title": "short", "notes": "text", "dueDate": "date?", "scheduledDate": "date?", "status": "step_status", "assigneeId": "id?", "milestoneId": "id?", "instanceId": "id", "templateId": "id"}, set()),
+        "projects.update-template-step": ({"templateId": "id", "title": "short", "offsetDays": "offset", "offsetDescription": "short?", "assigneeId": "id?"}, {"templateId"}),
+        "projects.create-step": ({"title": "short", "offsetDays": "offset", "offsetDescription": "short?", "assigneeId": "id?"}, {"title", "offsetDays"}),
+        "projects.delete-step": ({"templateId": "id"}, {"templateId"}),
+        "projects.create-milestone": ({"title": "short"}, {"title"}),
+    }
+    try: allowed, required = schemas[operation]
+    except KeyError: raise _invalid_request() from None
+    if not isinstance(payload, dict) or set(payload) - set(allowed) or required - set(payload) or (not payload and allowed):
         raise _invalid_request()
-    for key, value in payload.items():
-        if isinstance(value, str) and (not value.strip() or len(value) > 2_000): raise _invalid_request()
-        if key.endswith("Date") and value is not None and (not isinstance(value, str) or not _safe_iso_date(value)): raise _invalid_request()
-    return {key: value for key, value in payload.items() if key not in {"instanceId", "templateId"}}
+    def valid(kind: str, value: Any) -> Any:
+        nullable = kind.endswith("?")
+        kind = kind.removesuffix("?")
+        if value is None and nullable: return None
+        if kind in {"short", "text"}:
+            maximum = 256 if kind == "short" else 2_000
+            if not isinstance(value, str) or not value.strip() or len(value) > maximum: raise _invalid_request()
+            return value.strip()
+        if kind == "id":
+            if not isinstance(value, str) or not _safe_id(value): raise _invalid_request()
+            return value
+        if kind == "date":
+            if not isinstance(value, str) or not _safe_iso_date(value): raise _invalid_request()
+            return value
+        if kind == "bool":
+            if type(value) is not bool: raise _invalid_request()
+            return value
+        if kind == "offset":
+            if type(value) is not int or not -3650 <= value <= 3650: raise _invalid_request()
+            return value
+        if kind == "frequency":
+            if value not in {"daily", "weekly", "monthly", "yearly"}: raise _invalid_request()
+            return value
+        if kind == "weekday":
+            if type(value) is not int or not 0 <= value <= 6: raise _invalid_request()
+            return value
+        if kind == "day":
+            if type(value) is not int or not 1 <= value <= 31: raise _invalid_request()
+            return value
+        if kind == "month":
+            if type(value) is not int or not 1 <= value <= 12: raise _invalid_request()
+            return value
+        if kind == "anchor":
+            if value not in {"start_date", "due_date", "scheduled_date"}: raise _invalid_request()
+            return value
+        if kind == "task_status":
+            if value not in {"open", "in_progress", "waiting_for_reply", "done"}: raise _invalid_request()
+            return value
+        if kind == "step_status":
+            if value not in {"open", "done"}: raise _invalid_request()
+            return value
+        if kind == "steps":
+            if not isinstance(value, list) or not value or len(value) > 100: raise _invalid_request()
+            out = []
+            for row in value:
+                if not isinstance(row, dict) or set(row) - {"id", "title", "order", "assigneeId"}: raise _invalid_request()
+                if not isinstance(row.get("id"), str) or not _safe_id(row["id"]) or not isinstance(row.get("title"), str) or not row["title"].strip() or len(row["title"]) > 256 or type(row.get("order")) is not int or not 0 <= row["order"] < 100:
+                    raise _invalid_request()
+                item = {"id": row["id"], "title": row["title"].strip(), "order": row["order"]}
+                if "assigneeId" in row: item["assigneeId"] = valid("id?", row["assigneeId"])
+                out.append(item)
+            return out
+        raise _invalid_request()
+    normalized = {key: valid(kind, payload[key]) for key, kind in allowed.items() if key in payload}
+    return normalized
 
 
 def _safe_iso_date(value: str) -> bool:
     try: return date.fromisoformat(value).isoformat() == value
     except ValueError: return False
+
+
+def _safe_id(value: str) -> bool:
+    return bool(value) and len(value) <= 128 and all(char.isalnum() or char in "_-" for char in value)
 
 
 def _task_authorized(task: dict[str, Any], actor_id: str) -> bool:
@@ -523,6 +602,8 @@ def _m5_readback_path(operation: str, entity_id: str, payload: dict[str, Any]) -
         return f"/tasks/{entity_id}" if "task" in operation else f"/project-instances/steps/{entity_id}"
     if operation.startswith("rhythms."):
         return f"/recurring-rules/{entity_id}"
+    if operation == "projects.update-template-step":
+        return f"/project-templates/{payload['templateId']}/steps/{entity_id}"
     if operation == "projects.update-template" or operation == "projects.delete-template":
         return f"/project-templates/{entity_id}"
     if operation == "projects.update-step":
@@ -530,30 +611,125 @@ def _m5_readback_path(operation: str, entity_id: str, payload: dict[str, Any]) -
     return "/project-instances" if "instance" in operation or "milestone" in operation else "/project-templates"
 
 
-def _m5_public(value: Any, *, depth: int = 0) -> Any:
-    """Bound the M5 read DTOs and never reflect credential-shaped fields."""
-    if depth > 8:
+def _m5_authorization_path(operation: str, entity_id: str, payload: dict[str, Any]) -> str | None:
+    """The target (or parent) that must be canonically re-authorized."""
+    if operation in {"rhythms.create-rule", "projects.create-template"}: return None
+    if operation.startswith("planner.schedule-task") or operation.startswith("planner.update-task"): return f"/tasks/{entity_id}"
+    if operation.startswith("planner.") or operation == "projects.update-step": return f"/project-instances/steps/{entity_id}"
+    if operation == "projects.update-template-step": return f"/project-templates/{payload.get('templateId')}/steps/{entity_id}"
+    if operation.startswith("rhythms."):
+        return f"/recurring-rules/{entity_id}"
+    if operation in {"projects.create-instance", "projects.create-step", "projects.delete-step"}: return f"/project-templates/{payload.get('templateId', entity_id)}"
+    if operation == "projects.create-milestone": return f"/project-instances/{entity_id}"
+    return f"/project-templates/{entity_id}"
+
+
+def _m5_authorized(raw: Any, identity: dict[str, str], workspace: dict[str, str]) -> bool:
+    if not isinstance(raw, dict) or raw.get("workspaceId") != workspace["id"]: return False
+    if raw.get("ownerId") == identity["id"]: return True
+    collaborators = raw.get("collaborators", [])
+    return isinstance(collaborators, list) and any(isinstance(row, dict) and row.get("id") == identity["id"] and row.get("role") in {"owner", "editor", "write"} for row in collaborators)
+
+
+def _m5_workspace_can_create(workspace: dict[str, Any]) -> bool:
+    return workspace.get("role") in {"owner", "admin", "editor"}
+
+
+def _m5_desired(raw: Any, entity_id: str, body: dict[str, Any]) -> bool:
+    return isinstance(raw, dict) and raw.get("id") == entity_id and all(raw.get(key) == value for key, value in body.items())
+
+
+def _m5_text(value: Any, maximum: int = 2_000) -> str:
+    if not isinstance(value, str) or not value.strip() or len(value) > maximum:
         raise RhythmProtocolError("schema_drift")
-    if value is None or type(value) in {bool, int}:
-        return value
-    if isinstance(value, str):
-        if len(value) > 8_192:
-            raise RhythmProtocolError("schema_drift")
-        return value
-    if isinstance(value, list):
-        if len(value) > 500:
-            raise RhythmProtocolError("schema_drift")
-        return [_m5_public(item, depth=depth + 1) for item in value]
-    if isinstance(value, dict):
-        if len(value) > 128:
-            raise RhythmProtocolError("schema_drift")
-        secret_keys = {"access_token", "accesstoken", "token", "authorization", "password", "secret"}
-        return {
-            key: _m5_public(item, depth=depth + 1)
-            for key, item in value.items()
-            if isinstance(key, str) and len(key) <= 64 and key.lower().replace("-", "_") not in secret_keys
-        }
-    raise RhythmProtocolError("schema_drift")
+    return value.strip()
+
+
+def _m5_fields(raw: Any, fields: dict[str, tuple[type, int | None]]) -> dict[str, Any]:
+    """Strict allowlist projection; unknown fields never cross this boundary."""
+    if not isinstance(raw, dict):
+        raise RhythmProtocolError("schema_drift")
+    result: dict[str, Any] = {}
+    for name, (kind, maximum) in fields.items():
+        value = raw.get(name)
+        if value is None:
+            continue
+        if kind is str:
+            result[name] = _m5_text(value, maximum or 2_000)
+        elif kind is int:
+            if type(value) is not int or (maximum is not None and not 0 <= value <= maximum): raise RhythmProtocolError("schema_drift")
+            result[name] = value
+        elif kind is bool:
+            if type(value) is not bool: raise RhythmProtocolError("schema_drift")
+            result[name] = value
+    return result
+
+
+_M5_ENTITY_FIELDS = {
+    "id": (str, 128), "title": (str, 512), "name": (str, 512), "notes": (str, 8_192),
+    "description": (str, 2_000), "status": (str, 64), "dueDate": (str, 32), "scheduledDate": (str, 32),
+    "date": (str, 32), "enabled": (bool, None), "offsetDays": (int, 3650), "order": (int, 10_000),
+}
+
+
+def _m5_entity(raw: Any) -> dict[str, Any]:
+    return _m5_fields(raw, _M5_ENTITY_FIELDS)
+
+
+def _m5_item_list(value: Any, projector: Any = _m5_entity) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or len(value) > 500: raise RhythmProtocolError("schema_drift")
+    return [projector(row) for row in value]
+
+
+def _planner_week_public(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict): raise RhythmProtocolError("schema_drift")
+    result = _m5_fields(value, {"weekStart": (str, 32), "weekLabel": (str, 128)})
+    if "weekStart" not in result: raise RhythmProtocolError("schema_drift")
+    for name in ("days", "backlog"):
+        rows = value.get(name, [])
+        if not isinstance(rows, list) or len(rows) > 100: raise RhythmProtocolError("schema_drift")
+        if name == "days":
+            projected = []
+            for row in rows:
+                day = _m5_fields(row, {"date": (str, 32), "label": (str, 128)})
+                tasks = row.get("tasks", []) if isinstance(row, dict) else None
+                if not isinstance(tasks, list) or len(tasks) > 200: raise RhythmProtocolError("schema_drift")
+                day["tasks"] = _m5_item_list(tasks)
+                projected.append(day)
+            result[name] = projected
+        else:
+            result[name] = _m5_item_list(rows)
+    return result
+
+
+def _rhythm_rule(raw: Any) -> dict[str, Any]:
+    result = _m5_entity(raw)
+    if isinstance(raw, dict) and "steps" in raw: result["steps"] = _m5_item_list(raw["steps"])
+    return result
+
+
+def _template(raw: Any) -> dict[str, Any]:
+    result = _m5_entity(raw)
+    if isinstance(raw, dict) and "steps" in raw: result["steps"] = _m5_item_list(raw["steps"])
+    return result
+
+
+def _instance(raw: Any) -> dict[str, Any]:
+    result = _m5_entity(raw)
+    if isinstance(raw, dict):
+        for name in ("steps", "milestones"):
+            if name in raw: result[name] = _m5_item_list(raw[name])
+    return result
+
+
+def _m5_public(kind: str, value: Any) -> dict[str, Any]:
+    if kind == "planner": return _planner_week_public(value)
+    if not isinstance(value, dict): raise RhythmProtocolError("schema_drift")
+    projector = {"rules": _rhythm_rule, "templates": _template, "instances": _instance, "rule": _rhythm_rule, "template": _template, "instance": _instance}[kind]
+    if kind in {"rules", "templates", "instances"}:
+        items = value.get("items")
+        return {"items": _m5_item_list(items, projector)}
+    return projector(value)
 
 
 @router.post("/workspace-operations/confirmation")
@@ -579,7 +755,7 @@ async def workspace_operation_confirmation(incoming_request: Request):
 @router.post("/workspace-operations")
 async def workspace_operation(incoming_request: Request):
     payload = await _validated_body(incoming_request, WorkspaceOperation)
-    body = _m5_payload(payload.operation, payload.payload)
+    body = {key: value for key, value in _m5_payload(payload.operation, payload.payload).items() if key not in {"instanceId", "templateId"}}
     if not payload.confirmation:
         raise HTTPException(409, detail={"error": "confirmation_required", "recoverable": True})
     with _oauth_lock:
@@ -589,8 +765,19 @@ async def workspace_operation(incoming_request: Request):
         raise HTTPException(409, detail={"error": "stale_confirmation", "recoverable": True})
     try:
         client, identity, workspace = _connected_client()
-        if identity["id"] != receipt.actor_id or workspace["id"] != receipt.workspace_id or _m5_digest(identity, workspace, payload) != receipt.intent_digest:
+        # Stored connection metadata is display cache only. Re-pin actor and
+        # workspace immediately before authorization and the one mutation.
+        identity = _safe_identity(client.call("GET", "/auth/me"))
+        workspace = client.call("GET", "/workspaces/me")
+        canonical_workspace = _safe_workspace(workspace)
+        if identity["id"] != receipt.actor_id or canonical_workspace["id"] != receipt.workspace_id or _m5_digest(identity, canonical_workspace, payload) != receipt.intent_digest:
             raise HTTPException(409, detail={"error": "stale_confirmation", "recoverable": True})
+        target_path = _m5_authorization_path(payload.operation, payload.entityId, payload.payload)
+        if target_path is None:
+            if not _m5_workspace_can_create(workspace): raise RhythmRemoteError("forbidden")
+        else:
+            target = client.call("GET", target_path)
+            if not _m5_authorized(target, identity, canonical_workspace): raise RhythmRemoteError("forbidden")
         with _oauth_lock:
             intent = _workspace_intents.get(receipt.intent_digest)
             if _workspace_confirmations.get(payload.confirmation) is not receipt or intent is None or intent.claimed:
@@ -616,12 +803,20 @@ async def workspace_operation(incoming_request: Request):
                     pass
                 raise RhythmRemoteError("uncertain", exc.status_code) from exc
             raise
-        # A bounded canonical read follows every mutation.  Deletions reconcile via
-        # their owning collection; all other operations return the server DTO.
+        # Never return an upstream mutation response.  Re-read the canonical
+        # resource and prove the intended state; ambiguity is never success.
         if method == "DELETE":
-            collection = "/recurring-rules" if payload.operation.startswith("rhythms.") else "/project-templates" if "template" in payload.operation else "/project-instances"
-            client.call("GET", collection)
-        return result
+            try:
+                client.call("GET", target_path or _m5_readback_path(payload.operation, payload.entityId, payload.payload))
+            except RhythmRemoteError as exc:
+                if exc.kind == "not_found": return {"id": payload.entityId, "deleted": True}
+                raise
+            raise RhythmRemoteError("conflict", 409)
+        readback_id = result["id"] if payload.operation in {"rhythms.create-rule", "projects.create-template", "projects.create-instance", "projects.create-step", "projects.create-milestone"} else payload.entityId
+        raw = client.call("GET", _m5_readback_path(payload.operation, readback_id, payload.payload))
+        if not _m5_desired(raw, readback_id, body): raise RhythmRemoteError("conflict", 409)
+        kind = "rule" if payload.operation.startswith("rhythms.") else "instance" if "instance" in payload.operation or "project-step" in payload.operation or payload.operation == "projects.update-step" else "template"
+        return _m5_public(kind, raw)
     except Exception as exc:
         raise _error(exc) from None
 
@@ -631,7 +826,7 @@ def planner_week(week_start: str, incoming_request: Request):
     if incoming_request.method != "GET" or not _safe_iso_date(week_start) or date.fromisoformat(week_start).weekday() != 0:
         raise HTTPException(405 if incoming_request.method != "GET" else 422, detail={"error": "read_only" if incoming_request.method != "GET" else "invalid_request", "recoverable": True})
     try:
-        client, _, _ = _connected_client(); return _m5_public(client.call("GET", f"/planner/weeks/{week_start}"))
+        client, _, _ = _connected_client(); return _m5_public("planner", client.call("GET", f"/planner/weeks/{week_start}"))
     except Exception as exc: raise _error(exc) from None
 
 
@@ -639,14 +834,14 @@ def planner_week(week_start: str, incoming_request: Request):
 def rhythm_rules(incoming_request: Request):
     if incoming_request.method != "GET": raise HTTPException(405, detail={"error": "read_only", "recoverable": True})
     try:
-        client, _, _ = _connected_client(); return _m5_public(client.call("GET", "/recurring-rules"))
+        client, _, _ = _connected_client(); return _m5_public("rules", client.call("GET", "/recurring-rules"))
     except Exception as exc: raise _error(exc) from None
 
 
 @router.get("/rhythm-rules/{rule_id}")
 def rhythm_rule(rule_id: str):
     try:
-        client, _, _ = _connected_client(); detail = _m5_public(client.call("GET", f"/recurring-rules/{rule_id}"))
+        client, _, _ = _connected_client(); detail = _m5_public("rule", client.call("GET", f"/recurring-rules/{rule_id}"))
         if detail.get("id") != rule_id: raise RhythmProtocolError("schema_drift")
         return detail
     except Exception as exc: raise _error(exc) from None
@@ -655,21 +850,21 @@ def rhythm_rule(rule_id: str):
 @router.get("/project-templates")
 def project_templates():
     try:
-        client, _, _ = _connected_client(); return _m5_public(client.call("GET", "/project-templates"))
+        client, _, _ = _connected_client(); return _m5_public("templates", client.call("GET", "/project-templates"))
     except Exception as exc: raise _error(exc) from None
 
 
 @router.get("/project-instances")
 def project_instances():
     try:
-        client, _, _ = _connected_client(); return _m5_public(client.call("GET", "/project-instances"))
+        client, _, _ = _connected_client(); return _m5_public("instances", client.call("GET", "/project-instances"))
     except Exception as exc: raise _error(exc) from None
 
 
 @router.get("/project-instances/{instance_id}")
 def project_instance(instance_id: str):
     try:
-        client, _, _ = _connected_client(); detail = _m5_public(client.call("GET", f"/project-instances/{instance_id}"))
+        client, _, _ = _connected_client(); detail = _m5_public("instance", client.call("GET", f"/project-instances/{instance_id}"))
         if detail.get("id") != instance_id: raise RhythmProtocolError("schema_drift")
         return detail
     except Exception as exc: raise _error(exc) from None

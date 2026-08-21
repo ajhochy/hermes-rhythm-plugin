@@ -3519,7 +3519,7 @@ function ProjectsScreen() {
     };
     if (!input.title || !Number.isFinite(input.offsetDays) || !input.offsetDescription) return;
     const editor = templateStepEditor;
-    requestOperation(editor.step ? "projects.update-step" : "projects.create-step", editor.step?.id ?? editor.templateId, { title: input.title.slice(0, 200), offsetDays: input.offsetDays, offsetDescription: input.offsetDescription.slice(0, 200), assigneeId: input.assigneeId ?? null }, async () => {
+    requestOperation(editor.step ? "projects.update-template-step" : "projects.create-step", editor.step?.id ?? editor.templateId, { title: input.title.slice(0, 200), offsetDays: input.offsetDays, offsetDescription: input.offsetDescription.slice(0, 200), assigneeId: input.assigneeId ?? null }, async () => {
       const saved = editor.step ? await gateway.updateTemplateStep(editor.templateId, editor.step.id, input) : await gateway.addTemplateStep(editor.templateId, input);
       setTemplates((current) => current.map((template) => template.id !== templateStepEditor.templateId ? template : {
         ...template,

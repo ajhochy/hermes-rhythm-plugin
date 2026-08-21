@@ -121,6 +121,7 @@ class RhythmClient:
             (path.startswith("/planner/weeks/") and _safe_date(path.removeprefix("/planner/weeks/")))
             or (path.startswith("/recurring-rules/") and _safe_task_id(path.removeprefix("/recurring-rules/")))
             or (path.startswith("/project-instances/") and _safe_task_id(path.removeprefix("/project-instances/")))
+            or (path.startswith("/project-templates/") and all(_safe_task_id(part) for part in path.removeprefix("/project-templates/").split("/") if part != "steps"))
         )
         is_m5_mutation = m5 and method in {"POST", "PATCH", "DELETE"} and _m5_mutation_path(method, path) and (method == "DELETE" or body is not None)
         is_task_mutation = method == "PATCH" and path.startswith("/tasks/") and _safe_task_id(path.removeprefix("/tasks/")) and body is not None
@@ -147,7 +148,13 @@ class RhythmClient:
         headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/json"}
         if encoded is not None:
             headers["Content-Type"] = "application/json"
-            headers["Idempotency-Key"] = idempotency_key or hashlib.sha256(f"{method}:{path}:{encoded.decode()}".encode()).hexdigest()
+        # An intent key is semantic, not a property of a request body.  In
+        # particular, an approved DELETE must retain the caller's key without
+        # inventing an uncontracted JSON body.
+        if idempotency_key is not None:
+            headers["Idempotency-Key"] = idempotency_key
+        elif encoded is not None:
+            headers["Idempotency-Key"] = hashlib.sha256(f"{method}:{path}:{encoded.decode()}".encode()).hexdigest()
         for attempt in range(attempts):
             try:
                 status, response_headers, payload = self.transport(method, url, headers, encoded, REQUEST_TIMEOUT_SECONDS)

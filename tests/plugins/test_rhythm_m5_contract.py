@@ -44,7 +44,15 @@ def _transport(calls, *, mutation_result=None, identity="user-1", workspace="ws-
         path = url.removeprefix("https://api.rhythm.app")
         calls.append((method, path, json.loads(body) if body else None, headers))
         if path == "/auth/me": return 200, {}, {"id": identity}
-        if path == "/workspaces/me": return 200, {}, {"id": workspace}
+        if path == "/workspaces/me": return 200, {}, {"id": workspace, "role": "owner"}
+        if method == "GET" and path.startswith("/recurring-rules/"):
+            return 200, {}, {"id": path.rsplit("/", 1)[-1], "ownerId": identity, "workspaceId": workspace, "enabled": False}
+        if method == "GET" and path.startswith("/project-templates/"):
+            return 200, {}, {"id": path.rsplit("/", 1)[-1], "ownerId": identity, "workspaceId": workspace}
+        if method == "GET" and path.startswith("/project-instances/"):
+            return 200, {}, {"id": path.rsplit("/", 1)[-1], "ownerId": identity, "workspaceId": workspace}
+        if method == "GET" and path.startswith("/tasks/"):
+            return 200, {}, {"id": path.rsplit("/", 1)[-1], "ownerId": identity, "workspaceId": workspace, "status": "open"}
         if method == "GET" and path in reads: return 200, {}, reads[path]
         if method in {"POST", "PATCH", "DELETE"}: return 200, {}, mutation_result if mutation_result is not None else {"id": path.rsplit("/", 1)[-1]}
         raise AssertionError((method, path))
@@ -187,9 +195,9 @@ def test_m5_mutation_conflict_and_ambiguous_timeout_never_report_success(api, ou
                 from plugins.rhythm.backend.client import RhythmRemoteError
                 raise RhythmRemoteError("timeout")
             return 409, {}, {}
-        if url.endswith("/recurring-rules/rule-1") and method == "GET":
-            calls.append((method, "/recurring-rules/rule-1", None, headers))
-            return 200, {}, {"id": "rule-1", "enabled": False}
+            if url.endswith("/recurring-rules/rule-1") and method == "GET":
+                calls.append((method, "/recurring-rules/rule-1", None, headers))
+                return 200, {}, {"id": "rule-1", "enabled": False, "ownerId": "user-1", "workspaceId": "ws-1"}
         return base(method, url, headers, body, timeout)
     _connect(client, mod, transport)
     payload = {"operation": "rhythms.update-rule", "entityId": "rule-1", "payload": {"enabled": False}, "generation": "generation-1"}
@@ -226,3 +234,125 @@ def test_m5_duplicate_receipts_allow_exactly_one_mutation(api):
     release.set(); first.join(2)
     assert sorted(responses) == [200, 409]
     assert len([row for row in calls if row[0] == "PATCH"]) == 1
+
+
+@pytest.mark.parametrize("route,payload", [
+    ("/planner/weeks/2026-08-17", {"weekStart": "2026-08-17", "weekLabel": "Week", "accessToken": TOKEN,
+                                      "days": [{"date": "2026-08-17", "tasks": [{"id": "task-1", "title": "Safe", "nested": {"refreshToken": TOKEN}}]}],
+                                      "backlog": [{"id": "task-2", "title": "Safe", "credential": TOKEN}]}),
+    ("/rhythm-rules", {"items": [{"id": "rule-1", "title": "Rule", "apiKey": TOKEN, "steps": [{"id": "step-1", "title": "Step", "token": TOKEN}]}]}),
+    ("/project-templates", {"items": [{"id": "template-1", "name": "Template", "refreshToken": TOKEN, "steps": [{"id": "step-1", "title": "Step", "credential": TOKEN}]}]}),
+    ("/project-instances", {"items": [{"id": "instance-1", "name": "Instance", "token": TOKEN, "milestones": [{"id": "milestone-1", "title": "M", "apiKey": TOKEN}], "steps": [{"id": "step-1", "title": "Step", "nested": {"credential": TOKEN}}]}]}),
+])
+def test_m5_reads_use_strict_canonical_projections_at_every_nesting_level(api, route, payload):
+    """Catches a recursive reflector leaking a newly-shaped secret field."""
+    client, mod = api
+    calls = []
+    base = _transport(calls)
+    def transport(method, url, headers, body, timeout):
+        if method == "GET" and url.endswith(route):
+            calls.append((method, route, None, headers))
+            return 200, {}, payload
+        return base(method, url, headers, body, timeout)
+    _connect(client, mod, transport)
+    response = client.get(f"/api/plugins/rhythm{route}")
+    assert response.status_code == 200, response.text
+    rendered = response.text.lower()
+    for forbidden in (TOKEN.lower(), "accesstoken", "refreshtoken", "apikey", "credential", '"nested"'):
+        assert forbidden not in rendered
+
+
+@pytest.mark.parametrize("operation,entity,payload", [
+    ("rhythms.update-rule", "rule-1", {"enabled": False, "unexpected": "no"}),
+    ("projects.update-step", "step-1", {"templateId": "template-1", "title": 12}),
+    ("planner.schedule-task", "task-1", {}),
+    ("rhythms.create-rule", "new-rule", {"title": "Rule", "frequency": "hourly"}),
+])
+def test_m5_operation_payloads_are_discriminated_exact_and_normalized(api, operation, entity, payload):
+    """Catches an envelope validator accepting values outside the named operation schema."""
+    client, mod = api
+    calls = []
+    _connect(client, mod, _transport(calls))
+    response = client.post("/api/plugins/rhythm/workspace-operations/confirmation", json={"operation": operation, "entityId": entity, "payload": payload, "generation": "generation-1"})
+    assert response.status_code == 422
+    assert not any(method in {"POST", "PATCH", "DELETE"} for method, _, _, _ in calls)
+
+
+def test_m5_delete_emits_supplied_idempotency_key_without_a_delete_body():
+    """Catches a DELETE dropping its deterministic intent header because it has no JSON body."""
+    from plugins.rhythm.backend.client import RhythmClient
+    seen = []
+    def transport(method, url, headers, body, timeout):
+        seen.append((method, headers, body))
+        return 200, {}, {}
+    RhythmClient(TOKEN, transport=transport).call("DELETE", "/recurring-rules/rule-1", idempotency_key="intent-key", m5=True)
+    assert len(seen) == 1
+    assert seen[0][0] == "DELETE" and seen[0][2] is None
+    assert seen[0][1]["Idempotency-Key"] == "intent-key"
+    assert "Content-Type" not in seen[0][1]
+
+
+def test_m5_mutation_response_is_canonical_readback_not_raw_mutation(api):
+    """Catches returning a secret-bearing PATCH response instead of the canonical DTO."""
+    client, mod = api
+    calls = []
+    def transport(method, url, headers, body, timeout):
+        path = url.removeprefix("https://api.rhythm.app")
+        calls.append((method, path, json.loads(body) if body else None, headers))
+        if path == "/auth/me": return 200, {}, {"id": "user-1"}
+        if path == "/workspaces/me": return 200, {}, {"id": "ws-1", "role": "owner"}
+        if path == "/recurring-rules/rule-1" and method == "GET": return 200, {}, {"id": "rule-1", "title": "Canonical", "enabled": False, "ownerId": "user-1", "workspaceId": "ws-1", "token": TOKEN}
+        if path == "/recurring-rules/rule-1" and method == "PATCH": return 200, {}, {"id": "rule-1", "token": TOKEN, "raw": "untrusted"}
+        if path == "/recurring-rules": return 200, {}, {"items": []}
+        raise AssertionError((method, path))
+    _connect(client, mod, transport)
+    request = {"operation": "rhythms.update-rule", "entityId": "rule-1", "payload": {"enabled": False}, "generation": "generation-1"}
+    token = client.post("/api/plugins/rhythm/workspace-operations/confirmation", json=request).json()["confirmation"]
+    response = client.post("/api/plugins/rhythm/workspace-operations", json={**request, "confirmation": token})
+    assert response.status_code == 200, response.text
+    assert response.json() == {"id": "rule-1", "title": "Canonical", "enabled": False}
+    assert [row[:2] for row in calls].count(("GET", "/recurring-rules/rule-1")) >= 2
+
+
+def test_m5_reauthorizes_canonical_target_after_confirmation_before_mutation(api):
+    """Catches an owner change between confirmation and PATCH being trusted from renderer/cache state."""
+    client, mod = api
+    calls = []
+    phase = {"changed": False}
+    def transport(method, url, headers, body, timeout):
+        path = url.removeprefix("https://api.rhythm.app")
+        calls.append((method, path, json.loads(body) if body else None, headers))
+        if path == "/auth/me": return 200, {}, {"id": "user-1"}
+        if path == "/workspaces/me": return 200, {}, {"id": "ws-1", "role": "owner"}
+        if path == "/recurring-rules/rule-1" and method == "GET":
+            return 200, {}, {"id": "rule-1", "ownerId": "user-2" if phase["changed"] else "user-1", "workspaceId": "ws-1", "enabled": False}
+        if method == "PATCH": raise AssertionError("must not mutate a re-homed owner")
+        raise AssertionError((method, path))
+    _connect(client, mod, transport)
+    request = {"operation": "rhythms.update-rule", "entityId": "rule-1", "payload": {"enabled": False}, "generation": "generation-1"}
+    token = client.post("/api/plugins/rhythm/workspace-operations/confirmation", json=request).json()["confirmation"]
+    phase["changed"] = True
+    response = client.post("/api/plugins/rhythm/workspace-operations", json={**request, "confirmation": token})
+    assert response.status_code == 403
+    assert not any(method == "PATCH" for method, _, _, _ in calls)
+
+
+def test_m5_template_step_is_a_distinct_confirmed_semantic_operation_and_route(api):
+    """Catches template step edits being sent through the instance-step endpoint."""
+    client, mod = api
+    calls = []
+    def transport(method, url, headers, body, timeout):
+        path = url.removeprefix("https://api.rhythm.app")
+        calls.append((method, path, json.loads(body) if body else None, headers))
+        if path == "/auth/me": return 200, {}, {"id": "user-1"}
+        if path == "/workspaces/me": return 200, {}, {"id": "ws-1", "role": "owner"}
+        if path == "/project-templates/template-1/steps/step-1" and method == "GET": return 200, {}, {"id": "step-1", "ownerId": "user-1", "workspaceId": "ws-1", "title": "Canonical"}
+        if path == "/project-templates/template-1/steps/step-1" and method == "PATCH": return 200, {}, {"id": "step-1"}
+        raise AssertionError((method, path))
+    _connect(client, mod, transport)
+    request = {"operation": "projects.update-template-step", "entityId": "step-1", "payload": {"templateId": "template-1", "title": "Canonical"}, "generation": "generation-1"}
+    token = client.post("/api/plugins/rhythm/workspace-operations/confirmation", json=request).json()["confirmation"]
+    response = client.post("/api/plugins/rhythm/workspace-operations", json={**request, "confirmation": token})
+    assert response.status_code == 200, response.text
+    assert ("PATCH", "/project-templates/template-1/steps/step-1") in [(method, path) for method, path, _, _ in calls]
+    assert not any(path == "/project-instances/steps/step-1" for _, path, _, _ in calls)
