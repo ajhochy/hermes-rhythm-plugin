@@ -883,7 +883,7 @@ function Metric({ label, value }) {
     /* @__PURE__ */ jsx("dd", { children: value })
   ] });
 }
-function StatePanel2({ state, onRetry, onEmpty }) {
+function StatePanel2({ state, onRetry, onEmpty, canWrite }) {
   if (state === "loading") {
     return /* @__PURE__ */ jsxs("section", { className: "dashboard-state loading", role: "status", "aria-live": "polite", "data-testid": "page-state-loading", children: [
       /* @__PURE__ */ jsx("span", { className: "eyebrow", children: "Refreshing planning data" }),
@@ -901,7 +901,7 @@ function StatePanel2({ state, onRetry, onEmpty }) {
       /* @__PURE__ */ jsx("span", { className: "eyebrow", children: "A clear workspace" }),
       /* @__PURE__ */ jsx("h2", { children: "No planning work yet" }),
       /* @__PURE__ */ jsx("p", { children: "Create the first task to give this week a starting point." }),
-      /* @__PURE__ */ jsx("button", { className: "primary-button", type: "button", onClick: onEmpty, "data-testid": "dashboard-empty-primary", children: "Create the first task" })
+      /* @__PURE__ */ jsx("button", { className: "primary-button", type: "button", disabled: !canWrite, onClick: onEmpty, "data-testid": "dashboard-empty-primary", children: "Create the first task" })
     ] });
   }
   if (state === "server_error") {
@@ -926,9 +926,9 @@ function StatePanel2({ state, onRetry, onEmpty }) {
     /* @__PURE__ */ jsx("button", { className: "primary-button", type: "button", onClick: onRetry, "data-testid": "page-retry", children: "Retry" })
   ] });
 }
-function TaskEntry({ task, onInspect, onToggle }) {
+function TaskEntry({ task, onInspect, onToggle, readonly }) {
   return /* @__PURE__ */ jsxs("article", { className: "task-entry", children: [
-    /* @__PURE__ */ jsx("button", { className: "task-toggle", type: "button", "aria-label": `${task.status === "done" ? "Reopen" : "Complete"} ${task.title}`, onClick: () => onToggle(task), "data-testid": `task-toggle-${task.id}`, children: /* @__PURE__ */ jsx("span", { "aria-hidden": "true", children: task.status === "done" ? "\u2713" : "\u25CB" }) }),
+    /* @__PURE__ */ jsx("button", { className: "task-toggle", type: "button", disabled: readonly, "aria-label": `${task.status === "done" ? "Reopen" : "Complete"} ${task.title}`, onClick: () => onToggle(task), "data-testid": `task-toggle-${task.id}`, children: /* @__PURE__ */ jsx("span", { "aria-hidden": "true", children: task.status === "done" ? "\u2713" : "\u25CB" }) }),
     /* @__PURE__ */ jsxs("button", { className: "task-row", type: "button", onClick: () => onInspect(task), "data-status": task.status, "data-testid": `task-row-${task.id}`, children: [
       /* @__PURE__ */ jsxs("span", { className: "row-copy", children: [
         /* @__PURE__ */ jsx("strong", { children: task.title }),
@@ -941,9 +941,9 @@ function TaskEntry({ task, onInspect, onToggle }) {
     ] })
   ] });
 }
-function ProjectStepEntry({ step, onInspect, onToggle }) {
+function ProjectStepEntry({ step, onInspect, onToggle, readonly }) {
   return /* @__PURE__ */ jsxs("article", { className: "task-entry", children: [
-    /* @__PURE__ */ jsx("button", { className: "task-toggle", type: "button", "aria-label": `${step.status === "done" ? "Reopen" : "Complete"} ${step.title}`, onClick: () => onToggle(step), "data-testid": `project-step-toggle-${step.id}`, children: /* @__PURE__ */ jsx("span", { "aria-hidden": "true", children: step.status === "done" ? "\u2713" : "\u25CB" }) }),
+    /* @__PURE__ */ jsx("button", { className: "task-toggle", type: "button", disabled: readonly, "aria-label": `${step.status === "done" ? "Reopen" : "Complete"} ${step.title}`, onClick: () => onToggle(step), "data-testid": `project-step-toggle-${step.id}`, children: /* @__PURE__ */ jsx("span", { "aria-hidden": "true", children: step.status === "done" ? "\u2713" : "\u25CB" }) }),
     /* @__PURE__ */ jsxs("button", { className: "task-row", type: "button", onClick: () => onInspect(step), "data-status": step.status, "data-testid": `project-step-row-${step.id}`, children: [
       /* @__PURE__ */ jsxs("span", { className: "row-copy", children: [
         /* @__PURE__ */ jsx("strong", { children: step.title }),
@@ -956,6 +956,7 @@ function ProjectStepEntry({ step, onInspect, onToggle }) {
 function DashboardScreen() {
   const { dashboard: gateway } = useRhythmDomainGateway();
   const host = useRhythmHost();
+  const canWrite = host.currentUser.capabilities?.includes("dashboard.write") ?? false;
   const [surfaceState, setSurfaceState] = useState("loading");
   const [summary, setSummary] = useState(null);
   const [members, setMembers] = useState([]);
@@ -997,7 +998,7 @@ function DashboardScreen() {
   const projectDone = projectSteps.filter((step) => step.status === "done").length;
   const projectNextStep = useMemo(() => projectSteps.find((step) => step.status === "open"), [projectSteps]);
   const toggleTask = async (task) => {
-    if (mutationPending) return;
+    if (!canWrite || mutationPending) return;
     setMutationPending(true);
     try {
       const updated = await gateway.updateTask(task.id, { status: task.status === "done" ? "open" : "done" });
@@ -1009,7 +1010,7 @@ function DashboardScreen() {
     }
   };
   const toggleStep = async (step) => {
-    if (mutationPending || !project) return;
+    if (!canWrite || mutationPending || !project) return;
     setMutationPending(true);
     try {
       const updated = await gateway.updateProjectStep(step.id, { status: step.status === "done" ? "open" : "done" });
@@ -1022,6 +1023,7 @@ function DashboardScreen() {
   };
   const createTask = async (event) => {
     event.preventDefault();
+    if (!canWrite) return;
     const form = event.currentTarget;
     const data = new FormData(form);
     const title = String(data.get("title") ?? "").trim();
@@ -1051,7 +1053,7 @@ function DashboardScreen() {
   };
   const saveTask = async (event) => {
     event.preventDefault();
-    if (!selectedTask) return;
+    if (!canWrite || !selectedTask) return;
     const data = new FormData(event.currentTarget);
     setMutationPending(true);
     try {
@@ -1070,7 +1072,7 @@ function DashboardScreen() {
     }
   };
   const updateInspectorCollaborator = async (collaboratorId) => {
-    if (!selectedTask) return;
+    if (!canWrite || !selectedTask) return;
     try {
       const updated = await gateway.updateTask(selectedTask.id, { collaboratorId });
       setSelectedTask(updated);
@@ -1097,7 +1099,7 @@ function DashboardScreen() {
             " threads"
           ] })
         ] }),
-        /* @__PURE__ */ jsx(HeaderTaskAction, { onClick: () => setCreateOpen(true), disabled: !isContentVisible || mutationPending, testId: "dashboard-header-add-task" }),
+        /* @__PURE__ */ jsx(HeaderTaskAction, { onClick: () => canWrite && setCreateOpen(true), disabled: !canWrite || !isContentVisible || mutationPending, testId: "dashboard-header-add-task" }),
         /* @__PURE__ */ jsx("button", { className: "icon-button", type: "button", "aria-label": "Refresh dashboard", title: "Refresh dashboard", disabled: surfaceState === "loading", onClick: () => void load(), "data-testid": "dashboard-refresh", children: "\u21BB" })
       ] })
     ] }),
@@ -1108,8 +1110,12 @@ function DashboardScreen() {
       /* @__PURE__ */ jsx("div", { className: "quick-list", children: ["Help me finish this", "Draft next steps", "Summarize", "Create follow-up tasks"].map((label) => /* @__PURE__ */ jsx("button", { className: "action-chip", type: "button", onClick: () => host.onRequestFollowUp?.({ screen: "dashboard", label, relatedId: todayTasks[0]?.id }), "data-testid": `quick-action-${label.toLowerCase().replace(/[^a-z]+/g, "-")}`, children: label }, label)) })
     ] }),
     /* @__PURE__ */ jsxs("div", { className: "dashboard-scroll", children: [
-      !isContentVisible && /* @__PURE__ */ jsx(StatePanel2, { state: surfaceState, onRetry: () => void load(), onEmpty: () => setCreateOpen(true) }),
+      !isContentVisible && /* @__PURE__ */ jsx(StatePanel2, { state: surfaceState, onRetry: () => void load(), onEmpty: () => canWrite && setCreateOpen(true), canWrite }),
       isContentVisible && summary && /* @__PURE__ */ jsxs(Fragment, { children: [
+        !canWrite && /* @__PURE__ */ jsxs("p", { className: "inspector-prerequisite", role: "status", "data-testid": "dashboard-readonly-explanation", children: [
+          /* @__PURE__ */ jsx("strong", { children: "Read-only workspace" }),
+          /* @__PURE__ */ jsx("span", { children: "Your host has not granted Dashboard write access. You can inspect work and ask Hermes, but changes are unavailable." })
+        ] }),
         /* @__PURE__ */ jsxs("section", { className: "focus-shell", "aria-labelledby": "dashboard-focus-title", children: [
           /* @__PURE__ */ jsx("header", { className: "section-intro", children: /* @__PURE__ */ jsxs("div", { children: [
             /* @__PURE__ */ jsx("span", { className: "eyebrow", children: "At a glance" }),
@@ -1196,7 +1202,7 @@ function DashboardScreen() {
                 "Past due \xB7 ",
                 pastDueTasks.length
               ] }) }),
-              pastDueTasks.map((task) => /* @__PURE__ */ jsx(TaskEntry, { task, onInspect: setSelectedTask, onToggle: (item) => void toggleTask(item) }, task.id)),
+              pastDueTasks.map((task) => /* @__PURE__ */ jsx(TaskEntry, { task, readonly: !canWrite || mutationPending, onInspect: setSelectedTask, onToggle: (item) => void toggleTask(item) }, task.id)),
               !pastDueTasks.length && /* @__PURE__ */ jsx("p", { className: "empty-copy", children: "Nothing overdue." })
             ] }),
             /* @__PURE__ */ jsxs("article", { className: "planning-card", "data-testid": "planning-handoffs", children: [
@@ -1214,14 +1220,14 @@ function DashboardScreen() {
                 "Today \xB7 ",
                 todayTasks.length
               ] }) }),
-              todayTasks.map((task) => /* @__PURE__ */ jsx(TaskEntry, { task, onInspect: setSelectedTask, onToggle: (item) => void toggleTask(item) }, task.id))
+              todayTasks.map((task) => /* @__PURE__ */ jsx(TaskEntry, { task, readonly: !canWrite || mutationPending, onInspect: setSelectedTask, onToggle: (item) => void toggleTask(item) }, task.id))
             ] }),
             /* @__PURE__ */ jsxs("article", { className: "planning-card", "data-testid": "planning-week", children: [
               /* @__PURE__ */ jsx("div", { className: "list-head", children: /* @__PURE__ */ jsxs("h3", { children: [
                 "This week \xB7 ",
                 weekTasks.length
               ] }) }),
-              weekTasks.map((task) => /* @__PURE__ */ jsx(TaskEntry, { task, onInspect: setSelectedTask, onToggle: (item) => void toggleTask(item) }, task.id)),
+              weekTasks.map((task) => /* @__PURE__ */ jsx(TaskEntry, { task, readonly: !canWrite || mutationPending, onInspect: setSelectedTask, onToggle: (item) => void toggleTask(item) }, task.id)),
               !weekTasks.length && /* @__PURE__ */ jsx("p", { className: "empty-copy", children: "No open tasks later this week." })
             ] }),
             /* @__PURE__ */ jsxs("article", { className: "planning-card", "data-testid": "planning-project-steps", children: [
@@ -1229,7 +1235,7 @@ function DashboardScreen() {
                 /* @__PURE__ */ jsx("h3", { children: "Project on deck" }),
                 /* @__PURE__ */ jsx("span", { children: projectSteps.filter((step) => step.status === "open").length })
               ] }),
-              projectSteps.map((step) => /* @__PURE__ */ jsx(ProjectStepEntry, { step, onInspect: setSelectedStep, onToggle: (item) => void toggleStep(item) }, step.id)),
+              projectSteps.map((step) => /* @__PURE__ */ jsx(ProjectStepEntry, { step, readonly: !canWrite || mutationPending, onInspect: setSelectedStep, onToggle: (item) => void toggleStep(item) }, step.id)),
               !projectSteps.length && /* @__PURE__ */ jsx("p", { className: "empty-copy", children: "All project steps are complete." })
             ] }),
             /* @__PURE__ */ jsxs("article", { className: "planning-card wide", "data-testid": "planning-unscheduled", children: [
@@ -1237,7 +1243,7 @@ function DashboardScreen() {
                 "Unscheduled \xB7 ",
                 unscheduledTasks.length
               ] }) }),
-              unscheduledTasks.map((task) => /* @__PURE__ */ jsx(TaskEntry, { task, onInspect: setSelectedTask, onToggle: (item) => void toggleTask(item) }, task.id)),
+              unscheduledTasks.map((task) => /* @__PURE__ */ jsx(TaskEntry, { task, readonly: !canWrite || mutationPending, onInspect: setSelectedTask, onToggle: (item) => void toggleTask(item) }, task.id)),
               !unscheduledTasks.length && /* @__PURE__ */ jsx("p", { className: "empty-copy", children: "Every open task has a date." })
             ] })
           ] })
@@ -1260,28 +1266,28 @@ function DashboardScreen() {
         titleRef: taskTitleRef,
         titleError: titleError ? "Enter a task title." : void 0,
         onTitleChange: () => setTitleError(false),
-        disabled: mutationPending,
+        disabled: !canWrite || mutationPending,
         noValidate: true,
         testIds: { title: "task-title", notes: "task-notes", scheduledDate: "task-schedule", dueDate: "task-due-date", collaborator: "task-collaborator", cancel: "dashboard-task-create-cancel", submit: "task-add", error: "task-title-error" }
       }
     ) }),
-    /* @__PURE__ */ jsx(FocusDialog, { open: Boolean(selectedTask), onClose: () => setSelectedTask(null), title: "Task details", description: "Inspect or update the selected task.", testId: "task-inspector", wide: true, children: /* @__PURE__ */ jsxs("form", { className: "inspector-form", onSubmit: saveTask, children: [
+    /* @__PURE__ */ jsx(FocusDialog, { open: Boolean(selectedTask), onClose: () => setSelectedTask(null), title: "Task details", description: "Inspect or update the selected task.", testId: "task-inspector", wide: true, children: /* @__PURE__ */ jsx("form", { className: "inspector-form", onSubmit: saveTask, children: /* @__PURE__ */ jsxs("fieldset", { disabled: !canWrite || mutationPending, children: [
       /* @__PURE__ */ jsxs("label", { children: [
         "Task title",
-        /* @__PURE__ */ jsx("input", { name: "inspectorTitle", defaultValue: selectedTask?.title ?? "", "data-autofocus": true, "data-testid": "task-inspector-title" })
+        /* @__PURE__ */ jsx("input", { disabled: !canWrite || mutationPending, name: "inspectorTitle", defaultValue: selectedTask?.title ?? "", "data-autofocus": true, "data-testid": "task-inspector-title" })
       ] }),
       /* @__PURE__ */ jsxs("label", { children: [
         "Notes",
-        /* @__PURE__ */ jsx("textarea", { name: "inspectorNotes", defaultValue: selectedTask?.notes ?? "", rows: 4, "data-testid": "task-inspector-notes" })
+        /* @__PURE__ */ jsx("textarea", { disabled: !canWrite || mutationPending, name: "inspectorNotes", defaultValue: selectedTask?.notes ?? "", rows: 4, "data-testid": "task-inspector-notes" })
       ] }),
       /* @__PURE__ */ jsxs("div", { className: "inspector-pair", children: [
         /* @__PURE__ */ jsxs("label", { children: [
           "Scheduled date",
-          /* @__PURE__ */ jsx("input", { name: "inspectorScheduledDate", type: "date", defaultValue: selectedTask?.scheduledDate ?? "", "data-testid": "task-inspector-scheduled" })
+          /* @__PURE__ */ jsx("input", { disabled: !canWrite || mutationPending, name: "inspectorScheduledDate", type: "date", defaultValue: selectedTask?.scheduledDate ?? "", "data-testid": "task-inspector-scheduled" })
         ] }),
         /* @__PURE__ */ jsxs("label", { children: [
           "Due date",
-          /* @__PURE__ */ jsx("input", { name: "inspectorDueDate", type: "date", defaultValue: selectedTask?.dueDate ?? "", "data-testid": "task-inspector-due" })
+          /* @__PURE__ */ jsx("input", { disabled: !canWrite || mutationPending, name: "inspectorDueDate", type: "date", defaultValue: selectedTask?.dueDate ?? "", "data-testid": "task-inspector-due" })
         ] })
       ] }),
       /* @__PURE__ */ jsxs("section", { className: "inspector-collaborator", "aria-label": "Task collaborator", children: [
@@ -1289,20 +1295,20 @@ function DashboardScreen() {
           /* @__PURE__ */ jsx("strong", { children: "Collaborator" }),
           /* @__PURE__ */ jsx("small", { children: selectedTask?.collaboratorName ?? "No collaborator assigned" })
         ] }),
-        selectedTask?.collaboratorId ? /* @__PURE__ */ jsx("button", { className: "text-danger-button", type: "button", onClick: () => void updateInspectorCollaborator(null), "data-testid": "task-inspector-collaborator-remove", children: "Remove" }) : /* @__PURE__ */ jsxs("button", { className: "secondary-button", type: "button", disabled: !members[0], onClick: () => members[0] && void updateInspectorCollaborator(members[0].id), "data-testid": "task-inspector-collaborator-add", children: [
+        selectedTask?.collaboratorId ? /* @__PURE__ */ jsx("button", { className: "text-danger-button", type: "button", disabled: !canWrite || mutationPending, onClick: () => void updateInspectorCollaborator(null), "data-testid": "task-inspector-collaborator-remove", children: "Remove" }) : /* @__PURE__ */ jsxs("button", { className: "secondary-button", type: "button", disabled: !canWrite || mutationPending || !members[0], onClick: () => members[0] && void updateInspectorCollaborator(members[0].id), "data-testid": "task-inspector-collaborator-add", children: [
           "Add ",
           members[0]?.name ?? "collaborator"
         ] })
       ] }),
       /* @__PURE__ */ jsxs("footer", { children: [
         /* @__PURE__ */ jsx("button", { className: "secondary-button", type: "button", onClick: () => setSelectedTask(null), "data-testid": "task-inspector-cancel", children: "Cancel" }),
-        /* @__PURE__ */ jsx("button", { className: "primary-button", type: "submit", disabled: mutationPending, "data-testid": "task-inspector-save", children: "Save changes" })
+        /* @__PURE__ */ jsx("button", { className: "primary-button", type: "submit", disabled: !canWrite || mutationPending, "data-testid": "task-inspector-save", children: "Save changes" })
       ] })
-    ] }) }),
-    /* @__PURE__ */ jsx(FocusDialog, { open: Boolean(selectedStep), onClose: () => setSelectedStep(null), title: "Project step details", description: project ? `${project.title} \xB7 project step` : "Project step", testId: "project-step-inspector", wide: true, children: /* @__PURE__ */ jsxs("form", { className: "inspector-form", onSubmit: (event) => {
+    ] }) }) }),
+    /* @__PURE__ */ jsx(FocusDialog, { open: Boolean(selectedStep), onClose: () => setSelectedStep(null), title: "Project step details", description: project ? `${project.title} \xB7 project step` : "Project step", testId: "project-step-inspector", wide: true, children: /* @__PURE__ */ jsx("form", { className: "inspector-form", onSubmit: (event) => {
       event.preventDefault();
-      setSelectedStep(null);
-    }, children: [
+      if (canWrite) setSelectedStep(null);
+    }, children: /* @__PURE__ */ jsxs("fieldset", { disabled: !canWrite || mutationPending, children: [
       /* @__PURE__ */ jsxs("label", { children: [
         "Step title",
         /* @__PURE__ */ jsx("input", { name: "stepTitle", defaultValue: selectedStep?.title ?? "", "data-autofocus": true, "data-testid": "project-step-title" })
@@ -1315,7 +1321,7 @@ function DashboardScreen() {
         /* @__PURE__ */ jsx("button", { className: "secondary-button", type: "button", onClick: () => setSelectedStep(null), "data-testid": "project-step-cancel", children: "Cancel" }),
         /* @__PURE__ */ jsx("button", { className: "primary-button", type: "submit", "data-testid": "project-step-save", children: "Save changes" })
       ] })
-    ] }) })
+    ] }) }) })
   ] }) });
 }
 var ANCHOR = "2026-08-12";
@@ -4148,7 +4154,7 @@ function dateLabel(task) {
 function isSourceReadonly(task) {
   return task.sourceType === "calendar_shadow_event" || task.sourceType === "prod_mirror";
 }
-function StatePanel9({ state, onRetry, onEmpty }) {
+function StatePanel9({ state, onRetry, onEmpty, canWrite }) {
   if (state === "loading") {
     return /* @__PURE__ */ jsxs("section", { className: "tasks-state loading", role: "status", "aria-live": "polite", "data-testid": "page-state-loading", children: [
       /* @__PURE__ */ jsx("span", { className: "eyebrow", children: "Current workspace" }),
@@ -4166,7 +4172,7 @@ function StatePanel9({ state, onRetry, onEmpty }) {
       /* @__PURE__ */ jsx("span", { className: "eyebrow", children: "A clear workspace" }),
       /* @__PURE__ */ jsx("h2", { children: "No tasks yet" }),
       /* @__PURE__ */ jsx("p", { children: "Create a task above and it will settle into this workspace." }),
-      /* @__PURE__ */ jsx("button", { className: "primary-button", type: "button", onClick: onEmpty, "data-testid": "tasks-empty-create", children: "Create a task" })
+      /* @__PURE__ */ jsx("button", { className: "primary-button", type: "button", disabled: !canWrite, onClick: onEmpty, "data-testid": "tasks-empty-create", children: "Create a task" })
     ] });
   }
   if (state === "server_error") {
@@ -4251,6 +4257,7 @@ function TaskMenu({ task, readonly, isOwner, ownerOnlyReasonId, readonlyReasonId
 function TasksScreen() {
   const { tasks: gateway } = useRhythmDomainGateway();
   const host = useRhythmHost();
+  const canWrite = host.currentUser.capabilities?.includes("tasks.write") ?? false;
   const [surfaceState, setSurfaceState] = useState("loading");
   const [tasks, setTasks] = useState([]);
   const [members, setMembers] = useState([]);
@@ -4320,7 +4327,7 @@ function TasksScreen() {
   const openInspector = (task) => setSelectedId(task.id);
   const closeInspector = () => setSelectedId(null);
   const changeStatus = async (task, nextStatus) => {
-    if (mutationPending) return;
+    if (!canWrite || mutationPending) return;
     setMutationPending(true);
     try {
       const updated = await gateway.update(task.id, { status: nextStatus });
@@ -4333,6 +4340,7 @@ function TasksScreen() {
   };
   const createTask = async (event) => {
     event.preventDefault();
+    if (!canWrite) return;
     const form = event.currentTarget;
     if (!form.reportValidity()) return;
     const data = new FormData(form);
@@ -4365,7 +4373,7 @@ function TasksScreen() {
   };
   const saveInspector = async (event) => {
     event.preventDefault();
-    if (!selectedTask) return;
+    if (!canWrite || !selectedTask) return;
     const data = new FormData(event.currentTarget);
     const title = String(data.get("title") ?? "").trim();
     if (!title) return;
@@ -4387,7 +4395,7 @@ function TasksScreen() {
     }
   };
   const addCollaborator = async (memberId) => {
-    if (!selectedTask) return;
+    if (!canWrite || !selectedTask) return;
     try {
       const updated = await gateway.addCollaborator(selectedTask.id, memberId);
       setTasks((current) => current.map((task) => task.id === updated.id ? updated : task));
@@ -4397,7 +4405,7 @@ function TasksScreen() {
     }
   };
   const removeCollaborator = async (memberId) => {
-    if (!selectedTask) return;
+    if (!canWrite || !selectedTask) return;
     try {
       const updated = await gateway.removeCollaborator(selectedTask.id, memberId);
       setTasks((current) => current.map((task) => task.id === updated.id ? updated : task));
@@ -4406,7 +4414,7 @@ function TasksScreen() {
     }
   };
   const confirmDelete = async () => {
-    if (!deleteTarget) return;
+    if (!canWrite || !deleteTarget) return;
     setMutationPending(true);
     try {
       await gateway.delete(deleteTarget.id);
@@ -4422,7 +4430,7 @@ function TasksScreen() {
   const moveTask = (status) => {
     if (!draggedId) return;
     const task = tasks.find((item) => item.id === draggedId);
-    if (task && task.status !== status && !isSourceReadonly(task)) void changeStatus(task, status);
+    if (canWrite && task && task.status !== status && !isSourceReadonly(task)) void changeStatus(task, status);
     setDraggedId(null);
   };
   const launchQuickAction = (actionId, label) => {
@@ -4438,7 +4446,7 @@ function TasksScreen() {
   };
   const renderTaskRow = (task) => {
     const isOwner = !task.isShared;
-    const readonly = isSourceReadonly(task) || mutationPending;
+    const readonly = !canWrite || isSourceReadonly(task) || mutationPending;
     return /* @__PURE__ */ jsxs("div", { className: "task-row", role: "row", "aria-selected": selectedId === task.id, "data-status": task.status, "data-testid": `task-row-${task.id}`, children: [
       /* @__PURE__ */ jsx("span", { className: "task-cell complete-cell", role: "gridcell", children: /* @__PURE__ */ jsxs("label", { className: "task-complete-label", children: [
         /* @__PURE__ */ jsxs("span", { className: "sr-only", children: [
@@ -4475,7 +4483,7 @@ function TasksScreen() {
   };
   const collaboratorCandidates = selectedTask ? members.filter((member) => member.id !== selectedTask.ownerId && !selectedTask.collaborators.some((existing) => existing.id === member.id)) : [];
   const selectedIsOwner = selectedTask ? !selectedTask.isShared : false;
-  const selectedReadonly = Boolean(selectedTask && (isSourceReadonly(selectedTask) || mutationPending));
+  const selectedReadonly = Boolean(selectedTask && (!canWrite || isSourceReadonly(selectedTask) || mutationPending));
   return /* @__PURE__ */ jsx(ScreenRoot, { screenName: "Tasks", testId: "rhythm-tasks-screen", children: /* @__PURE__ */ jsxs("section", { className: "page-shell pg-tasks", "aria-busy": surfaceState === "loading", children: [
     /* @__PURE__ */ jsxs("header", { className: "tasks-header", children: [
       /* @__PURE__ */ jsxs("div", { className: "tasks-heading", children: [
@@ -4489,7 +4497,7 @@ function TasksScreen() {
           " ",
           visibleTasks.length === 1 ? "task" : "tasks"
         ] }),
-        /* @__PURE__ */ jsx(HeaderTaskAction, { onClick: () => setCreateOpen(true), disabled: !showsWorkspace || mutationPending, testId: "tasks-header-add-task" }),
+        /* @__PURE__ */ jsx(HeaderTaskAction, { onClick: () => canWrite && setCreateOpen(true), disabled: !canWrite || !showsWorkspace || mutationPending, testId: "tasks-header-add-task" }),
         /* @__PURE__ */ jsxs("div", { className: "tasks-view-switch", "aria-label": "Task presentation", children: [
           /* @__PURE__ */ jsx("button", { type: "button", "aria-pressed": view === "list", onClick: () => setView("list"), "data-testid": "tasks-view-list", children: "List" }),
           /* @__PURE__ */ jsx("button", { type: "button", "aria-pressed": view === "board", onClick: () => setView("board"), "data-testid": "tasks-view-board", children: "Board" })
@@ -4497,13 +4505,17 @@ function TasksScreen() {
       ] })
     ] }),
     /* @__PURE__ */ jsxs("div", { className: "tasks-scroll", role: "region", "aria-label": "Tasks workspace content", tabIndex: 0, children: [
-      !showsWorkspace && /* @__PURE__ */ jsx(StatePanel9, { state: surfaceState, onRetry: () => void load(), onEmpty: () => setCreateOpen(true) }),
+      !showsWorkspace && /* @__PURE__ */ jsx(StatePanel9, { state: surfaceState, onRetry: () => void load(), onEmpty: () => canWrite && setCreateOpen(true), canWrite }),
       showsWorkspace && /* @__PURE__ */ jsxs(Fragment, { children: [
         /* @__PURE__ */ jsxs("p", { className: "tasks-owner-note", id: ownerOnlyReasonId, children: [
           /* @__PURE__ */ jsx("strong", { children: "Shared-task permissions" }),
           " Collaborators may edit and complete; only the task owner can add or remove collaborators or delete."
         ] }),
         /* @__PURE__ */ jsx("p", { className: "sr-only", id: readonlyReasonId, children: "This task is synchronized from another source of truth and is inspect-only here." }),
+        !canWrite && /* @__PURE__ */ jsxs("p", { className: "inspector-prerequisite", role: "status", "data-testid": "tasks-readonly-explanation", children: [
+          /* @__PURE__ */ jsx("strong", { children: "Read-only workspace" }),
+          /* @__PURE__ */ jsx("span", { children: "Your host has not granted Tasks write access. You can inspect tasks and ask Hermes, but changes are unavailable." })
+        ] }),
         /* @__PURE__ */ jsxs("div", { className: "tasks-workspace-layout", children: [
           /* @__PURE__ */ jsx("div", { className: "tasks-collection", children: /* @__PURE__ */ jsxs("section", { className: "tasks-workspace", "aria-labelledby": "tasks-workspace-title", children: [
             /* @__PURE__ */ jsxs("div", { className: "tasks-controls", children: [
@@ -4584,7 +4596,7 @@ function TasksScreen() {
                     className: "task-card",
                     role: "option",
                     tabIndex: 0,
-                    draggable: !isSourceReadonly(task),
+                    draggable: canWrite && !isSourceReadonly(task),
                     "aria-selected": selectedId === task.id,
                     "aria-label": `Inspect ${task.title}`,
                     onDragStart: () => setDraggedId(task.id),
@@ -4628,9 +4640,9 @@ function TasksScreen() {
               ] }),
               /* @__PURE__ */ jsx("button", { className: "text-button", type: "button", onClick: closeInspector, "data-testid": "task-detail-close", children: "Close" })
             ] }),
-            selectedReadonly && isSourceReadonly(selectedTask) && /* @__PURE__ */ jsxs("div", { className: "inspector-prerequisite", role: "status", children: [
-              /* @__PURE__ */ jsx("strong", { children: "Synchronized source of truth" }),
-              /* @__PURE__ */ jsx("span", { children: "This task is inspect-only here." })
+            selectedReadonly && /* @__PURE__ */ jsxs("div", { className: "inspector-prerequisite", role: "status", children: [
+              /* @__PURE__ */ jsx("strong", { children: canWrite ? "Synchronized source of truth" : "Read-only workspace" }),
+              /* @__PURE__ */ jsx("span", { children: canWrite ? "This task is inspect-only here." : "Your host has not granted Tasks write access." })
             ] }),
             /* @__PURE__ */ jsxs("form", { className: "task-inspector-form", onSubmit: saveInspector, children: [
               /* @__PURE__ */ jsxs("div", { className: "task-source-grid", children: [
@@ -4647,26 +4659,26 @@ function TasksScreen() {
                 /* @__PURE__ */ jsx("legend", { className: "sr-only", children: "Task details" }),
                 /* @__PURE__ */ jsxs("label", { children: [
                   "Title",
-                  /* @__PURE__ */ jsx("input", { name: "title", required: true, defaultValue: selectedTask.title, "data-testid": "task-edit-title" })
+                  /* @__PURE__ */ jsx("input", { disabled: selectedReadonly, name: "title", required: true, defaultValue: selectedTask.title, "data-testid": "task-edit-title" })
                 ] }),
                 /* @__PURE__ */ jsxs("label", { children: [
                   "Notes",
-                  /* @__PURE__ */ jsx("textarea", { name: "notes", rows: 4, defaultValue: selectedTask.notes, "data-testid": "task-edit-notes" })
+                  /* @__PURE__ */ jsx("textarea", { disabled: selectedReadonly, name: "notes", rows: 4, defaultValue: selectedTask.notes, "data-testid": "task-edit-notes" })
                 ] }),
                 /* @__PURE__ */ jsxs("div", { className: "inspector-pair", children: [
                   /* @__PURE__ */ jsxs("label", { children: [
                     "Scheduled date",
-                    /* @__PURE__ */ jsx("input", { name: "scheduledDate", type: "date", defaultValue: selectedTask.scheduledDate ?? "", "data-testid": "task-edit-scheduled-date" })
+                    /* @__PURE__ */ jsx("input", { disabled: selectedReadonly, name: "scheduledDate", type: "date", defaultValue: selectedTask.scheduledDate ?? "", "data-testid": "task-edit-scheduled-date" })
                   ] }),
                   /* @__PURE__ */ jsxs("label", { children: [
                     "Due date",
-                    /* @__PURE__ */ jsx("input", { name: "dueDate", type: "date", defaultValue: selectedTask.dueDate ?? "", "data-testid": "task-edit-due-date" })
+                    /* @__PURE__ */ jsx("input", { disabled: selectedReadonly, name: "dueDate", type: "date", defaultValue: selectedTask.dueDate ?? "", "data-testid": "task-edit-due-date" })
                   ] })
                 ] }),
                 /* @__PURE__ */ jsxs("div", { className: "inspector-pair", children: [
                   /* @__PURE__ */ jsxs("label", { children: [
                     "Default agent",
-                    /* @__PURE__ */ jsxs("select", { name: "preferredAgent", defaultValue: selectedTask.preferredAgent, "data-testid": "task-edit-agent", children: [
+                    /* @__PURE__ */ jsxs("select", { disabled: selectedReadonly, name: "preferredAgent", defaultValue: selectedTask.preferredAgent, "data-testid": "task-edit-agent", children: [
                       /* @__PURE__ */ jsx("option", { value: "", children: "None" }),
                       /* @__PURE__ */ jsx("option", { value: "claude-code", children: "Claude Code" }),
                       /* @__PURE__ */ jsx("option", { value: "codex", children: "Codex" })
@@ -4674,7 +4686,7 @@ function TasksScreen() {
                   ] }),
                   /* @__PURE__ */ jsxs("label", { children: [
                     "Energy",
-                    /* @__PURE__ */ jsxs("select", { name: "energy", defaultValue: selectedTask.energy, "data-testid": "task-edit-energy", children: [
+                    /* @__PURE__ */ jsxs("select", { disabled: selectedReadonly, name: "energy", defaultValue: selectedTask.energy, "data-testid": "task-edit-energy", children: [
                       /* @__PURE__ */ jsx("option", { value: "", children: "None" }),
                       /* @__PURE__ */ jsx("option", { value: "\u{1F525}", children: "\u{1F525} Fire" }),
                       /* @__PURE__ */ jsx("option", { value: "\u26A1", children: "\u26A1 Electric" }),
@@ -4683,8 +4695,8 @@ function TasksScreen() {
                   ] })
                 ] }),
                 /* @__PURE__ */ jsxs("footer", { className: "task-detail-form-actions", children: [
-                  /* @__PURE__ */ jsx("button", { className: "secondary-button", type: "button", onClick: () => void changeStatus(selectedTask, selectedTask.status === "done" ? "open" : "done"), "data-testid": "task-detail-complete", children: selectedTask.status === "done" ? "Reopen" : "Complete" }),
-                  /* @__PURE__ */ jsx("button", { className: "primary-button", type: "submit", "data-testid": "task-save", children: "Save changes" })
+                  /* @__PURE__ */ jsx("button", { className: "secondary-button", type: "button", disabled: selectedReadonly, onClick: () => void changeStatus(selectedTask, selectedTask.status === "done" ? "open" : "done"), "data-testid": "task-detail-complete", children: selectedTask.status === "done" ? "Reopen" : "Complete" }),
+                  /* @__PURE__ */ jsx("button", { className: "primary-button", type: "submit", disabled: selectedReadonly, "data-testid": "task-save", children: "Save changes" })
                 ] })
               ] })
             ] }, selectedTask.id),
@@ -4705,7 +4717,7 @@ function TasksScreen() {
                 /* @__PURE__ */ jsx("button", { className: "icon-button", type: "button", disabled: !selectedIsOwner || selectedReadonly, "aria-label": `Remove ${person.name}`, onClick: () => void removeCollaborator(person.id), "data-testid": `task-remove-collaborator-${person.id}`, children: /* @__PURE__ */ jsx(Icon, { name: "close", size: 13 }) })
               ] }, person.id)) : /* @__PURE__ */ jsx("p", { children: "No collaborators yet." }) })
             ] }),
-            !selectedReadonly && /* @__PURE__ */ jsxs("section", { className: "task-quick-actions", "aria-labelledby": "task-quick-title", children: [
+            (!selectedReadonly || !canWrite) && /* @__PURE__ */ jsxs("section", { className: "task-quick-actions", "aria-labelledby": "task-quick-title", children: [
               /* @__PURE__ */ jsx("h3", { id: "task-quick-title", children: "Quick actions" }),
               /* @__PURE__ */ jsx("div", { children: quickActionPresets.map((action) => /* @__PURE__ */ jsx("button", { className: "task-action-chip", type: "button", onClick: () => launchQuickAction(action.id, action.label), "data-testid": `quick-action-${action.id}`, children: action.label }, action.id)) })
             ] })
@@ -4724,7 +4736,7 @@ function TasksScreen() {
         onCancel: () => setCreateOpen(false),
         members: members.filter((member) => member.id !== currentUserId),
         titleRef: createTitleRef,
-        disabled: mutationPending,
+        disabled: !canWrite || mutationPending,
         testIds: { title: "task-create-title", notes: "task-create-notes", scheduledDate: "task-create-scheduled-date", dueDate: "task-create-due-date", collaborator: "task-create-collaborator", cancel: "task-create-cancel", submit: "task-create-submit", mutations: "tasks-mutations" }
       }
     ) }),
@@ -4736,10 +4748,12 @@ function TasksScreen() {
       /* @__PURE__ */ jsx("p", { className: "delete-copy", children: "The task and its collaborator links will be removed." }),
       /* @__PURE__ */ jsxs("div", { className: "dialog-actions", children: [
         /* @__PURE__ */ jsx("button", { className: "secondary-button", type: "button", onClick: () => setDeleteTarget(null), "data-testid": "task-delete-cancel", children: "Cancel" }),
-        /* @__PURE__ */ jsx("button", { className: "danger-button", type: "button", disabled: mutationPending, onClick: () => void confirmDelete(), "data-testid": "task-delete-confirm", children: "Delete task" })
+        /* @__PURE__ */ jsx("button", { className: "danger-button", type: "button", disabled: !canWrite || mutationPending, onClick: () => void confirmDelete(), "data-testid": "task-delete-confirm", children: "Delete task" })
       ] })
     ] })
   ] }) });
 }
 
 export { ArtifactsScreen, AutomationsScreen, DashboardScreen, FacilitiesScreen, FocusDialog, HeaderTaskAction, Icon, IntegrationsScreen, MessagesScreen, PlannerScreen, ProjectsScreen, RHYTHM_ROOT_CLASS, RhythmGatewayError, RhythmWorkspaceProvider, RhythmsScreen, TaskCreateForm, TasksScreen, defaultRhythmTokens, mapHostTokens, quickActionPresets, useRhythmDomainGateway, useRhythmHost };
+//# sourceMappingURL=index.js.map
+//# sourceMappingURL=index.js.map
