@@ -1144,6 +1144,18 @@ class HermesACPAgent(acp.Agent):
                         "args": list(server.args),
                         "env": {item.name: item.value for item in server.env},
                     }
+                elif isinstance(server, McpServerSse):
+                    # ``MCPServerTask.start()`` (tools/mcp_tool.py) only
+                    # treats a server as SSE when its config carries
+                    # ``transport: "sse"`` — everything else with a
+                    # ``url`` runs as Streamable HTTP. Without this key
+                    # an ACP-supplied SSE descriptor would silently
+                    # connect over the wrong transport.
+                    config = {
+                        "url": server.url,
+                        "headers": {item.name: item.value for item in server.headers},
+                        "transport": "sse",
+                    }
                 else:
                     config = {
                         "url": server.url,
@@ -1161,24 +1173,29 @@ class HermesACPAgent(acp.Agent):
             return
 
         try:
-            from model_tools import get_tool_definitions
-            from agent.memory_manager import inject_memory_provider_tools
+            from tools.mcp_tool import refresh_agent_mcp_tools
 
+            # Route through the shared rebuild every other MCP-tool-
+            # affecting caller uses (the TUI ``reload.mcp`` RPC, gateway
+            # reload, the late-binding refresh, the between-turns
+            # refresh — see refresh_agent_mcp_tools' docstring) instead of
+            # hand-rolling the registry-derived tool list here. A
+            # duplicate that only called ``get_tool_definitions`` +
+            # ``inject_memory_provider_tools`` would silently drop the
+            # context-engine (``lcm_*``) tool family the shared rebuild
+            # re-injects, and would race the shared rebuild's atomic
+            # generation-checked publish.
             enabled_toolsets = _expand_acp_enabled_toolsets(
                 getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"],
                 mcp_server_names=[server.name for server in mcp_servers],
             )
-            state.agent.enabled_toolsets = enabled_toolsets
             disabled_toolsets = getattr(state.agent, "disabled_toolsets", None)
-            state.agent.tools = get_tool_definitions(
-                enabled_toolsets=enabled_toolsets,
-                disabled_toolsets=disabled_toolsets,
+            refresh_agent_mcp_tools(
+                state.agent,
+                enabled_override=enabled_toolsets,
+                disabled_override=disabled_toolsets,
                 quiet_mode=True,
             )
-            state.agent.valid_tool_names = {
-                tool["function"]["name"] for tool in state.agent.tools or []
-            }
-            inject_memory_provider_tools(state.agent)
             invalidate = getattr(state.agent, "_invalidate_system_prompt", None)
             if callable(invalidate):
                 invalidate()
