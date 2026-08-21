@@ -1,0 +1,33 @@
+{
+  "contract": "rhythm-api-operations",
+  "version": 1,
+  "description": "Which Rhythm API operations are permitted at each campaign milestone. Credentials stay server-side; the desktop/renderer side never receives raw Rhythm tokens.",
+  "milestones": {
+    "M0": {
+      "allowed_operations": [],
+      "read_only": true,
+      "notes": "Campaign bootstrap only. No live Rhythm API calls."
+    },
+    "M4a": {
+      "allowed_operations": [
+        {
+          "method": "GET",
+          "path": "/auth/me",
+          "purpose": "validate the connected Rhythm session"
+        },
+        {
+          "method": "GET",
+          "path": "/workspaces/me",
+          "purpose": "sanitized workspace summary for the Dashboard/Tasks slice"
+        }
+      ],
+      "read_only": true,
+      "notes": "First hosted slice is read-only per the locked architecture; task completion/rescheduling requires the separate write-readiness gate (M4b)."
+    }
+  },
+  "forbidden": [
+    "arbitrary_proxying",
+    "renderer_direct_credential_use",
+    "write_operations_before_write_readiness_gate"
+  ]
+}

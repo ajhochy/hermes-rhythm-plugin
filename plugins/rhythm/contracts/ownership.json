@@ -1,0 +1,22 @@
+{
+  "contract": "rhythm-ownership",
+  "version": 1,
+  "description": "Which paths belong to the Rhythm feature-pack campaign vs. Hermes core, so a later slice (M1+) can be checked for scope creep before merge.",
+  "owned_paths": [
+    "plugins/rhythm/**"
+  ],
+  "shared_seams": [
+    "apps/desktop/src/contrib/**"
+  ],
+  "forbidden_paths": [
+    "cli.py",
+    "run_agent.py",
+    "hermes_state.py",
+    "hermes_cli/**",
+    "acp_adapter/**",
+    "agent/**",
+    "gateway/**",
+    "tools/**"
+  ],
+  "notes": "Rhythm is a plugin under plugins/rhythm/ that reuses generic Hermes host seams (apps/desktop/src/contrib/**); it does not modify core agent, ACP, gateway, or tool files. See parent campaign issue #2 (locked architecture)."
+}

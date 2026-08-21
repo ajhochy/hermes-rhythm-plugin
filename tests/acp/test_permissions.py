@@ -96,6 +96,43 @@ class TestApprovalBridge:
             "deny_always",
         ]
 
+    def test_disallowed_permanent_never_offers_persistent_option(self):
+        """``allow_permanent=False`` must never surface allow_always as a
+        selectable option — the caller (Hermes policy) is the only thing
+        that can grant persistent approval; ACP itself never auto-selects it."""
+        result, kwargs, _, _, _ = _invoke_callback(
+            AllowedOutcome(option_id="allow_once", outcome="selected"),
+            allow_permanent=False,
+        )
+
+        option_ids = [option.option_id for option in kwargs["options"]]
+        assert "allow_always" not in option_ids
+        assert option_ids == ["allow_once", "allow_session", "deny", "deny_always"]
+
+    def test_smart_denied_narrows_to_non_persistent_options_only(self):
+        """A smart-denied (automatically risk-classified) request must never
+        offer a persistent grant — only a single-shot allow or deny."""
+        result, kwargs, _, _, _ = _invoke_callback(
+            AllowedOutcome(option_id="allow_once", outcome="selected"),
+            smart_denied=True,
+        )
+
+        option_ids = [option.option_id for option in kwargs["options"]]
+        assert option_ids == ["allow_once", "deny"]
+        assert "allow_session" not in option_ids
+        assert "allow_always" not in option_ids
+        assert "deny_always" not in option_ids
+
+    def test_unknown_option_id_denies_even_if_allowed_outcome(self):
+        """A response outside the offered option set must fail closed —
+        never be interpreted as an implicit persistent grant."""
+        result, _, _, _, _ = _invoke_callback(
+            AllowedOutcome(option_id="allow_always", outcome="selected"),
+            allow_permanent=False,
+        )
+
+        assert result == "deny"
+
     def test_tool_call_ids_are_unique(self):
         _, first_kwargs, _, _, _ = _invoke_callback(
             AllowedOutcome(option_id="allow_once", outcome="selected"),

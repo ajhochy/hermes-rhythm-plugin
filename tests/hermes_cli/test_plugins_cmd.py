@@ -439,6 +439,63 @@ class TestCmdUpdate:
         assert exc_info.value.code == 1
 
 
+# ── cmd_reload tests ─────────────────────────────────────────────────────────
+
+
+class TestCmdReload:
+    """``hermes plugins reload <name>`` — manual, truthful single-plugin reload."""
+
+    @staticmethod
+    def _make_enabled_plugin(home: Path, name: str) -> Path:
+        plugin_dir = home / "plugins" / name
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": name, "version": "0.1.0"}))
+        (plugin_dir / "__init__.py").write_text("def register(ctx):\n    pass\n")
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text(yaml.dump({"plugins": {"enabled": [name]}}))
+        return plugin_dir
+
+    def test_reload_success_prints_confirmation(self, tmp_path, monkeypatch, capsys):
+        import hermes_cli.plugins as plugins_mod
+        from hermes_cli.plugins_cmd import cmd_reload
+
+        home = tmp_path / "hermes_home"
+        self._make_enabled_plugin(home, "cli_reload_fixture")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        mgr = plugins_mod.PluginManager()
+        mgr.discover_and_load()
+        monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: mgr)
+
+        cmd_reload("cli_reload_fixture")
+
+        out = capsys.readouterr().out
+        assert "cli_reload_fixture" in out
+        assert "reloaded" in out.lower()
+
+    def test_reload_failure_exits_nonzero_and_reports_truthfully(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        import hermes_cli.plugins as plugins_mod
+        from hermes_cli.plugins_cmd import cmd_reload
+
+        home = tmp_path / "hermes_home"
+        home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        mgr = plugins_mod.PluginManager()
+        mgr.discover_and_load()
+        monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: mgr)
+
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_reload("does-not-exist-fixture")
+
+        assert exc_info.value.code == 1
+        out = capsys.readouterr().out
+        assert "does-not-exist-fixture" in out
+        assert "not found" in out.lower()
+
+
 # ── cmd_remove tests ─────────────────────────────────────────────────────────
 
 
