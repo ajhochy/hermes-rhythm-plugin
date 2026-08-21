@@ -1,0 +1,58 @@
+{
+  "schema": 1,
+  "status": "scaffold-pending-m6-m8-integration",
+  "install": {
+    "root": "<HERMES_HOME>/plugins/rhythm",
+    "opt_in": true,
+    "operations": []
+  },
+  "desktop": {
+    "entry": "desktop/dist/rhythm.mjs",
+    "format": "esm",
+    "artifact_count": 1,
+    "react": "external-peer-only",
+    "relative_chunks": "forbidden"
+  },
+  "content": {
+    "python_modules": [
+      "__init__.py",
+      "backend/__init__.py",
+      "backend/client.py",
+      "backend/store.py",
+      "contracts/__init__.py",
+      "contracts/validate.py",
+      "dashboard/__init__.py",
+      "dashboard/plugin_api.py"
+    ],
+    "assets": [
+      "contracts/api-operations.json",
+      "contracts/architecture.json",
+      "contracts/ownership.json",
+      "contracts/permissions.json",
+      "dashboard/manifest.json",
+      "dashboard/dist/index.js"
+    ],
+    "skills": [
+      "skills/rhythm/SKILL.md"
+    ],
+    "package_data": [
+      "contracts/*.json",
+      "dashboard/manifest.json",
+      "dashboard/dist/index.js",
+      "skills/rhythm/SKILL.md"
+    ]
+  },
+  "provenance": {
+    "path": "PROVENANCE.md",
+    "required_fields": ["source", "revision", "transformation"]
+  },
+  "licenses": [
+    {"path": "LICENSES/HERMES-MIT.txt", "spdx": "MIT", "scope": "Rhythm package scaffolding"}
+  ],
+  "release_gate": {
+    "mode": "live-release-manual",
+    "status": "pending",
+    "requirements": ["codesign verification", "notarization verification", "staple verification"]
+  },
+  "deferred": ["M6 integration", "M7 integration", "M8 integration", "signed/notarized release artifact"]
+}
