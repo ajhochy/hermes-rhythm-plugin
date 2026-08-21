@@ -1183,6 +1183,16 @@ class PluginRegistration:
     key: str
     release: Callable[[], None]
     plugin_key: str = ""
+    # Optional independent check of the actual backing registry/collection
+    # this registration wrote into — returns True only when that registry
+    # no longer contains this registration's entry. ``dispose()`` sets
+    # ``_disposed`` unconditionally once ``release()`` has been attempted
+    # (even if ``release()`` silently no-ops or raises), so ``_disposed``
+    # alone only proves "disposal was attempted", never "the resource is
+    # actually gone". ``confirmed_released`` is the truthful signal a
+    # caller (e.g. a manual reload) must use before treating disposal as
+    # clean.
+    verify: Optional[Callable[[], bool]] = None
     _disposed: bool = field(default=False, init=False, repr=False)
     _on_dispose: Optional[Callable[["PluginRegistration"], None]] = field(
         default=None, init=False, repr=False
@@ -1193,14 +1203,35 @@ class PluginRegistration:
         """Whether this handle still owns an active registration."""
         return not self._disposed
 
+    @property
+    def confirmed_released(self) -> bool:
+        """Whether disposal happened AND is independently verified clean.
+
+        Without a ``verify`` callable this reduces to ``not active``
+        (the pre-existing, weaker guarantee). With one, a registration
+        whose ``release()`` closure silently failed to remove its entry
+        from the real backing collection is caught here even though
+        ``dispose()`` already flipped ``_disposed`` — the ledger
+        bookkeeping and the actual registry state are checked
+        independently on purpose.
+        """
+        if not self._disposed:
+            return False
+        if self.verify is None:
+            return True
+        try:
+            return bool(self.verify())
+        except Exception:
+            return False
+
     def dispose(self) -> None:
         """Release this registration once; repeated disposal is harmless."""
         if self._disposed:
             return
-        self._disposed = True
         try:
             self.release()
         finally:
+            self._disposed = True
             if self._on_dispose is not None:
                 self._on_dispose(self)
 
@@ -1560,10 +1591,11 @@ class PluginContext:
         kind: str,
         key: str,
         release: Callable[[], None],
+        verify: Optional[Callable[[], bool]] = None,
     ) -> PluginRegistration:
         """Record host-owned cleanup for a successful registration."""
         return self._manager._track_registration(
-            self.manifest, kind, key, release
+            self.manifest, kind, key, release, verify=verify
         )
 
     def _track_replacement(
@@ -1576,6 +1608,7 @@ class PluginContext:
         previous: Any,
         restore: Callable[[Any], bool],
         finalize: Optional[Callable[[], None]] = None,
+        verify: Optional[Callable[[], bool]] = None,
     ) -> PluginRegistration:
         """Track one generation in a replaceable registration slot."""
         lease = replacement_coordinator.acquire(
@@ -1585,7 +1618,7 @@ class PluginContext:
             restore=restore,
             finalize=finalize,
         )
-        return self._track(kind, key, lease.dispose)
+        return self._track(kind, key, lease.dispose, verify=verify)
 
     # -- host-owned LLM access ----------------------------------------------
 
@@ -1807,6 +1840,8 @@ class PluginContext:
                 previous=previous,
                 restore=_restore_tool,
                 finalize=lambda: self._manager._remove_tool_name_if_unowned(name),
+                verify=lambda: registry.snapshot_registration(name, scope=scope)
+                is not registered,
             )
         else:
             handle = None
@@ -2947,6 +2982,7 @@ class PluginContext:
             lambda: self._manager._remove_identity(
                 self._manager._slack_action_handlers, entry
             ),
+            verify=lambda: entry not in self._manager._slack_action_handlers,
         )
         logger.debug(
             "Plugin %s registered Slack action handler: %s",
@@ -3155,6 +3191,7 @@ class PluginContext:
             lambda: self._manager._remove_callback(
                 self._manager._hooks, hook_name, callback
             ),
+            verify=lambda: callback not in self._manager._hooks.get(hook_name, []),
         )
         logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
         return handle
@@ -3337,6 +3374,7 @@ class PluginContext:
             lambda: self._manager._remove_callback(
                 self._manager._middleware, kind, callback
             ),
+            verify=lambda: callback not in self._manager._middleware.get(kind, []),
         )
         logger.debug("Plugin %s registered middleware: %s", self.manifest.name, kind)
         return handle
@@ -3501,6 +3539,7 @@ class PluginManager:
         kind: str,
         key: str,
         release: Callable[[], None],
+        verify: Optional[Callable[[], bool]] = None,
     ) -> PluginRegistration:
         """Record one successful registration under its canonical plugin key."""
         plugin_key = manifest.key or manifest.name
@@ -3509,6 +3548,7 @@ class PluginManager:
             key=key,
             release=release,
             plugin_key=plugin_key,
+            verify=verify,
         )
         registration._on_dispose = lambda disposed: self._forget_registrations(
             [disposed]
@@ -3867,8 +3907,15 @@ class PluginManager:
 
     def _reload_plugin_locked(self, plugin_id: str) -> "PluginReloadReceipt":
         """The reload critical section — caller must hold ``_discovery_lock``."""
-        previously_loaded = (
-            plugin_id in self._plugins or plugin_id in self._ownership_ledger
+        # A prior ``LoadedPlugin`` entry with ``.error`` set means
+        # discovery recorded — and gated out — a disabled/refused/
+        # exclusive/model-provider manifest; that is NOT "previously
+        # loaded" in any truthful sense, even though the key is present
+        # in ``self._plugins``. Only an error-free entry or a live
+        # ownership-ledger registration counts.
+        prior_entry = self._plugins.get(plugin_id)
+        previously_loaded = bool(self._ownership_ledger.get(plugin_id)) or (
+            prior_entry is not None and prior_entry.error is None
         )
         # Snapshot the live registration objects (not just their ledger
         # entry) before unloading. ``_unload_scoped`` forgets ledger entries
@@ -3889,7 +3936,19 @@ class PluginManager:
                 error=f"unload failed: {exc}",
             )
 
-        survivors = [registration for registration in prior_registrations if registration.active]
+        # ``confirmed_released`` (not ``active``) is the truthful signal:
+        # ``dispose()`` flips ``active`` False unconditionally once
+        # release() has been *attempted*, even if the underlying release
+        # closure silently no-op'd or raised. A registration that supplies
+        # a ``verify`` closure is independently checked against its real
+        # backing collection so a broken release can't be mistaken for a
+        # clean disposal — never register a fresh copy while a stale one
+        # still lives in the actual registry.
+        survivors = [
+            registration
+            for registration in prior_registrations
+            if not registration.confirmed_released
+        ]
         if survivors:
             return PluginReloadReceipt(
                 plugin_id=plugin_id,
@@ -3909,6 +3968,61 @@ class PluginManager:
                 ok=False,
                 previously_loaded=previously_loaded,
                 error=f"plugin '{plugin_id}' was not found under any plugin root",
+            )
+
+        # A reload must refuse exactly what a fresh discovery pass would
+        # refuse — ``_load_plugin_scoped`` itself performs zero policy
+        # checks (it assumes the caller already filtered), so without this
+        # gate a reload could reactivate a plugin the user explicitly
+        # disabled, one never opted into ``plugins.enabled``, a removed
+        # Relay identity, or an exclusive/model-provider-category plugin
+        # whose lifecycle belongs to a different discovery path entirely.
+        lookup_key = manifest.key or manifest.name
+        action, gated = self._classify_manifest_load(
+            manifest,
+            lookup_key,
+            _get_disabled_plugins(),
+            _get_enabled_plugins(),
+        )
+        if action == "model_provider":
+            self._plugins[lookup_key] = gated
+            return PluginReloadReceipt(
+                plugin_id=plugin_id,
+                ok=False,
+                previously_loaded=previously_loaded,
+                root=manifest.source,
+                error=(
+                    "model-provider plugin — activated via providers/ lazy "
+                    "discovery, not eligible for manual reload"
+                ),
+            )
+        if action in ("refused", "not_enabled"):
+            self._plugins[lookup_key] = gated
+            return PluginReloadReceipt(
+                plugin_id=plugin_id,
+                ok=False,
+                previously_loaded=previously_loaded,
+                root=manifest.source,
+                error=gated.error,
+            )
+        if action == "load_deferred_platform":
+            try:
+                self._register_deferred_platform(manifest)
+            except Exception as exc:
+                return PluginReloadReceipt(
+                    plugin_id=plugin_id,
+                    ok=False,
+                    previously_loaded=previously_loaded,
+                    root=manifest.source,
+                    error=str(exc),
+                )
+            return PluginReloadReceipt(
+                plugin_id=plugin_id,
+                ok=True,
+                previously_loaded=previously_loaded,
+                root=manifest.source,
+                tools_removed=sorted(tools_before - self._plugin_tool_names),
+                tools_added=sorted(self._plugin_tool_names - tools_before),
             )
 
         try:
@@ -4007,6 +4121,142 @@ class PluginManager:
         except Exception as exc:
             logger.debug("secret source re-apply after discovery failed: %s", exc)
 
+    def _classify_manifest_load(
+        self,
+        manifest: PluginManifest,
+        lookup_key: str,
+        disabled: set,
+        enabled: Optional[set],
+    ) -> Tuple[str, Optional["LoadedPlugin"]]:
+        """Classify one manifest against the discovery policy gates.
+
+        Shared by :meth:`_discover_and_load_inner` (the full sweep) and
+        :meth:`_reload_plugin_locked` (single-plugin runtime reload) so a
+        manual reload can never activate something a fresh discovery pass
+        would refuse — both paths evaluate literally the same gate chain,
+        in the same order, with the same refusal reasons.
+
+        Returns ``(action, gated)``:
+
+        * ``"refused"`` — never load. ``gated`` is a disabled
+          :class:`LoadedPlugin` with ``.error`` set to the refusal reason
+          (removed-Relay identity, explicit ``plugins.disabled``, or the
+          ``exclusive`` category).
+        * ``"not_enabled"`` — never load; not present in the
+          ``plugins.enabled`` opt-in allow-list. ``gated`` is a disabled
+          :class:`LoadedPlugin` with ``.error`` set.
+        * ``"model_provider"`` — never loaded through this path; owned by
+          ``providers/__init__.py``'s own lazy discovery. ``gated`` is an
+          *enabled*, error-free :class:`LoadedPlugin` recorded for
+          introspection only.
+        * ``"load_now"`` — bundled backend; caller loads it immediately
+          via :meth:`_load_plugin`/:meth:`_load_plugin_scoped`. ``gated``
+          is ``None``.
+        * ``"load_deferred_platform"`` — bundled platform; caller
+          registers a deferred loader via
+          :meth:`_register_deferred_platform`. ``gated`` is ``None``.
+        * ``"queue"`` — standalone/user/entry-point plugin that passed
+          every gate; caller loads it (directly, or — during a full
+          sweep — after dependency-order resolution). ``gated`` is
+          ``None``.
+        """
+        # Relay lifecycle ownership now lives in the Hermes core. Loading
+        # an old user or entry-point copy would let plugin.initialize()
+        # compete for the same process-global Relay registries.
+        if (
+            lookup_key in LEGACY_RELAY_PLUGIN_KEYS
+            or manifest.name in LEGACY_RELAY_PLUGIN_KEYS
+        ):
+            gated = LoadedPlugin(manifest=manifest, enabled=False)
+            gated.error = (
+                "removed — Relay lifecycle is owned by Hermes core; configure "
+                f"{RELAY_PLUGINS_CONFIG_ENV} instead"
+            )
+            logger.warning(
+                "Refusing to load removed Hermes Relay plugin '%s'; %s",
+                lookup_key,
+                gated.error,
+            )
+            return "refused", gated
+
+        # Explicit disable always wins (matches on key or on legacy
+        # bare name for back-compat with existing user configs).
+        if lookup_key in disabled or manifest.name in disabled:
+            gated = LoadedPlugin(manifest=manifest, enabled=False)
+            gated.error = "disabled via config"
+            logger.debug("Skipping disabled plugin '%s'", lookup_key)
+            return "refused", gated
+
+        # Exclusive plugins (memory providers) have their own
+        # discovery/activation path. The general loader records the
+        # manifest for introspection but does not load the module.
+        if manifest.kind == "exclusive":
+            gated = LoadedPlugin(manifest=manifest, enabled=False)
+            gated.error = (
+                "exclusive plugin — activate via <category>.provider config"
+            )
+            logger.debug(
+                "Skipping '%s' (exclusive, handled by category discovery)",
+                lookup_key,
+            )
+            return "refused", gated
+
+        # Model provider plugins are loaded by providers/__init__.py
+        # (its own lazy discovery keyed off first get_provider_profile()
+        # call). We record the manifest here for introspection but do
+        # not import the module — a second import would create two
+        # ProviderProfile instances and break the "last writer wins"
+        # override semantics between bundled and user plugins.
+        if manifest.kind == "model-provider":
+            gated = LoadedPlugin(manifest=manifest, enabled=True)
+            logger.debug(
+                "Skipping '%s' (model-provider, handled by providers/ discovery)",
+                lookup_key,
+            )
+            return "model_provider", gated
+
+        # Built-in backends auto-load — they ship with hermes and must
+        # just work. Selection among them (e.g. which image_gen backend
+        # services calls) is driven by ``<category>.provider`` config,
+        # enforced by the tool wrapper.
+        if manifest.source == "bundled" and manifest.kind == "backend":
+            return "load_now", None
+
+        # Bundled platform plugins (gateway adapters: telegram, discord,
+        # feishu, teams, ...) are registered LAZILY. Their modules import
+        # heavy, platform-specific SDKs at module level (lark_oapi,
+        # microsoft_teams, discord.py, slack_bolt, ...), so eagerly loading
+        # all ~20 of them added several seconds to every `hermes`
+        # invocation — including plain `hermes chat`, which never touches a
+        # gateway platform. Instead we register a cheap deferred loader in
+        # the platform_registry keyed on the platform name; the real module
+        # is imported only when the gateway / cron / setup / send_message
+        # path actually asks for that platform. Every platform Hermes ships
+        # remains available out of the box — it just loads on first use.
+        if manifest.source == "bundled" and manifest.kind == "platform":
+            return "load_deferred_platform", None
+
+        # Everything else (standalone, user-installed backends,
+        # entry-point plugins) is opt-in via plugins.enabled.
+        # Accept both the path-derived key and the legacy bare name
+        # so existing configs keep working.
+        is_enabled = (
+            enabled is not None
+            and (lookup_key in enabled or manifest.name in enabled)
+        )
+        if not is_enabled:
+            gated = LoadedPlugin(manifest=manifest, enabled=False)
+            gated.error = (
+                "not enabled in config (run `hermes plugins enable {}` to activate)"
+                .format(lookup_key)
+            )
+            logger.debug(
+                "Skipping '%s' (not in plugins.enabled)", lookup_key
+            )
+            return "not_enabled", gated
+
+        return "queue", None
+
     def _discover_and_load_inner(self) -> None:
         """The actual discovery sweep — see :meth:`discover_and_load`."""
         manifests: List[PluginManifest] = self._collect_directory_manifests()
@@ -4045,106 +4295,17 @@ class PluginManager:
         for manifest in winners.values():
             lookup_key = manifest.key or manifest.name
 
-            # Relay lifecycle ownership now lives in the Hermes core. Loading
-            # an old user or entry-point copy would let plugin.initialize()
-            # compete for the same process-global Relay registries.
-            if (
-                lookup_key in LEGACY_RELAY_PLUGIN_KEYS
-                or manifest.name in LEGACY_RELAY_PLUGIN_KEYS
-            ):
-                loaded = LoadedPlugin(manifest=manifest, enabled=False)
-                loaded.error = (
-                    "removed — Relay lifecycle is owned by Hermes core; configure "
-                    f"{RELAY_PLUGINS_CONFIG_ENV} instead"
-                )
-                self._plugins[lookup_key] = loaded
-                logger.warning(
-                    "Refusing to load removed Hermes Relay plugin '%s'; %s",
-                    lookup_key,
-                    loaded.error,
-                )
+            action, gated = self._classify_manifest_load(
+                manifest, lookup_key, disabled, enabled
+            )
+            if action in ("refused", "not_enabled", "model_provider"):
+                self._plugins[lookup_key] = gated
                 continue
-
-            # Explicit disable always wins (matches on key or on legacy
-            # bare name for back-compat with existing user configs).
-            if lookup_key in disabled or manifest.name in disabled:
-                loaded = LoadedPlugin(manifest=manifest, enabled=False)
-                loaded.error = "disabled via config"
-                self._plugins[lookup_key] = loaded
-                logger.debug("Skipping disabled plugin '%s'", lookup_key)
-                continue
-
-            # Exclusive plugins (memory providers) have their own
-            # discovery/activation path. The general loader records the
-            # manifest for introspection but does not load the module.
-            if manifest.kind == "exclusive":
-                loaded = LoadedPlugin(manifest=manifest, enabled=False)
-                loaded.error = (
-                    "exclusive plugin — activate via <category>.provider config"
-                )
-                self._plugins[lookup_key] = loaded
-                logger.debug(
-                    "Skipping '%s' (exclusive, handled by category discovery)",
-                    lookup_key,
-                )
-                continue
-
-            # Model provider plugins are loaded by providers/__init__.py
-            # (its own lazy discovery keyed off first get_provider_profile()
-            # call). We record the manifest here for introspection but do
-            # not import the module — a second import would create two
-            # ProviderProfile instances and break the "last writer wins"
-            # override semantics between bundled and user plugins.
-            if manifest.kind == "model-provider":
-                loaded = LoadedPlugin(manifest=manifest, enabled=True)
-                self._plugins[lookup_key] = loaded
-                logger.debug(
-                    "Skipping '%s' (model-provider, handled by providers/ discovery)",
-                    lookup_key,
-                )
-                continue
-
-            # Built-in backends auto-load — they ship with hermes and must
-            # just work. Selection among them (e.g. which image_gen backend
-            # services calls) is driven by ``<category>.provider`` config,
-            # enforced by the tool wrapper.
-            if manifest.source == "bundled" and manifest.kind == "backend":
+            if action == "load_now":
                 self._load_plugin(manifest)
                 continue
-
-            # Bundled platform plugins (gateway adapters: telegram, discord,
-            # feishu, teams, ...) are registered LAZILY. Their modules import
-            # heavy, platform-specific SDKs at module level (lark_oapi,
-            # microsoft_teams, discord.py, slack_bolt, ...), so eagerly loading
-            # all ~20 of them added several seconds to every `hermes`
-            # invocation — including plain `hermes chat`, which never touches a
-            # gateway platform. Instead we register a cheap deferred loader in
-            # the platform_registry keyed on the platform name; the real module
-            # is imported only when the gateway / cron / setup / send_message
-            # path actually asks for that platform. Every platform Hermes ships
-            # remains available out of the box — it just loads on first use.
-            if manifest.source == "bundled" and manifest.kind == "platform":
+            if action == "load_deferred_platform":
                 self._register_deferred_platform(manifest)
-                continue
-
-            # Everything else (standalone, user-installed backends,
-            # entry-point plugins) is opt-in via plugins.enabled.
-            # Accept both the path-derived key and the legacy bare name
-            # so existing configs keep working.
-            is_enabled = (
-                enabled is not None
-                and (lookup_key in enabled or manifest.name in enabled)
-            )
-            if not is_enabled:
-                loaded = LoadedPlugin(manifest=manifest, enabled=False)
-                loaded.error = (
-                    "not enabled in config (run `hermes plugins enable {}` to activate)"
-                    .format(lookup_key)
-                )
-                self._plugins[lookup_key] = loaded
-                logger.debug(
-                    "Skipping '%s' (not in plugins.enabled)", lookup_key
-                )
                 continue
             to_load[lookup_key] = manifest
 

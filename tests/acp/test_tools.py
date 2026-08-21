@@ -1,5 +1,6 @@
 """Tests for acp_adapter.tools — tool kind mapping and ACP content building."""
 
+import json
 
 from acp_adapter.edit_approval import EditProposal
 from acp_adapter.tools import (
@@ -160,6 +161,64 @@ class TestBuildToolStart:
 
 
 
+
+    def test_terminal_command_secret_is_redacted(self):
+        """The raw command line is echoed verbatim as start content today;
+        an inline secret (e.g. ``export TOKEN=... && curl ...``) must be
+        redacted before it reaches the ACP wire, not just the result."""
+        secret = "sk-abcdefghijklmnopqrstuvwx1234567890"
+        args = {"command": f"curl -H 'Authorization: Bearer {secret}' https://x"}
+        result = build_tool_start("tc-term", "terminal", args)
+
+        text = result.content[0].content.text
+        assert secret not in text
+        assert "curl" in text  # safe display preserved
+
+    def test_execute_code_source_secret_is_redacted(self):
+        secret = "sk-abcdefghijklmnopqrstuvwx1234567890"
+        args = {"code": f"import requests\nrequests.get('https://x', headers={{'Authorization': '{secret}'}})"}
+        result = build_tool_start("tc-exec", "execute_code", args)
+
+        text = result.content[0].content.text
+        assert secret not in text
+        assert "requests.get" in text
+
+    def test_write_file_diff_secret_is_redacted(self):
+        secret = "sk-abcdefghijklmnopqrstuvwx1234567890"
+        args = {"path": "/tmp/x.env", "content": f"API_KEY={secret}"}
+        result = build_tool_start(
+            "tc-write",
+            "write_file",
+            args,
+            edit_diff=EditProposal("write_file", "/tmp/x.env", None, f"API_KEY={secret}", args),
+        )
+
+        item = result.content[0]
+        assert secret not in (item.new_text or "")
+
+    def test_generic_tool_raw_input_secret_is_redacted_and_bounded(self):
+        """A generic/MCP tool (not in the polished list) sends the full
+        arguments dict as ``raw_input`` with no bound today — any secret
+        value in the arguments leaks verbatim, and there is no size cap."""
+        secret = "sk-abcdefghijklmnopqrstuvwx1234567890"
+        args = {"token": secret, "note": "x" * 10000}
+        result = build_tool_start("tc-mcp", "mcp_some_server_do_thing", args)
+
+        raw = result.raw_input
+        assert raw is not None
+        serialized = json.dumps(raw, default=str)
+        assert secret not in serialized
+        assert len(serialized) < 6000
+
+    def test_generic_tool_raw_output_secret_is_redacted_and_bounded(self):
+        secret = "sk-abcdefghijklmnopqrstuvwx1234567890"
+        result = build_tool_complete(
+            "tc-mcp-out", "mcp_some_server_do_thing", f"token is {secret} " + ("y" * 10000)
+        )
+
+        assert result.raw_output is not None
+        assert secret not in result.raw_output
+        assert len(result.raw_output) < 6000
 
     def test_build_tool_start_for_browser_navigate(self):
         """browser_navigate should emit a polished start event."""
