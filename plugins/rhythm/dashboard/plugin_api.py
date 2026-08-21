@@ -10,11 +10,13 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import date
+from typing import Literal
 from typing import Any
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from plugins.rhythm.backend.client import (
     OAUTH_CLIENT_ID,
@@ -43,6 +45,19 @@ class _OAuthState:
 
 
 _oauth_states: dict[str, _OAuthState] = {}
+@dataclass
+class _TaskConfirmation:
+    task_id: str
+    operation: Literal["complete", "reschedule"]
+    scheduled_date: str | None
+    generation: str
+    home: str
+    expires_at: float
+
+
+_task_confirmations: dict[str, _TaskConfirmation] = {}
+_TASK_CONFIRMATION_TTL_SECONDS = 60
+MAX_PENDING_TASK_CONFIRMATIONS = 32
 
 
 class ConnectionInput(BaseModel):
@@ -52,6 +67,14 @@ class ConnectionInput(BaseModel):
 class OAuthCallback(BaseModel):
     state: str = Field(min_length=16, max_length=256)
     code: str = Field(min_length=1, max_length=2048)
+
+
+class TaskOperation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation: Literal["complete", "reschedule"]
+    generation: str = Field(min_length=8, max_length=256)
+    scheduledDate: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    confirmation: str | None = Field(default=None, min_length=32, max_length=128)
 
 
 def _invalid_request() -> HTTPException:
@@ -108,6 +131,13 @@ def _prune_oauth_states_locked() -> set[str]:
     for key in expired:
         _oauth_states.pop(key, None)
     return expired
+
+
+def _prune_task_confirmations_locked() -> None:
+    now = time.monotonic()
+    for key, value in list(_task_confirmations.items()):
+        if value.expires_at <= now:
+            _task_confirmations.pop(key, None)
 
 
 def _safe_identity(payload: dict[str, Any]) -> dict[str, str]:
@@ -299,6 +329,52 @@ def task_detail(task_id: str, incoming_request: Request):
         if detail["id"] != task_id:
             raise RhythmProtocolError("schema_drift")
         return detail
+    except Exception as exc:
+        raise _error(exc) from None
+
+
+@router.post("/tasks/{task_id}/confirmation")
+async def task_operation_confirmation(task_id: str, incoming_request: Request):
+    payload = await _validated_body(incoming_request, TaskOperation)
+    if payload.operation == "reschedule" and not payload.scheduledDate:
+        raise _invalid_request()
+    if payload.operation == "complete" and payload.scheduledDate is not None:
+        raise _invalid_request()
+    if payload.scheduledDate is not None:
+        try:
+            if date.fromisoformat(payload.scheduledDate).isoformat() != payload.scheduledDate:
+                raise ValueError
+        except ValueError:
+            raise _invalid_request() from None
+    try:
+        client, identity, _ = _connected_client()
+        detail = _task(client.call("GET", f"/tasks/{task_id}"))
+        if detail["id"] != task_id or detail["ownerId"] != identity["id"]:
+            raise RhythmRemoteError("forbidden")
+        nonce = secrets.token_urlsafe(32)
+        with _oauth_lock:
+            _prune_task_confirmations_locked()
+            if len(_task_confirmations) >= MAX_PENDING_TASK_CONFIRMATIONS:
+                raise HTTPException(429, detail={"error": "confirmation_pending_limit", "recoverable": True})
+            _task_confirmations[nonce] = _TaskConfirmation(task_id, payload.operation, payload.scheduledDate, payload.generation, _canonical_home(), time.monotonic() + _TASK_CONFIRMATION_TTL_SECONDS)
+        return {"confirmation": nonce, "task": detail}
+    except Exception as exc:
+        raise _error(exc) from None
+
+
+@router.post("/tasks/{task_id}/operations")
+async def task_operation(task_id: str, incoming_request: Request):
+    payload = await _validated_body(incoming_request, TaskOperation)
+    if not payload.confirmation:
+        raise HTTPException(409, detail={"error": "confirmation_required", "recoverable": True})
+    with _oauth_lock:
+        _prune_task_confirmations_locked()
+        bound = _task_confirmations.pop(payload.confirmation, None)
+    if bound is None or bound.home != _canonical_home() or (bound.task_id, bound.operation, bound.scheduled_date, bound.generation) != (task_id, payload.operation, payload.scheduledDate, payload.generation):
+        raise HTTPException(409, detail={"error": "stale_confirmation", "recoverable": True})
+    try:
+        client, _, _ = _connected_client()
+        return _task(client.mutate_task(task_id, payload.operation, payload.scheduledDate))
     except Exception as exc:
         raise _error(exc) from None
 

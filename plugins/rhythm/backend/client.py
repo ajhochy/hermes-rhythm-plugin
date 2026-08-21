@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import socket
 import ssl
 import time
 import zlib
+from datetime import date
 from dataclasses import dataclass
 from typing import Any, Callable
 from urllib.parse import urljoin, urlparse
@@ -108,25 +110,43 @@ class RhythmClient:
     transport: Transport = _httpx_transport
     sleep: Callable[[float], None] = time.sleep
 
-    def call(self, method: str, path: str) -> dict[str, Any]:
+    def call(self, method: str, path: str, *, body: dict[str, Any] | None = None, idempotency_key: str | None = None) -> dict[str, Any]:
         method = method.upper()
         is_task_detail = method == "GET" and path.startswith("/tasks/") and _safe_task_id(path.removeprefix("/tasks/"))
-        if (method, path) not in ALLOWED_OPERATIONS and not is_task_detail:
+        is_task_mutation = method == "PATCH" and path.startswith("/tasks/") and _safe_task_id(path.removeprefix("/tasks/")) and body is not None
+        if (method, path) not in ALLOWED_OPERATIONS and not is_task_detail and not is_task_mutation:
             raise RhythmProtocolError("operation_not_allowed")
+        if is_task_mutation and set(body) not in ({"status"}, {"scheduledDate"}):
+            raise RhythmProtocolError("operation_not_allowed")
+        if body and body.get("status") != "done" and "status" in body:
+            raise RhythmProtocolError("operation_not_allowed")
+        if body and "scheduledDate" in body:
+            if not isinstance(body["scheduledDate"], str):
+                raise RhythmProtocolError("operation_not_allowed")
+            try:
+                if date.fromisoformat(body["scheduledDate"]).isoformat() != body["scheduledDate"]:
+                    raise ValueError
+            except ValueError as exc:
+                raise RhythmProtocolError("operation_not_allowed") from exc
         parsed = urlparse(path)
         if parsed.scheme or parsed.netloc or not path.startswith("/"):
             raise RhythmProtocolError("origin_not_allowed")
         url = urljoin(APPROVED_ORIGIN, path)
         attempts = 2 if method == "GET" else 1
+        encoded = json.dumps(body, separators=(",", ":")).encode() if body is not None else None
+        headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/json"}
+        if encoded is not None:
+            headers["Content-Type"] = "application/json"
+            headers["Idempotency-Key"] = idempotency_key or hashlib.sha256(f"{method}:{path}:{encoded.decode()}".encode()).hexdigest()
         for attempt in range(attempts):
             try:
-                status, headers, payload = self.transport(method, url, {"Authorization": f"Bearer {self.token}", "Accept": "application/json"}, None, REQUEST_TIMEOUT_SECONDS)
+                status, response_headers, payload = self.transport(method, url, headers, encoded, REQUEST_TIMEOUT_SECONDS)
             except RhythmRemoteError:
                 if attempt + 1 < attempts:
                     self.sleep(0.1)
                     continue
                 raise
-            location = headers.get("location") or headers.get("Location")
+            location = response_headers.get("location") or response_headers.get("Location")
             if 300 <= status < 400 or location:
                 raise RhythmProtocolError("redirect_rejected")
             if status >= 500 and attempt + 1 < attempts:
@@ -140,6 +160,31 @@ class RhythmClient:
                 raise RhythmProtocolError("response_too_large")
             return payload
         raise RhythmRemoteError("upstream_unavailable")
+
+    def mutate_task(self, task_id: str, operation: str, scheduled_date: str | None = None) -> dict[str, Any]:
+        """Perform one semantic PATCH and succeed only after canonical GET reconciliation."""
+        if operation == "complete":
+            body = {"status": "done"}
+        elif operation == "reschedule" and scheduled_date is not None:
+            body = {"scheduledDate": scheduled_date}
+        else:
+            raise RhythmProtocolError("operation_not_allowed")
+        key = hashlib.sha256(f"rhythm-m4b:{task_id}:{operation}:{scheduled_date or ''}".encode()).hexdigest()
+        try:
+            self.call("PATCH", f"/tasks/{task_id}", body=body, idempotency_key=key)
+        except RhythmRemoteError as exc:
+            # A 409 is an authoritative rejection, not an ambiguous mutation.  Never
+            # turn it into success merely because the desired state already existed.
+            if exc.kind == "conflict":
+                raise
+            if exc.kind not in {"timeout", "network", "dns", "upstream_unavailable"}:
+                raise
+            uncertain = exc
+        canonical = self.call("GET", f"/tasks/{task_id}")
+        matched = canonical.get("status") == "done" if operation == "complete" else canonical.get("scheduledDate") == scheduled_date
+        if matched:
+            return canonical
+        raise RhythmRemoteError("uncertain", uncertain.status_code) if uncertain is not None else RhythmRemoteError("conflict", 409)
 
     def exchange_code(self, code: str, verifier: str, redirect_uri: str) -> str:
         """Perform the one explicitly-defined OAuth exchange; never redirect."""

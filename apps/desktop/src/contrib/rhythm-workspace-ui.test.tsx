@@ -2,7 +2,7 @@ import { host as hermesHost } from '@hermes/plugin-sdk'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
-import { askHermes, createGateway, gatewayError } from '../../../../plugins/rhythm/desktop/src/plugin'
+import { askHermes, confirmationKey, createGateway, gatewayError } from '../../../../plugins/rhythm/desktop/src/plugin'
 import {
   DashboardScreen,
   defaultRhythmTokens,
@@ -180,5 +180,41 @@ describe('accepted Rhythm workspace package', () => {
     await screen.findAllByText('Review brief')
     resolveOld({ ...summary, tasks: [] })
     await waitFor(() => expect(screen.getAllByText('Review brief').length).toBeGreaterThan(0))
+  })
+
+  it('mounts the actual TasksScreen adapter: local confirm then one bound operation, with no token or broad writes', async () => {
+    const confirmations = new Map<string, string>()
+    const token = 'confirmation-secret-never-rendered'
+    const rest = vi.fn(async (path: string, init?: { method: string, body: unknown }) => {
+      if (path === '/tasks') return { tasks: [task] }
+      if (path === '/tasks/task-1/confirmation') return { confirmation: token }
+      if (path === '/tasks/task-1/operations') {
+        expect(init).toMatchObject({ method: 'POST', body: { operation: 'complete', confirmation: token } })
+        return { ...task, status: 'done' }
+      }
+      throw new Error(`unexpected route ${path}`)
+    })
+    const gateway = createGateway(rest as never, confirmations)
+    const adapter: RhythmHostAdapter = {
+      ...host,
+      currentUser: { displayName: 'Hermes', initials: 'H', capabilities: ['tasks.complete', 'tasks.reschedule'] },
+      confirmTaskOperation: async confirmation => {
+        const receipt = await rest(`/tasks/${confirmation.taskId}/confirmation`, { method: 'POST', body: confirmation }) as { confirmation: string }
+        confirmations.set(confirmationKey(confirmation), receipt.confirmation)
+        return true
+      },
+    }
+    const view = renderScreen(<TasksScreen />, gateway, adapter)
+    await screen.findByTestId('task-complete-task-1')
+    expect((screen.getByTestId('tasks-header-add-task') as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(screen.getByTestId('task-complete-task-1'))
+    expect(rest.mock.calls.map(([path]) => path)).toEqual(['/tasks'])
+    expect(screen.getByTestId('task-operation-confirmation')).not.toBeNull()
+    fireEvent.click(screen.getByTestId('task-operation-confirm'))
+    await waitFor(() => expect(rest.mock.calls.map(([path]) => path)).toEqual(['/tasks', '/tasks/task-1/confirmation', '/tasks/task-1/operations']))
+    expect(view.container.textContent).not.toContain(token)
+    await expect(gateway.tasks.complete?.('task-1', 'changed-generation')).rejects.toMatchObject({ kind: 'unavailable' })
+    expect(confirmations.size).toBe(0)
+    view.unmount()
   })
 })
