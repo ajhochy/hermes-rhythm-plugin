@@ -36,6 +36,7 @@ _RAW_IO_MAX_CHARS = 4000
 # choke point that force-redacts every text/diff block below.
 _CONTENT_TEXT_MAX_CHARS = 10000
 _DIFF_TEXT_MAX_CHARS = 20000
+_TITLE_MAX_CHARS = 200
 
 
 def _redact_display(text: str, *, code: bool = False) -> str:
@@ -43,6 +44,11 @@ def _redact_display(text: str, *, code: bool = False) -> str:
     if not text:
         return text
     return redact_sensitive_text(text, force=True, code_file=code)
+
+
+def _safe_title(title: Any) -> str:
+    """Force-redact and bound every ACP tool-call title at the wire boundary."""
+    return _truncate_text(_redact_display(str(title or "")), limit=_TITLE_MAX_CHARS)
 
 
 def _redact_raw_value(value: Any, *, _depth: int = 0) -> Any:
@@ -291,6 +297,7 @@ def _diff_content(
     needs its own copy of the same choke point rather than duplicating the
     redact-then-bound logic at every call site.
     """
+    path = _truncate_text(_redact_display(str(path or "")), limit=_TITLE_MAX_CHARS)
     if redact:
         new_text = _redact_display(new_text or "", code=True)
         old_text = _redact_display(old_text, code=True) if old_text else old_text
@@ -1173,7 +1180,7 @@ def build_tool_start(
         logger.debug("ACP tool-start render failed for %r: %s", tool_name, exc)
         safe_name = tool_name if isinstance(tool_name, str) and tool_name else "tool"
         return acp.start_tool_call(
-            tool_call_id, safe_name, kind=get_tool_kind(safe_name),
+            tool_call_id, _safe_title(safe_name), kind=get_tool_kind(safe_name),
             content=None, locations=[], raw_input=None,
         )
 
@@ -1187,17 +1194,13 @@ def _build_tool_start(
 ) -> ToolCallStart:
     """Build the ToolCallStart event (unguarded; see ``build_tool_start``)."""
     kind = get_tool_kind(tool_name)
-    title = build_tool_title(tool_name, arguments)
+    title = _safe_title(build_tool_title(tool_name, arguments))
     locations = extract_locations(arguments)
 
     if tool_name == "patch":
         if edit_diff is not None:
             content = [
-                acp.tool_diff_content(
-                    path=edit_diff.path,
-                    old_text=_redact_display(edit_diff.old_text or "", code=True) or None,
-                    new_text=_redact_display(edit_diff.new_text or "", code=True),
-                )
+                _diff_content(edit_diff.path, edit_diff.new_text or "", edit_diff.old_text)
             ]
         else:
             mode = arguments.get("mode", "replace")
@@ -1210,11 +1213,7 @@ def _build_tool_start(
     if tool_name == "write_file":
         if edit_diff is not None:
             content = [
-                acp.tool_diff_content(
-                    path=edit_diff.path,
-                    old_text=_redact_display(edit_diff.old_text or "", code=True) or None,
-                    new_text=_redact_display(edit_diff.new_text or "", code=True),
-                )
+                _diff_content(edit_diff.path, edit_diff.new_text or "", edit_diff.old_text)
             ]
         else:
             path = arguments.get("path", "")
@@ -1279,23 +1278,15 @@ def _build_tool_start(
         path = f"skills/{name}/{file_path}" if file_path else f"skills/{name}"
 
         if action == "patch":
-            old = _redact_display(str(arguments.get("old_string") or ""), code=True)
-            new = _redact_display(str(arguments.get("new_string") or ""), code=True)
-            content = [acp.tool_diff_content(path=path, old_text=old or None, new_text=new)]
+            content = [_diff_content(path, str(arguments.get("new_string") or ""), str(arguments.get("old_string") or ""))]
         elif action in {"edit", "create"}:
             content = [
-                acp.tool_diff_content(
-                    path=path,
-                    new_text=_redact_display(str(arguments.get("content") or ""), code=True),
-                )
+                _diff_content(path, str(arguments.get("content") or ""))
             ]
         elif action == "write_file":
             target = str(arguments.get("file_path") or "file")
             content = [
-                acp.tool_diff_content(
-                    path=f"skills/{name}/{target}",
-                    new_text=_redact_display(str(arguments.get("file_content") or ""), code=True),
-                )
+                _diff_content(f"skills/{name}/{target}", str(arguments.get("file_content") or ""))
             ]
         elif action in {"delete", "remove_file"}:
             target = str(arguments.get("file_path") or file_path or name)

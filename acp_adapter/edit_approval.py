@@ -265,6 +265,7 @@ def build_acp_edit_tool_call(proposal: EditProposal):
     """Build the ToolCallUpdate payload for ACP request_permission."""
 
     import acp
+    from acp_adapter.tools import _diff_content
 
     tool_call_id = f"edit-approval-{next(_PERMISSION_REQUEST_IDS)}"
     return acp.update_tool_call(
@@ -273,11 +274,7 @@ def build_acp_edit_tool_call(proposal: EditProposal):
         kind="edit",
         status="pending",
         content=[
-            acp.tool_diff_content(
-                path=proposal.path,
-                old_text=proposal.old_text,
-                new_text=proposal.new_text,
-            )
+            _diff_content(proposal.path, proposal.new_text, proposal.old_text)
         ],
         raw_input={"tool": proposal.tool_name, "arguments": proposal.arguments},
     )

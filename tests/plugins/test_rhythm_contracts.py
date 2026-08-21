@@ -483,6 +483,40 @@ class TestPortScannerASTDataflow:
 
         assert scan_port_dependency_violations(REPO_ROOT) == []
 
+    @pytest.mark.parametrize(
+        "filename,source",
+        [
+            ("separator.ts", "server.listen(4_001);\n"),
+            ("hex_separator.js", "server.listen(0xF_A1);\n"),
+            ("expression.ts", "server.listen(4000 + 1);\n"),
+            ("constant.ts", "const PORT = 4000 + 1;\nserver.listen(PORT);\n"),
+            ("ipv4.ts", "server.listen('127.0.0.1:4000+1');\n"),
+            ("ipv6.ts", "server.listen('[::1]:4000+1');\n"),
+            ("hostname.ts", "server.listen('rhythm.local:4_001');\n"),
+        ],
+    )
+    def test_detects_javascript_port_expression_bypasses(self, tmp_path, filename, source):
+        from plugins.rhythm.contracts.validate import scan_port_dependency_violations
+
+        target = tmp_path / "plugins" / "rhythm" / "server" / filename
+        target.parent.mkdir(parents=True)
+        target.write_text(source)
+
+        assert scan_port_dependency_violations(tmp_path), source
+
+    def test_javascript_scanner_ignores_strings_and_comments(self, tmp_path):
+        from plugins.rhythm.contracts.validate import scan_port_dependency_violations
+
+        target = tmp_path / "plugins" / "rhythm" / "server" / "fixtures.ts"
+        target.parent.mkdir(parents=True)
+        target.write_text(
+            "// server.listen(4_001)\n"
+            "const example = 'server.listen(4000 + 1)';\n"
+            "/* const PORT = 0xF_A1; */\n"
+        )
+
+        assert scan_port_dependency_violations(tmp_path) == []
+
 
 # ── Architecture validator scans shared seams too (F5) ─────────────────
 

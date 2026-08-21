@@ -3903,7 +3903,34 @@ class PluginManager:
         found" without inferring it from exceptions or logs.
         """
         with self._discovery_lock, _plugin_home_scope(self.home_path):
-            return self._reload_plugin_locked(plugin_id)
+            canonical_key, error = self._resolve_reload_plugin_key(plugin_id)
+            if error:
+                return PluginReloadReceipt(
+                    plugin_id=plugin_id,
+                    ok=False,
+                    previously_loaded=bool(self._ownership_ledger.get(plugin_id)),
+                    error=error,
+                )
+            return self._reload_plugin_locked(canonical_key)
+
+    def _resolve_reload_plugin_key(self, request: str) -> tuple[str, Optional[str]]:
+        """Resolve a reload request before touching live plugin registrations.
+
+        Exact registry keys win. A manifest display name is accepted only when
+        it resolves to exactly one key; ambiguity must leave the registry
+        untouched rather than inheriting ``unload()``'s multi-name behavior.
+        """
+        manifests = self._collect_directory_manifests() + self._scan_entry_points()
+        manifest_keys = {manifest.key or manifest.name for manifest in manifests}
+        known_keys = manifest_keys | set(self._plugins) | set(self._ownership_ledger)
+        if request in known_keys:
+            return request, None
+        matches = sorted({manifest.key or manifest.name for manifest in manifests if manifest.name == request})
+        if len(matches) == 1:
+            return matches[0], None
+        if len(matches) > 1:
+            return request, f"plugin name '{request}' is ambiguous; use one of: {', '.join(matches)}"
+        return request, None
 
     def _reload_plugin_locked(self, plugin_id: str) -> "PluginReloadReceipt":
         """The reload critical section — caller must hold ``_discovery_lock``."""

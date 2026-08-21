@@ -113,6 +113,39 @@ class TestBuildToolTitle:
         title = build_tool_title("some_new_tool", {"foo": "bar"})
         assert title == "some_new_tool"
 
+    def test_titles_are_force_redacted_and_hard_bounded_for_every_argument_shape(self):
+        """Titles are ACP wire data too, including every formatter-specific arg."""
+        secret = "sk-abcdefghijklmnopqrstuvwx1234567890"
+        cases = [
+            ("terminal", {"command": f"echo {secret}"}),
+            ("read_file", {"path": f"/tmp/{secret}"}),
+            ("write_file", {"path": f"/tmp/{secret}"}),
+            ("patch", {"mode": secret, "path": f"/tmp/{secret}"}),
+            ("search_files", {"pattern": secret}),
+            ("web_search", {"query": secret}),
+            ("web_extract", {"urls": [{"url": f"https://x/{secret}"}]}),
+            ("process", {"action": secret, "session_id": secret}),
+            ("delegate_task", {"goal": secret}),
+            ("session_search", {"query": secret}),
+            ("memory", {"action": secret, "target": secret}),
+            ("execute_code", {"code": f"print('{secret}')"}),
+            ("skill_view", {"name": secret, "file_path": secret}),
+            ("skill_manage", {"action": secret, "name": secret, "file_path": secret}),
+            ("browser_navigate", {"url": f"https://x/{secret}"}),
+            ("browser_vision", {"question": secret}),
+            ("vision_analyze", {"question": secret}),
+            ("image_generate", {"prompt": secret}),
+            ("cronjob", {"action": secret, "job_id": secret}),
+        ]
+        for tool_name, args in cases:
+            title = build_tool_start("tc-title", tool_name, args).title
+            assert secret not in title
+            assert len(title) <= 200
+
+    def test_title_cap_applies_after_every_formatter(self):
+        result = build_tool_start("tc-huge-title", "read_file", {"path": "x" * 10000})
+        assert len(result.title) <= 200
+
 
 # ---------------------------------------------------------------------------
 # build_tool_start
@@ -354,6 +387,24 @@ class TestPolishedContentRedaction:
         blocks = _parse_unified_diff_content(diff_text)
         assert blocks, "expected at least one diff content block"
         assert self.AWS_SECRET not in (blocks[0].new_text or "")
+
+    def test_start_diffs_are_redacted_and_bounded_for_patch_write_and_skills(self):
+        secret = "sk-abcdefghijklmnopqrstuvwx1234567890"
+        huge = "z" * 50000
+        cases = [
+            ("patch", {"path": "/tmp/x", "old_string": f"OLD={secret}{huge}", "new_string": f"NEW={secret}{huge}"}, EditProposal("patch", "/tmp/x", f"OLD={secret}{huge}", f"NEW={secret}{huge}", {})),
+            ("write_file", {"path": "/tmp/x", "content": f"NEW={secret}{huge}"}, EditProposal("write_file", "/tmp/x", f"OLD={secret}{huge}", f"NEW={secret}{huge}", {})),
+            ("skill_manage", {"action": "patch", "name": "x", "file_path": "SKILL.md", "old_string": f"OLD={secret}{huge}", "new_string": f"NEW={secret}{huge}"}, None),
+            ("skill_manage", {"action": "write_file", "name": "x", "file_path": "extra.md", "file_content": f"NEW={secret}{huge}"}, None),
+        ]
+        for tool_name, args, edit_diff in cases:
+            result = build_tool_start("tc-diff", tool_name, args, edit_diff=edit_diff)
+            item = result.content[0]
+            assert secret not in (item.old_text or "")
+            assert secret not in (item.new_text or "")
+            assert len(item.path) <= 200
+            assert len(item.old_text or "") <= 20000
+            assert len(item.new_text or "") <= 20000
 
 
 class TestBuildToolComplete:

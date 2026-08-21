@@ -45,6 +45,25 @@ def test_acp_permission_tool_call_uses_edit_kind_and_diff_content():
     assert diff.newText == "new\n"
 
 
+def test_acp_permission_diff_is_redacted_and_bounded():
+    secret = "sk-abcdefghijklmnopqrstuvwx1234567890"
+    proposal = EditProposal(
+        tool_name="patch",
+        path="/tmp/x",
+        old_text=f"OLD={secret}" + "x" * 50000,
+        new_text=f"NEW={secret}" + "x" * 50000,
+        arguments={},
+    )
+
+    tool_call = build_acp_edit_tool_call(proposal)
+    diff = tool_call.content[0]
+
+    assert secret not in (diff.oldText or "")
+    assert secret not in (diff.newText or "")
+    assert len(diff.oldText or "") <= 20000
+    assert len(diff.newText or "") <= 20000
+
+
 
 
 

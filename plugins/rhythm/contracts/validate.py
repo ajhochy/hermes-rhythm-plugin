@@ -266,6 +266,121 @@ def _scan_python_ast_ports(path: Path, ports: set) -> list[tuple]:
     return hits
 
 
+def _strip_js_comments(text: str) -> str:
+    """Remove JS comments while preserving quoted values for endpoint checks."""
+    output: list[str] = []
+    i = 0
+    quote: Optional[str] = None
+    while i < len(text):
+        char = text[i]
+        if quote:
+            output.append(char)
+            if char == "\\" and i + 1 < len(text):
+                output.append(text[i + 1]); i += 2; continue
+            if char == quote:
+                quote = None
+            i += 1; continue
+        if char in "'\"`":
+            quote = char; output.append(char); i += 1; continue
+        if text.startswith("//", i):
+            newline = text.find("\n", i)
+            if newline < 0:
+                break
+            output.append("\n"); i = newline + 1; continue
+        if text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            i = len(text) if end < 0 else end + 2; continue
+        output.append(char); i += 1
+    return "".join(output)
+
+
+def _mask_js_strings(text: str) -> str:
+    """Blank quoted JS bodies while retaining offsets for call parsing."""
+    output = list(text)
+    i = 0
+    quote: Optional[str] = None
+    while i < len(text):
+        char = text[i]
+        if quote:
+            if char == "\\" and i + 1 < len(text):
+                output[i] = output[i + 1] = " "; i += 2; continue
+            if char == quote:
+                quote = None
+            else:
+                output[i] = " "
+            i += 1; continue
+        if char in "'\"`":
+            quote = char
+        i += 1
+    return "".join(output)
+
+
+def _eval_js_int(expression: str, constants: dict[str, int]) -> Optional[int]:
+    """Conservatively evaluate numeric JS expressions used as port values."""
+    expression = expression.strip().replace("_", "")
+    if not re.fullmatch(r"[A-Za-z_$][\w$]*|[0-9a-fA-FxXbBoO+*/%()\s-]+", expression):
+        return None
+    try:
+        tree = ast.parse(expression, mode="eval")
+    except SyntaxError:
+        return None
+
+    def evaluate(node: ast.AST) -> Optional[int]:
+        if isinstance(node, ast.Constant) and isinstance(node.value, int) and not isinstance(node.value, bool):
+            return node.value
+        if isinstance(node, ast.Name):
+            return constants.get(node.id)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+            value = evaluate(node.operand)
+            return None if value is None else (value if isinstance(node.op, ast.UAdd) else -value)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.FloorDiv, ast.Mod)):
+            left, right = evaluate(node.left), evaluate(node.right)
+            if left is None or right is None or (isinstance(node.op, (ast.FloorDiv, ast.Mod)) and right == 0):
+                return None
+            if isinstance(node.op, ast.Add): return left + right
+            if isinstance(node.op, ast.Sub): return left - right
+            if isinstance(node.op, ast.Mult): return left * right
+            if isinstance(node.op, ast.FloorDiv): return left // right
+            return left % right
+        return None
+    return evaluate(tree.body)
+
+
+def _scan_js_ports(path: Path, ports: set[int]) -> list[tuple]:
+    """Detect numeric and endpoint port dependencies in JS/TS without comments."""
+    text = _strip_js_comments(_read_text(path))
+    code = _mask_js_strings(text)
+    constants: dict[str, int] = {}
+    for match in re.finditer(r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([^;]+);", code):
+        value = _eval_js_int(match.group(2), constants)
+        if value is not None:
+            constants[match.group(1)] = value
+    hits: list[tuple] = []
+    for lineno, line in enumerate(code.splitlines(), 1):
+        for literal in re.findall(r"(?<![\w.])(0[xX][0-9a-fA-F_]+|0[bB][01_]+|0[oO][0-7_]+|\d[\d_]*)(?![\w.])", line):
+            value = _eval_js_int(literal, constants)
+            if value in ports:
+                hits.append((lineno, value, "hardcoded port literal"))
+    for match in re.finditer(
+        r"(?:https?://)?(?:\[[^\]]+\]|[A-Za-z0-9.*_-]+):([0-9a-fA-F_xXbBoO+*/%()\s-]+?)(?=[/'\",;\s]|$)",
+        text,
+    ):
+        value = _eval_js_int(match.group(1), constants)
+        if value in ports:
+            hits.append((text.count("\n", 0, match.start()) + 1, value, "hardcoded endpoint port"))
+    for match in re.finditer(r"\b(?:[A-Za-z_$][\w$]*\.)?(bind|listen)\s*\(([^()]*)\)", code):
+        lineno = code.count("\n", 0, match.start()) + 1
+        raw_args = text[match.start(2):match.end(2)]
+        for candidate in raw_args.split(","):
+            candidate = candidate.strip()
+            quoted = re.fullmatch(r"['\"](.*)['\"]", candidate, re.DOTALL)
+            expression = quoted.group(1).rsplit(":", 1)[-1] if quoted and ":" in quoted.group(1) else candidate
+            value = _eval_js_int(expression, constants)
+            if value in ports:
+                hits.append((lineno, value, f"{match.group(1)}() call passes port directly"))
+    return hits
+
+
 def scan_port_dependency_violations(
     root: Path, contract: Optional[dict[str, Any]] = None
 ) -> list[str]:
@@ -299,21 +414,28 @@ def scan_port_dependency_violations(
     for path in _iter_owned_files(root, owner_root):
         text = _read_text(path)
         seen: set = set()
-        for lineno, line in enumerate(text.splitlines(), start=1):
-            for port, pattern in decimal_patterns.items():
-                if pattern.search(line) and (lineno, port) not in seen:
-                    seen.add((lineno, port))
-                    violations.append(
-                        f"{path}:{lineno}: hardcoded port {port} dependency"
-                    )
-            for port, pattern in hex_patterns.items():
-                if pattern.search(line) and (lineno, port) not in seen:
-                    seen.add((lineno, port))
-                    violations.append(
-                        f"{path}:{lineno}: hardcoded port {port} dependency (hex literal)"
-                    )
+        if path.suffix not in {".js", ".jsx", ".ts", ".tsx"}:
+            for lineno, line in enumerate(text.splitlines(), start=1):
+                for port, pattern in decimal_patterns.items():
+                    if pattern.search(line) and (lineno, port) not in seen:
+                        seen.add((lineno, port))
+                        violations.append(
+                            f"{path}:{lineno}: hardcoded port {port} dependency"
+                        )
+                for port, pattern in hex_patterns.items():
+                    if pattern.search(line) and (lineno, port) not in seen:
+                        seen.add((lineno, port))
+                        violations.append(
+                            f"{path}:{lineno}: hardcoded port {port} dependency (hex literal)"
+                        )
         if path.suffix == ".py":
             for lineno, port, detail in _scan_python_ast_ports(path, port_set):
+                if (lineno, port) in seen:
+                    continue
+                seen.add((lineno, port))
+                violations.append(f"{path}:{lineno}: {detail} — port {port}")
+        elif path.suffix in {".js", ".jsx", ".ts", ".tsx"}:
+            for lineno, port, detail in _scan_js_ports(path, port_set):
                 if (lineno, port) in seen:
                     continue
                 seen.add((lineno, port))
