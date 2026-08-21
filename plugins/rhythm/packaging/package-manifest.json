@@ -27,6 +27,7 @@
       "dashboard/plugin_api.py",
       "packaging/__init__.py",
       "packaging/build.py",
+      "packaging/cutover.py",
       "packaging/lifecycle.py",
       "packaging/validate.py",
       "tools.py"
