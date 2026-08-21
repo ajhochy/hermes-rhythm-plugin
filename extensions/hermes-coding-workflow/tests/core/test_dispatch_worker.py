@@ -198,6 +198,55 @@ def test_worker_runner_fails_terminally_when_plan_is_mutated_after_dispatch(repo
     assert final["note"] == "artifact_mutated"
 
 
+@pytest.fixture()
+def _inert_runner_process(monkeypatch):
+    """Remove the queue-then-mutate regressions' reliance on real subprocess
+    start-up timing.
+
+    In production, `dispatch_worker` spawns a real, detached `worker_runner`
+    OS process that races to acquire the run lock against anything else that
+    also wants it. The three tests below additionally call `worker_runner.main`
+    directly, in-process, to simulate that same detached runner finally
+    getting scheduled after a concurrent mutation. Without this fixture, the
+    *real* spawned process is also racing to acquire that same lock at the
+    same time, and the test's assertions are only reliably correct because a
+    freshly exec'd interpreter's start-up latency (tens of ms: process
+    creation, site init, importing `hermes_coding_workflow`'s module graph)
+    has so far always lost to the next few already-JIT-warm lines of this
+    *test* process (microseconds) -- a 1-2 order of magnitude margin in
+    practice, but not a guarantee under extreme scheduler contention.
+
+    Replacing the spawned command with an inert placeholder that never
+    imports `worker_runner` removes the race entirely: the real module is
+    never started by anything but this test's own direct call, so there is
+    no second process left that could ever acquire the lock first. This
+    changes only what `dispatch_worker` spawns as its child process from this
+    test's perspective; the reservation/validation/hashing logic `dispatch_worker`
+    itself runs before spawning is completely unmodified.
+
+    Only the exact `-m hermes_coding_workflow.worker_runner` launch is
+    replaced. `subprocess.run` (used throughout `GitAdapter` for real `git`
+    calls this fixture must not disturb) is implemented on top of
+    `subprocess.Popen`, so a blanket patch would silently swallow every git
+    invocation this same test still needs to make.
+    """
+    real_popen = subprocess.Popen
+    placeholders: list[subprocess.Popen] = []
+
+    def inert_popen(argv, **kwargs):
+        if isinstance(argv, list) and argv[1:3] == ["-m", "hermes_coding_workflow.worker_runner"]:
+            placeholder = real_popen([sys.executable, "-c", "import time; time.sleep(2)"], **kwargs)
+            placeholders.append(placeholder)
+            return placeholder
+        return real_popen(argv, **kwargs)
+
+    monkeypatch.setattr("hermes_coding_workflow.service.subprocess.Popen", inert_popen)
+    yield
+    for placeholder in placeholders:
+        placeholder.kill()
+        placeholder.wait(timeout=5)
+
+
 def _steal_queued_ownership(store: RunStore, stage: str, attempt: int, worker_attempt: int) -> None:
     with store.locked():
         pending = store.read_worker(stage, attempt, worker_attempt)
@@ -223,7 +272,7 @@ def _forbid_claude_launch(monkeypatch) -> None:
 
 
 def test_worker_runner_fails_terminally_when_stage_advances_after_dispatch_but_before_launch(
-    repo: Path, fake_claude: Path, monkeypatch
+    repo: Path, fake_claude: Path, monkeypatch, _inert_runner_process
 ) -> None:
     from hermes_coding_workflow import worker_runner
 
@@ -250,7 +299,7 @@ def test_worker_runner_fails_terminally_when_stage_advances_after_dispatch_but_b
 
 
 def test_worker_runner_fails_terminally_when_run_attempt_advances_after_dispatch_but_before_launch(
-    repo: Path, fake_claude: Path, monkeypatch
+    repo: Path, fake_claude: Path, monkeypatch, _inert_runner_process
 ) -> None:
     from hermes_coding_workflow import worker_runner
 
@@ -277,7 +326,7 @@ def test_worker_runner_fails_terminally_when_run_attempt_advances_after_dispatch
 
 
 def test_worker_runner_fails_terminally_when_internal_intent_disagrees_with_the_queued_brief_hash(
-    repo: Path, fake_claude: Path, monkeypatch
+    repo: Path, fake_claude: Path, monkeypatch, _inert_runner_process
 ) -> None:
     from hermes_coding_workflow import worker_runner
 

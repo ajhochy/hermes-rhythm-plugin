@@ -284,9 +284,14 @@ class WorkflowService:
  def dispatch_worker(self,rid:str,stage:str)->dict[str,Any]:
   """Launch the sole eligible Claude-backed stage as a detached, async worker.
 
-  This is a Hermes control-plane action (no worker actor identity is
-  required to invoke it -- the orchestrator itself calls this, the same way
-  it calls `show`). It never runs Claude synchronously: it reserves a
+  This is a Hermes control-plane action at the service/CLI layer: unlike
+  approve_design/check/commit/review/verify/complete/repair, it takes no
+  `ActorContext` and performs no `_actor` binding check itself (like `show`,
+  it needs none). The Hermes plugin's `pre_tool_call` guard is a separate,
+  outer layer that still restricts which terminal-issuing profile session
+  may invoke this at all: only the profile bound to the target stage while
+  that stage is active (see `plugins/hermes-coding-workflow/__init__.py`'s
+  `_terminal_allowed`). It never runs Claude synchronously: it reserves a
   durable worker record, spawns a fully-detached `worker_runner` process,
   records that process's real pid, and returns immediately. `worker_runner`
   is the one that blocks on the real `claude` subprocess and atomically

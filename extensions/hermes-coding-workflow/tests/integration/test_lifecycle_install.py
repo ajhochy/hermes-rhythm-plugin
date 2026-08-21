@@ -228,6 +228,17 @@ def test_no_installed_role_or_source_tier_ever_uses_provider_anthropic() -> None
         assert provider != "anthropic", f"{profile} must not route through the anthropic provider"
 
 
+def test_claude_operational_and_scrub_constants_are_shared_with_claude_worker_by_construction() -> None:
+    """doctor's probe-env constants must be the exact objects claude_worker's real dispatch-time
+    scrub_env() uses, not a hand-kept-in-sync duplicate, so a future edit to one can never silently
+    diverge from the real dispatched-worker environment."""
+    from hermes_coding_workflow import claude_worker
+
+    assert doctor.CLAUDE_CLI_ENV is claude_worker.CLAUDE_CLI_ENV
+    assert doctor.CLAUDE_OPERATIONAL_ENV_KEYS is claude_worker.OPERATIONAL_ENV_KEYS
+    assert doctor.CLAUDE_SUBPROCESS_SCRUB_KEYS is claude_worker.SUBPROCESS_SCRUB_KEYS
+
+
 def test_claude_cli_readiness_probe_uses_an_injected_executable_and_never_touches_a_live_account(tmp_path: Path, monkeypatch) -> None:
     fake = tmp_path / "fake-claude"
     fake.write_text(
@@ -246,6 +257,20 @@ def test_claude_cli_readiness_probe_fails_closed_when_the_probe_exits_nonzero(tm
     fake.chmod(0o755)
     monkeypatch.setenv("HCW_CLAUDE_CLI", str(fake))
     with pytest.raises(RuntimeError, match="claude CLI"):
+        doctor._check_claude_cli_ready()
+
+
+def test_claude_cli_readiness_probe_fails_closed_when_login_method_line_is_absent_on_success(tmp_path: Path, monkeypatch) -> None:
+    """Distinct from the nonzero-exit case above: returncode is 0, but stdout has no `Login method:` line at all."""
+    fake = tmp_path / "fake-claude"
+    fake.write_text(
+        "#!/usr/bin/env python3\nimport sys\n"
+        "print('Organization: VisaliaCRC' if sys.argv[1:3] == ['auth', 'status'] else '{\"result\":\"ok\"}')\n"
+        "raise SystemExit(0)\n"
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("HCW_CLAUDE_CLI", str(fake))
+    with pytest.raises(RuntimeError, match="account subscription"):
         doctor._check_claude_cli_ready()
 
 
@@ -309,7 +334,11 @@ def _fake_claude_reporting_login_method(tmp_path: Path, login_method: str) -> Pa
 
 
 @pytest.mark.parametrize("login_method", ["Claude Team account", "Claude Pro account", "Claude Max account"])
-def test_claude_cli_readiness_accepts_exactly_the_documented_team_pro_max_login_methods(tmp_path: Path, monkeypatch, login_method: str) -> None:
+def test_claude_cli_readiness_accepts_exactly_the_team_verified_and_pro_max_contract_login_methods(tmp_path: Path, monkeypatch, login_method: str) -> None:
+    """Exact (not substring) acceptance for all three tiers. Evidence differs per tier: "Claude Team
+    account" was independently confirmed against a real, live, authenticated Team account (see
+    `CLAUDE_ACCOUNT_LOGIN_METHODS` in doctor.py); "Claude Pro account"/"Claude Max account" are
+    contract values inferred from that same tier's naming convention, not independently live-verified."""
     fake = _fake_claude_reporting_login_method(tmp_path, login_method)
     monkeypatch.setenv("HCW_CLAUDE_CLI", str(fake))
     doctor._check_claude_cli_ready()

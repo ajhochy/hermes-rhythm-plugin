@@ -6,9 +6,24 @@ import importlib.util
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import yaml
+
+# doctor.py always ships beside the `src/` package in this checkout (it is
+# never copied into an installed profile's runtime -- see
+# `scripts/install.py`'s `_build_plugin`, which stages only `plugins/`,
+# `skills/`, and `dashboard/`). Prepend the sibling source tree so the real
+# Claude operational/scrub constants below come from one place instead of a
+# hand-kept-in-sync duplicate, exactly like the installed `runtime/bin/hcw`
+# launcher prepends its own sibling `runtime/site`.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from hermes_coding_workflow.claude_worker import (  # noqa: E402
+    CLAUDE_CLI_ENV,
+    OPERATIONAL_ENV_KEYS as CLAUDE_OPERATIONAL_ENV_KEYS,
+    SUBPROCESS_SCRUB_KEYS as CLAUDE_SUBPROCESS_SCRUB_KEYS,
+)
 
 PLUGINS = ("hcw", "superpowers")
 DASHBOARD_PLUGIN = "hcw-dashboard"
@@ -37,21 +52,25 @@ ACCOUNT_OAUTH_TIERS = {
     "dev-recorder": ("openai-codex", "gpt-5.6-sol", "codex_responses"),
 }
 SAFE_HERMES_TOOL_DISPATCH_PROVIDERS = frozenset({"openai", "gemini", "google", "openrouter", "nous"})
-CLAUDE_CLI_ENV = "HCW_CLAUDE_CLI"
-CLAUDE_OPERATIONAL_ENV_KEYS = frozenset({
-    "HOME", "PATH", "TMPDIR", "TMP", "TEMP", "LANG", "SHELL", "USER", "LOGNAME", "TERM", "COLORTERM",
-    "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
-})
-CLAUDE_SUBPROCESS_SCRUB_KEYS = (
-    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "GITHUB_TOKEN",
-    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
-)
-# The exact, documented `claude auth status --text` "Login method:" values
-# (lowercased) for a personal Claude Team/Pro/Max account-subscription
-# login. Deliberately a closed set matched by equality, not by substring:
-# unknown/organization-only labels such as "Unknown Team account" or a
-# generic "Claude.ai account" must fail closed rather than pass because
-# they happen to contain one of these words.
+# The exact `claude auth status --text` "Login method:" values (lowercased)
+# for a personal Claude Team/Pro/Max account-subscription login. Deliberately
+# a closed set matched by equality, not by substring: unknown/organization-
+# only labels such as "Unknown Team account" or a generic "Claude.ai account"
+# must fail closed rather than pass because they happen to contain one of
+# these words.
+#
+# Evidence: "claude team account" was independently confirmed by running
+# `claude auth status --text` against a real, live, authenticated Team
+# account, which printed exactly `Login method: Claude Team account`. No
+# Pro- or Max-tier authenticated session has been available to confirm those
+# two the same way; "claude pro account" / "claude max account" are contract
+# values inferred from the CLI's own naming convention (the same
+# "Claude <Tier> account" shape the Team entry uses), not independently
+# live-verified. If the real CLI's wording for Pro/Max ever differs even in
+# case or phrasing, this fails closed (readiness reports not-active) rather
+# than open, per the module's fail-closed posture -- but before shipping to
+# Pro/Max users, confirm these two live (or against authoritative Anthropic
+# CLI documentation) and record the evidence here the same way.
 CLAUDE_ACCOUNT_LOGIN_METHODS = frozenset({
     "claude team account", "claude pro account", "claude max account",
 })

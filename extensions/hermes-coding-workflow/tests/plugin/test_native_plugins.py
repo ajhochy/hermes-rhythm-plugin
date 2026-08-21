@@ -205,6 +205,43 @@ def test_post_bootstrap_source_mutation_requires_full_registered_lifecycle(workf
     assert source and source["action"] == "block"
 
 
+def test_dispatch_worker_and_worker_status_are_scoped_to_the_bound_active_claude_stage(workflow, monkeypatch):
+    plugin = load_plugin("hermes-coding-workflow"); repo, worktree, state = workflow
+    launcher = (ROOT / "plugins" / "hermes-coding-workflow" / "runtime" / "bin" / "hcw").resolve()
+    dispatch = f"{launcher} dispatch-worker {repo} run-test red"
+    status = f"{launcher} worker-status {repo} run-test red"
+
+    assert plugin._pre_tool_call(tool_name="terminal", args={"command": dispatch}) is None
+    assert plugin._pre_tool_call(tool_name="terminal", args={"command": status}) is None
+
+    other_stage = plugin._pre_tool_call(tool_name="terminal", args={"command": f"{launcher} dispatch-worker {repo} run-test green"})
+    assert other_stage and other_stage["action"] == "block"
+    other_stage = plugin._pre_tool_call(tool_name="terminal", args={"command": f"{launcher} worker-status {repo} run-test green"})
+    assert other_stage and other_stage["action"] == "block"
+
+    wrong_run = plugin._pre_tool_call(tool_name="terminal", args={"command": f"{launcher} dispatch-worker {repo} wrong-run red"})
+    assert wrong_run and wrong_run["action"] == "block"
+
+    extra_argv = plugin._pre_tool_call(tool_name="terminal", args={"command": f"{dispatch} extra"})
+    assert extra_argv and extra_argv["action"] == "block"
+
+    monkeypatch.delenv("HCW_RUN_ID"); monkeypatch.delenv("HERMES_PROFILE"); monkeypatch.delenv("HERMES_KANBAN_TASK")
+    no_identity = plugin._pre_tool_call(tool_name="terminal", args={"command": dispatch})
+    assert no_identity and no_identity["action"] == "block"
+    no_identity = plugin._pre_tool_call(tool_name="terminal", args={"command": status})
+    assert no_identity and no_identity["action"] == "block"
+
+
+def test_dispatch_worker_blocked_once_its_bound_stage_is_no_longer_active(workflow):
+    plugin = load_plugin("hermes-coding-workflow"); repo, worktree, state = workflow
+    state["stage_statuses"]["red"] = "completed"; state["stage_statuses"]["green"] = "active"
+    (repo / ".hermes" / "workflows" / "run-test" / "run.json").write_text(json.dumps(state))
+    launcher = (ROOT / "plugins" / "hermes-coding-workflow" / "runtime" / "bin" / "hcw").resolve()
+
+    decision = plugin._pre_tool_call(tool_name="terminal", args={"command": f"{launcher} dispatch-worker {repo} run-test red"})
+    assert decision and decision["action"] == "block"
+
+
 def test_installer_scans_real_packages_and_doctor_is_clean(tmp_path):
     hermes = shutil.which("hermes")
     assert hermes, "mandatory native-package test requires Hermes"

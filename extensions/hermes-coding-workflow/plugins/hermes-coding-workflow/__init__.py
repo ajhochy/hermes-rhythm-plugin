@@ -17,7 +17,8 @@ _WRITE_TOOLS = {"write_file", "patch", "apply_patch"}
 _TERMINAL_TOOLS = {"terminal", "exec_command", "run_terminal"}
 _TEST_PATH = re.compile(r"(?:^|/)(?:tests?/.*|test_[^/]+|[^/]+_test\.[^/]+|[^/]+\.(?:test|spec)\.[^/]+)$")
 _READ_ONLY_GIT = {"status", "diff", "log", "show", "rev-parse"}
-_HCW_COMMANDS = {"create-run", "show", "approve-design", "approve-plan", "check", "commit", "review", "verify", "complete", "repair"}
+_HCW_COMMANDS = {"create-run", "show", "approve-design", "approve-plan", "check", "commit", "review", "verify", "complete", "repair", "dispatch-worker", "worker-status"}
+_CLAUDE_WORKER_COMMANDS = {"dispatch-worker", "worker-status"}
 
 
 def _build_bootstrap() -> str:
@@ -206,11 +207,13 @@ def _terminal_allowed(run: dict[str, Any] | None, stage: str | None, args: dict[
             return subcommand == "show"
         if len(argv) < 4 or argv[3] != run.get("id"):
             return False
-        expected = {"design":{"approve-design"}, "plan":{"approve-plan"}, "red":{"check"}, "green":{"check","commit"}, "spec-review":{"review"}, "quality-review":{"review"}, "verify":{"check","verify"}, "live":{"check"}, "complete":{"complete"}}
+        expected = {"design":{"approve-design"}, "plan":{"approve-plan"}, "red":{"check","dispatch-worker","worker-status"}, "green":{"check","commit","dispatch-worker","worker-status"}, "spec-review":{"review"}, "quality-review":{"review","dispatch-worker","worker-status"}, "verify":{"check","verify"}, "live":{"check"}, "complete":{"complete","dispatch-worker","worker-status"}}
         if subcommand not in expected.get(stage, set()):
             return False
         if subcommand == "check":
             return len(argv) >= 5 and (argv[4] == {"red":"red","green":"green","verify":"full","live":"live"}.get(stage) or (stage == "verify" and argv[4] == "security"))
+        if subcommand in _CLAUDE_WORKER_COMMANDS:
+            return len(argv) == 5 and argv[4] == stage
         return True
     if argv[0] != "git" or len(argv) < 2:
         return False
