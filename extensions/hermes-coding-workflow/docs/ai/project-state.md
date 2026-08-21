@@ -30,6 +30,13 @@ Build the complete standalone Hermes coding workflow package, including the cont
 
 ## Recent coding-agent runs
 
+### 2026-08-21 — Git common-directory authority repair
+- Files modified: `plugins/hermes-coding-workflow/__init__.py` centrally validates raw Git worktree/common-directory authority paths before canonicalization; `tests/plugin/test_native_plugins.py` adds the redirected `.git` symlink regression and ordinary primary/linked-worktree coverage.
+- Checks run: RED: the redirected common-directory test failed by emitting active red-stage guidance. GREEN: complete native-plugin contract suite passed.
+- Decisions made: relative Git common-directory output is anchored at Git's queried worktree before checking every authority component for symlinks and directory shape; canonicalization occurs only afterward.
+- Deviations from spec: none.
+- Concerns: none.
+
 ### 2026-08-21 — Locator authority repair
 - Files modified: `plugins/hermes-coding-workflow/__init__.py` recognizes a linked worktree controlled by exactly one canonical, non-symlinked authoritative run even when its local locator is missing, without deriving stage authority; it rejects symlinked locator and manifest components and limits create-run bootstrap to a canonical repository root. `tests/plugin/test_native_plugins.py` adds immutable-review regressions and inverse coverage for missing locators, ambiguous/malformed state, unregistered worktrees, and locator/manifest parent and leaf symlinks.
 - Checks run: RED: both immutable-review regressions failed (missing locator emitted root `create-run` guidance; symlinked `.hermes` emitted active red-stage guidance). GREEN: focused plugin suite passed; isolated temporary-`HERMES_HOME` full Python suite exited 0 (existing FastAPI/TestClient deprecation warning only); Node tests/build passed 3/3; Python compilation, `git diff --check`, and strict added-line credential scan passed.

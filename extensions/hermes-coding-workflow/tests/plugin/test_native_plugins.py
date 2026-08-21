@@ -205,6 +205,40 @@ def test_locator_derived_stage_identity_rejects_a_symlinked_locator(workflow, mo
     assert decision and decision["action"] == "block"
 
 
+def test_symlinked_git_common_directory_authority_fails_closed(workflow, monkeypatch):
+    """Git authority must retain raw symlink provenance for linked worktrees."""
+    plugin = load_plugin("hermes-coding-workflow")
+    repo, worktree, _ = workflow
+    authority = repo.parent / "redirected-git-authority"
+    authority.mkdir()
+    shutil.move(str(repo / ".git"), str(authority / ".git"))
+    (repo / ".git").symlink_to(authority / ".git", target_is_directory=True)
+    launcher = Path(plugin.__file__).resolve().parent / "runtime" / "bin" / "hcw"
+
+    bootstrap = plugin._build_bootstrap()
+    decision = plugin._pre_tool_call(
+        tool_name="terminal",
+        args={"command": f"{launcher} check {repo} run-test red -- pytest"},
+    )
+
+    assert bootstrap == (
+        f"{plugin.BOOTSTRAP_MARKER}: registered HCW workflow identity is invalid; "
+        "do not run lifecycle commands."
+    )
+    assert "create-run" not in bootstrap
+    assert "check" not in bootstrap
+    assert decision and decision["action"] == "block"
+
+
+def test_git_authority_accepts_regular_primary_and_linked_worktrees(workflow):
+    """A normal linked-worktree .git file still resolves to its real common dir."""
+    plugin = load_plugin("hermes-coding-workflow")
+    repo, worktree, _ = workflow
+
+    assert plugin._canonical_repository_for_worktree(repo) == repo
+    assert plugin._canonical_repository_for_worktree(worktree) == repo
+
+
 @pytest.mark.parametrize("locator_kind", ("malformed", "symlink"))
 def test_untrusted_locator_bootstrap_emits_only_invalid_identity_message(workflow, monkeypatch, locator_kind):
     plugin = load_plugin("hermes-coding-workflow")

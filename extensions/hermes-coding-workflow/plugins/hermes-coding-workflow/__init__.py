@@ -102,11 +102,58 @@ def _has_no_symlink_components(path: Path, root: Path) -> bool:
     return True
 
 
+def _raw_git_path(path_text: str, worktree: Path) -> Path | None:
+    """Anchor Git output without resolving away its authority spelling."""
+    if not path_text:
+        return None
+    path = Path(path_text)
+    return Path(os.path.abspath(path if path.is_absolute() else worktree / path))
+
+
+def _is_nonsymlink_directory(path: Path) -> bool:
+    """Require every raw authority component to be a real directory."""
+    if not path.is_absolute():
+        return False
+    candidate = Path(path.anchor)
+    try:
+        for component in path.parts[1:]:
+            candidate /= component
+            if candidate.is_symlink() or not candidate.is_dir():
+                return False
+    except OSError:
+        return False
+    return True
+
+
+def _trusted_git_common_dir(worktree: Path) -> Path | None:
+    """Return a canonical common dir only after validating its raw spelling."""
+    try:
+        raw_worktree = Path(os.path.abspath(worktree))
+        if not _is_nonsymlink_directory(raw_worktree):
+            return None
+        top_text = subprocess.run(
+            ["git", "-C", str(raw_worktree), "rev-parse", "--show-toplevel"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        top = _raw_git_path(top_text, raw_worktree)
+        if top != raw_worktree or top is None or not _is_nonsymlink_directory(top):
+            return None
+        common_text = subprocess.run(
+            ["git", "-C", str(raw_worktree), "rev-parse", "--git-common-dir"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        common = _raw_git_path(common_text, raw_worktree)
+        if common is None or common.name != ".git" or not _is_nonsymlink_directory(common):
+            return None
+        return common.resolve(strict=True)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
 def _git_worktree_is_registered(repo: Path, worktree: Path) -> bool:
     try:
-        common = subprocess.run(["git", "-C", str(repo), "rev-parse", "--git-common-dir"], text=True, capture_output=True, check=True).stdout.strip()
-        common_path = (repo / common).resolve() if not Path(common).is_absolute() else Path(common).resolve()
-        if common_path != (repo / ".git").resolve():
+        common_path = _trusted_git_common_dir(repo)
+        if common_path is None or common_path != repo / ".git":
             return False
         listing = subprocess.run(["git", "-C", str(repo), "worktree", "list", "--porcelain"], text=True, capture_output=True, check=True).stdout.splitlines()
         return any(line == f"worktree {worktree}" for line in listing)
@@ -117,19 +164,8 @@ def _git_worktree_is_registered(repo: Path, worktree: Path) -> bool:
 def _canonical_repository_for_worktree(worktree: Path) -> Path | None:
     """Return the canonical parent repository for this exact registered worktree."""
     try:
-        top = Path(subprocess.run(
-            ["git", "-C", str(worktree), "rev-parse", "--show-toplevel"],
-            text=True, capture_output=True, check=True,
-        ).stdout.strip()).resolve()
-        if top != worktree:
-            return None
-        common_text = subprocess.run(
-            ["git", "-C", str(worktree), "rev-parse", "--git-common-dir"],
-            text=True, capture_output=True, check=True,
-        ).stdout.strip()
-        common = Path(common_text)
-        common = common.resolve() if common.is_absolute() else (worktree / common).resolve()
-        if common.name != ".git":
+        common = _trusted_git_common_dir(worktree)
+        if common is None:
             return None
         repo = common.parent
         return repo if _git_worktree_is_registered(repo, worktree) else None
