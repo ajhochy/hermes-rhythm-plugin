@@ -50,7 +50,8 @@ def _write_complete_package(root: Path, manifest: dict) -> None:
     for relative in manifest["content"]["skills"]:
         _write(root, relative)
     _write(root, manifest["desktop"]["entry"], "export { RhythmPlugin } from 'rhythm-host';\n")
-    _write(root, manifest["licenses"][0]["path"], "MIT License\n")
+    for license_ in manifest["licenses"]:
+        _write(root, license_["path"], "MIT License\n" if license_["spdx"] == "MIT" else "ISC License\n")
     _write(root, manifest["provenance"]["path"], "Source: fixture\nRevision: fixture\nTransformation: none\n")
 
 
@@ -134,6 +135,54 @@ def test_doctor_reports_exact_tools_and_redacts_bounded_connection_errors(tmp_pa
     assert report["connection"]["status"] == "unavailable"
     assert "x" * 20 not in report["connection"]["error"]
     assert len(report["connection"]["error"]) <= 160
+
+
+def test_lifecycle_rejects_symlinked_home_target_and_package(tmp_path):
+    """No install, rollback, or uninstall path may traverse a caller-controlled symlink."""
+    package = build_feature_pack(REPO_ROOT, tmp_path / "package")
+    real_home = tmp_path / "real-home"
+    real_home.mkdir()
+    linked_home = tmp_path / "linked-home"
+    linked_home.symlink_to(real_home, target_is_directory=True)
+    with pytest.raises(PackagingGateError):
+        install_feature_pack(package, linked_home)
+
+    home = tmp_path / "home"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (home / "plugins").mkdir(parents=True)
+    (home / "plugins" / "rhythm").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(PackagingGateError):
+        uninstall_feature_pack(home)
+
+    unsafe_package = tmp_path / "unsafe-package"
+    build_feature_pack(REPO_ROOT, unsafe_package)
+    declared = unsafe_package / "plugin.yaml"
+    declared.unlink()
+    declared.symlink_to(REPO_ROOT / "plugins/rhythm/plugin.yaml")
+    with pytest.raises(PackagingGateError):
+        install_feature_pack(unsafe_package, tmp_path / "other-home")
+
+
+def test_doctor_uses_installed_manifest_and_redacts_raised_probe_errors(tmp_path):
+    package = build_feature_pack(REPO_ROOT, tmp_path / "package")
+    home = tmp_path / "home"
+    install_feature_pack(package, home)
+
+    def failed_probe():
+        raise RuntimeError("Bearer " + "s" * 300)
+
+    report = doctor_feature_pack(home, connection_probe=failed_probe)
+    assert report["connection"]["status"] == "unavailable"
+    assert "s" * 20 not in report["connection"]["error"]
+
+    manifest_path = home / "plugins/rhythm/packaging/package-manifest.json"
+    installed = json.loads(manifest_path.read_text(encoding="utf-8"))
+    installed["tools"] = ["rhythm_get_dashboard"]
+    manifest_path.write_text(json.dumps(installed), encoding="utf-8")
+    tampered = doctor_feature_pack(home)
+    assert tampered["compatible"] is False
+    assert tampered["tools"] == []
 
 
 def test_macos_fixture_is_built_from_the_actual_feature_pack(tmp_path):

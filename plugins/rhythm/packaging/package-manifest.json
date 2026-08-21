@@ -1,6 +1,7 @@
 {
   "schema": 1,
   "status": "final-automated-gates",
+  "tools": ["rhythm_complete_task", "rhythm_get_dashboard", "rhythm_list_tasks"],
   "install": {
     "root": "<HERMES_HOME>/plugins/rhythm",
     "opt_in": true,
@@ -59,7 +60,8 @@
     "required_fields": ["source", "revision", "transformation"]
   },
   "licenses": [
-    {"path": "LICENSES/HERMES-MIT.txt", "spdx": "MIT", "scope": "Rhythm package scaffolding"}
+    {"path": "LICENSES/HERMES-MIT.txt", "spdx": "MIT", "scope": "Rhythm feature pack"},
+    {"path": "LICENSES/LUCIDE-ISC.txt", "spdx": "ISC", "scope": "Bundled lucide-react icon runtime"}
   ],
   "release_gate": {
     "mode": "live-release-manual",
