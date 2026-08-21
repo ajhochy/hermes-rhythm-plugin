@@ -176,8 +176,18 @@ export async function loadRuntimePlugin(
       // Reload = dispose the previous incarnation, then register fresh.
       unloadRuntimePlugin(plugin.id)
       const disposers: (() => void)[] = []
-      plugin.register(createPluginContext(plugin.id, dispose => disposers.push(dispose)))
-      loaded.set(plugin.id, disposers)
+
+      try {
+        plugin.register(createPluginContext(plugin.id, dispose => disposers.push(dispose)))
+        loaded.set(plugin.id, disposers)
+      } catch (error) {
+        // A register function can install styles/listeners before its next
+        // statement throws. Roll those side effects back before surfacing the
+        // failure; otherwise a broken reload leaves stale UI behind.
+        disposers.forEach(dispose => dispose())
+        throw error
+      }
+
       publishPlugin({ ...record, status: 'loaded' })
     }
 
