@@ -1,0 +1,8 @@
+name: rhythm
+version: 0.1.0
+description: "Bounded native Rhythm dashboard and task tools using the existing pinned backend client."
+author: NousResearch
+provides_tools:
+  - rhythm_get_dashboard
+  - rhythm_list_tasks
+  - rhythm_complete_task
