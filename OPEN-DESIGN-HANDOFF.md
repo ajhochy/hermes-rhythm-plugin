@@ -1,10 +1,10 @@
 # Open Design integration — paused handoff
 
-**Status:** PAUSED by user request  
-**Paused at:** 2026-08-20 17:02:06 PDT (-0700)  
-**Primary branch:** `agent-stack/opendesign-webview`  
-**Primary worktree:** `/Users/ajhochhalter/.hermes/worktrees/hermes-agent/opendesign-webview`  
-**Primary HEAD:** `f107c3e08f10695621af76548bcc93ee8b9e2805`  
+**Status:** PAUSED by user request
+**Paused at:** 2026-08-20 17:02:06 PDT (-0700)
+**Primary branch:** `agent-stack/opendesign-webview`
+**Primary worktree:** `/Users/ajhochhalter/.hermes/worktrees/hermes-agent/opendesign-webview`
+**Primary HEAD:** `f107c3e08f10695621af76548bcc93ee8b9e2805`
 **Dev Dashboard tracker:** `hermesOpenDesignWebview` — overall 55%, `repairing`, last campaign revision 730
 
 ## Pause receipt
@@ -36,9 +36,9 @@ Official Open Design 0.20.0 artifact hashes previously verified:
 
 ## S1 — runtime staging and supervision
 
-**Worktree:** `/Users/ajhochhalter/.hermes/worktrees/hermes-agent/opendesign-runtime-s1`  
-**Branch:** `agent-stack/opendesign-runtime-s1`  
-**Base/rejected candidate:** `066db25324a03cac53115d97f6e7eaf9285656e8`  
+**Worktree:** `/Users/ajhochhalter/.hermes/worktrees/hermes-agent/opendesign-runtime-s1`
+**Branch:** `agent-stack/opendesign-runtime-s1`
+**Base/rejected candidate:** `066db25324a03cac53115d97f6e7eaf9285656e8`
 **State:** dirty additive repair worktree; preserve it exactly
 
 Local evidence:
@@ -77,9 +77,9 @@ Useful checkpoints:
 
 ## S2 — secure Electron guest and IPC bridge
 
-**Worktree:** `/Users/ajhochhalter/.hermes/worktrees/hermes-agent/opendesign-secure-s2`  
-**Branch:** `agent-stack/opendesign-secure-s2`  
-**Latest rejected candidate:** `33715e15fc8531ab809d423adbc4495ba649b3d2`  
+**Worktree:** `/Users/ajhochhalter/.hermes/worktrees/hermes-agent/opendesign-secure-s2`
+**Branch:** `agent-stack/opendesign-secure-s2`
+**Latest rejected candidate:** `33715e15fc8531ab809d423adbc4495ba649b3d2`
 **State:** clean at the rejected candidate
 
 Latest candidate gate evidence:
@@ -123,9 +123,9 @@ Immutable reviews:
 
 ## S3 — live Hermes theme synchronization
 
-**Worktree:** `/Users/ajhochhalter/.hermes/worktrees/hermes-agent/opendesign-theme-s3-final`  
-**Branch:** `agent-stack/opendesign-theme-s3-final`  
-**Latest rejected candidate:** `4ca699984ea50dd124f7c825ceeb7975e126b220`  
+**Worktree:** `/Users/ajhochhalter/.hermes/worktrees/hermes-agent/opendesign-theme-s3-final`
+**Branch:** `agent-stack/opendesign-theme-s3-final`
+**Latest rejected candidate:** `4ca699984ea50dd124f7c825ceeb7975e126b220`
 **State:** clean at the rejected candidate
 
 Latest candidate gate evidence:
