@@ -642,6 +642,8 @@ export interface DesktopPluginProfileRoute {
   mode: 'local' | 'remote'
   profile: string
   targetProfile: string
+  /** Opaque Electron-owned capability for this exact profile route. */
+  token: string
 }
 
 export interface HermesConnection {
@@ -1097,6 +1099,8 @@ export interface HermesApiRequest {
   // through the owning connection, not the local profile pool. Omit / '' to
   // keep the legacy profile-routed path; explicit 'local' forces this device.
   connectionId?: string | null
+  /** Present only for an explicit plugin route issued by Electron. */
+  pluginRoute?: DesktopPluginProfileRoute
 }
 
 export interface HermesNotification {

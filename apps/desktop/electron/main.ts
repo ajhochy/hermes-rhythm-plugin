@@ -209,6 +209,7 @@ import {
   parentWatchdogEnv
 } from './parent-process-identity'
 import { registerPetOverlayIpc } from './pet-overlay-ipc'
+import { PluginProfileRouteTokens, validatePluginApiRouteRequest } from './plugin-profile-route-tokens'
 import {
   buildRegistryProfileRoutes,
   localRouteFallbackProfiles,
@@ -1271,6 +1272,7 @@ let softRehomeInProgress = false
 // byte-for-byte the single-backend behavior.
 const backendPool = new Map() // profile -> { process, port, token, connectionPromise, lastActiveAt }
 const profileDeletionGate = new ProfileDeletionGate()
+const pluginProfileRouteTokens = new PluginProfileRouteTokens()
 // Keep the pool light: cap concurrent profile backends (LRU eviction) and reap
 // idle ones. A user idles at exactly the primary backend; pool backends only
 // exist while a non-primary profile is actively being chatted through.
@@ -12334,7 +12336,7 @@ ipcMain.handle('hermes:plugin-profile-routes', async (_event, rawProfileNames) =
     ]
   }
 
-  return buildRegistryProfileRoutes({ agents, sources: registry.connections })
+  return pluginProfileRouteTokens.issue(buildRegistryProfileRoutes({ agents, sources: registry.connections }))
 })
 ipcMain.handle('hermes:ssh-config:hosts', async () => ({ hosts: collectSshConfigHosts() }))
 ipcMain.handle('hermes:ssh-config:resolve', async (_event, host) => {
@@ -13318,6 +13320,12 @@ async function pooledRegistrySessionSources(): Promise<RegistrySessionSource[]> 
 }
 
 async function handleHermesApiRequest(request) {
+  // A profile-pinned plugin request is a capability, not renderer state. Main
+  // verifies the exact Electron-issued route before backend resolution, so a
+  // forged connection/profile/target or stale inventory token never reaches
+  // ensureRegistryBackend() or the network.
+  validatePluginApiRouteRequest(pluginProfileRouteTokens, request)
+
   // Registry-pinned request (request.connectionId): the renderer is working
   // against a REGISTERED gateway connection, so the data — cron jobs and their
   // run sessions included — lives in THAT host's state.db, not any local

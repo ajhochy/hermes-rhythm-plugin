@@ -38,20 +38,23 @@ export interface PluginRestRoute {
   mode: 'local' | 'remote'
   profile: string
   targetProfile: string
+  /** Electron-issued capability binding this exact descriptor to a live route. */
+  token: string
 }
 
-function pinnedRoute(route: PluginRestRoute): { connectionId?: string; profile: string } {
+function pinnedRoute(route: PluginRestRoute): { connectionId: string; pluginRoute: PluginRestRoute; profile: string } {
   const connectionId = route?.connectionId?.trim()
   const profile = route?.profile?.trim()
   const targetProfile = route?.targetProfile?.trim()
+  const token = route?.token?.trim()
 
-  if (!connectionId || !profile || !targetProfile || (route.mode !== 'local' && route.mode !== 'remote')) {
+  if (!connectionId || !profile || !targetProfile || !token || (route.mode !== 'local' && route.mode !== 'remote')) {
     throw new Error('pluginRest: a valid route descriptor is required for a pinned request')
   }
 
-  // `local` is an explicit local-pool pin, so it must not inherit an ambient
-  // remote connection. The main bridge treats omitted connectionId as local.
-  return { ...(connectionId === 'local' ? {} : { connectionId }), profile }
+  // Keep local explicit: the main-process route token validator must see the
+  // exact descriptor rather than letting an ambient remote connection win.
+  return { connectionId, pluginRoute: { ...route, connectionId, profile, targetProfile, token }, profile }
 }
 
 // Normalize `path` to a leading-slash suffix relative to `/api/plugins/<id>`.
