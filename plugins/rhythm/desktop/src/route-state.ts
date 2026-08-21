@@ -1,4 +1,4 @@
-const TABS = new Set(['overview', 'tasks', 'planner', 'rhythms', 'projects'])
+const TABS = new Set(['overview', 'tasks', 'planner', 'rhythms', 'projects', 'automations', 'integrations', 'artifacts'])
 const WORKSPACE = /^[A-Za-z0-9_-]{1,64}$/
 
 /** Return the only canonical Rhythm deep link. Unknown keys, invalid enum

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { askHermes, confirmationKey, createGateway, gatewayError, workspaceKey } from '../../../../plugins/rhythm/desktop/src/plugin'
 import {
   DashboardScreen,
+  ArtifactsScreen,
   defaultRhythmTokens,
   type RhythmDomainGateway,
   type RhythmHostAdapter,
@@ -340,6 +341,29 @@ describe('accepted Rhythm workspace package', () => {
     const mutate = rest.mock.calls[2][1]?.body as { generation: string, confirmation: string, operation: string, entityId: string, payload: unknown }
     expect(mutate).toMatchObject({ operation: confirm.operation, entityId: confirm.entityId, payload: confirm.payload, generation: confirm.generation, confirmation: 'workspace-receipt-secret' })
     expect(view.container.textContent).not.toContain('workspace-receipt-secret')
+    view.unmount()
+  })
+
+  it('mounts the actual vendored artifact iframe with only the opaque-origin sandbox boundary', async () => {
+    const receive = vi.fn(async () => ({ status: 'ok' as const, payload: { value: 'current' } }))
+    const view = renderScreen(
+      <ArtifactsScreen
+        artifactsGateway={{ list: async () => [{ id: 'calendar', title: 'Worship calendar', kind: 'document' }] }}
+        artifactHostPort={{
+          open: async () => ({ artifactId: 'calendar', sessionId: 'session-1', bundleGeneration: 'bundle-1', stateGeneration: 'state-1', bodyHtml: '<main>Calendar</main>', styleText: '', scriptText: '', capabilities: ['state.get'] }),
+          receive,
+        }}
+      />,
+      createGateway(restFor(summary)),
+    )
+    await screen.findByTestId('rhythm-artifact-open-calendar')
+    fireEvent.click(screen.getByTestId('rhythm-artifact-open-calendar'))
+    const frame = await screen.findByTestId('rhythm-artifact-frame') as HTMLIFrameElement
+    expect(frame.getAttribute('sandbox')).toBe('allow-scripts')
+    expect(frame.srcdoc).toContain("default-src 'none'")
+    expect(frame.srcdoc).toContain("connect-src 'none'")
+    expect(frame.srcdoc).not.toContain('fetch(')
+    expect(receive).not.toHaveBeenCalled()
     view.unmount()
   })
 })
