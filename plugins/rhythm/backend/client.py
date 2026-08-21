@@ -11,7 +11,7 @@ import zlib
 from datetime import date
 from dataclasses import dataclass
 from typing import Any, Callable
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qsl, urljoin, urlparse
 
 APPROVED_ORIGIN = "https://api.rhythm.app"
 GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
@@ -32,6 +32,10 @@ ALLOWED_OPERATIONS = {
     ("GET", "/integrations/settings"),
     ("GET", "/integrations/sync"),
     ("GET", "/artifacts"),
+    ("GET", "/message-threads"),
+    ("GET", "/users"),
+    ("GET", "/facilities"),
+    ("GET", "/facilities/reservations"),
 }
 MAX_RESPONSE_BYTES = 32_768
 REQUEST_TIMEOUT_SECONDS = 10.0
@@ -128,12 +132,13 @@ class RhythmClient:
             (path.startswith("/planner/weeks/") and _safe_date(path.removeprefix("/planner/weeks/")))
             or (path.startswith("/recurring-rules/") and _safe_task_id(path.removeprefix("/recurring-rules/")))
             or _m5_project_read_path(path)
+            or _m6_read_path(path)
         )
         is_m7_read = method == "GET" and (
             (path.startswith("/automations/rules/") and path.endswith("/preview") and _safe_task_id(path.removeprefix("/automations/rules/").removesuffix("/preview")))
             or (path.startswith("/artifacts/") and path.endswith("/document") and _safe_task_id(path.removeprefix("/artifacts/").removesuffix("/document")))
         )
-        is_m5_mutation = m5 and method in {"POST", "PATCH", "DELETE"} and _m5_mutation_path(method, path) and (method == "DELETE" or body is not None)
+        is_m5_mutation = m5 and method in {"POST", "PATCH", "DELETE"} and (_m5_mutation_path(method, path) or _m6_mutation_path(method, path)) and (method == "DELETE" or body is not None)
         is_task_mutation = method == "PATCH" and path.startswith("/tasks/") and _safe_task_id(path.removeprefix("/tasks/")) and body is not None
         if (method, path) not in ALLOWED_OPERATIONS and not is_task_detail and not is_task_mutation and not is_m5_read and not is_m5_mutation and not is_m7_read:
             raise RhythmProtocolError("operation_not_allowed")
@@ -286,4 +291,42 @@ def _m5_mutation_path(method: str, path: str) -> bool:
         return (method == "PATCH" and len(parts) == 3 and parts[1] == "steps") or (method == "POST" and len(parts) == 3 and parts[2] == "milestones")
     if parts[0] == "tasks":
         return method == "PATCH" and len(parts) == 2
+    return False
+
+
+def _m6_read_path(path: str) -> bool:
+    """Exact M6 reads. Query strings are limited to the two bounded ranges."""
+    parsed = urlparse(path)
+    parts = parsed.path.split("/")[1:]
+    if parsed.path in {"/message-threads", "/users", "/facilities"}:
+        return not parsed.query
+    if len(parts) == 3 and parts[0] == "message-threads" and parts[2] == "messages":
+        return _safe_task_id(parts[1]) and not parsed.query
+    if parsed.path == "/facilities/reservations":
+        keys = {key for key, _ in parse_qsl(parsed.query, keep_blank_values=True)}
+        return keys == {"start", "end"}
+    if len(parts) == 2 and parts[0] == "facilities":
+        return _safe_task_id(parts[1]) and not parsed.query
+    if len(parts) == 4 and parts[0] == "facilities" and parts[2] == "reservations":
+        return _safe_task_id(parts[1]) and _safe_task_id(parts[3]) and not parsed.query
+    if len(parts) == 3 and parts[0] == "facilities" and parts[2] == "reservation-series":
+        return _safe_task_id(parts[1]) and not parsed.query
+    return False
+
+
+def _m6_mutation_path(method: str, path: str) -> bool:
+    """M6's semantic set deliberately excludes every message create/send route."""
+    parts = path.split("/")[1:]
+    if len(parts) == 2 and parts[0] == "message-threads":
+        return method == "PATCH" and _safe_task_id(parts[1])
+    if parts == ["facilities"]:
+        return method == "POST"
+    if len(parts) == 2 and parts[0] == "facilities":
+        return method in {"PATCH", "DELETE"} and _safe_task_id(parts[1])
+    if len(parts) == 3 and parts[0] == "facilities" and parts[2] in {"reservations", "reservation-series"}:
+        return method == "POST" and _safe_task_id(parts[1])
+    if len(parts) == 4 and parts[0] == "facilities" and parts[2] in {"reservations", "reservation-series"}:
+        return method in {"PATCH", "DELETE"} and _safe_task_id(parts[1]) and _safe_task_id(parts[3])
+    if parts == ["facilities", "automation-reservations"]:
+        return method == "DELETE"
     return False

@@ -84,6 +84,10 @@ class WorkspaceOperation(BaseModel):
         "rhythms.create-rule", "rhythms.update-rule", "rhythms.delete-rule", "rhythms.create-step", "rhythms.update-step",
         "projects.create-template", "projects.update-template", "projects.delete-template", "projects.create-instance",
         "projects.update-step", "projects.update-template-step", "projects.create-step", "projects.delete-step", "projects.create-milestone",
+        "messages.mark-read", "messages.mark-unread",
+        "facilities.create-facility", "facilities.update-facility", "facilities.delete-facility",
+        "facilities.create-reservation", "facilities.update-reservation", "facilities.delete-reservation",
+        "facilities.update-group", "facilities.delete-group", "facilities.delete-series", "facilities.delete-reservations",
     ]
     entityId: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
     payload: dict[str, str | int | bool | None | list[dict[str, str | int | bool | None]]] = Field(default_factory=dict, max_length=16)
@@ -108,6 +112,10 @@ _M5_UPSTREAM: dict[str, tuple[str, str]] = {
     "projects.create-instance": ("POST", "/project-templates/{id}/generate"), "projects.update-step": ("PATCH", "/project-instances/steps/{id}"), "projects.update-template-step": ("PATCH", "/project-templates/{templateId}/steps/{id}"),
     "projects.create-step": ("POST", "/project-templates/{id}/steps"), "projects.delete-step": ("DELETE", "/project-templates/{templateId}/steps/{id}"),
     "projects.create-milestone": ("POST", "/project-instances/{id}/milestones"),
+    "messages.mark-read": ("PATCH", "/message-threads/{id}"), "messages.mark-unread": ("PATCH", "/message-threads/{id}"),
+    "facilities.create-facility": ("POST", "/facilities"), "facilities.update-facility": ("PATCH", "/facilities/{id}"), "facilities.delete-facility": ("DELETE", "/facilities/{id}"),
+    "facilities.create-reservation": ("POST", "/facilities/{facilityId}/reservations"), "facilities.update-reservation": ("PATCH", "/facilities/{facilityId}/reservations/{id}"), "facilities.delete-reservation": ("DELETE", "/facilities/{facilityId}/reservations/{id}"),
+    "facilities.update-group": ("PATCH", "/facilities/{facilityId}/reservations/{id}"), "facilities.delete-group": ("DELETE", "/facilities/{facilityId}/reservations/{id}"), "facilities.delete-series": ("DELETE", "/facilities/{facilityId}/reservation-series/{id}"), "facilities.delete-reservations": ("DELETE", "/facilities/automation-reservations"),
 }
 
 
@@ -225,6 +233,18 @@ def _m5_payload(operation: str, payload: dict[str, Any]) -> dict[str, Any]:
         "projects.create-step": ({"templateId": "id", "title": "short", "offsetDays": "offset", "offsetDescription": "short?", "assigneeId": "id?"}, {"templateId", "title", "offsetDays"}),
         "projects.delete-step": ({"templateId": "id"}, {"templateId"}),
         "projects.create-milestone": ({"title": "short"}, {"title"}),
+        "messages.mark-read": ({"unreadCount": "zero"}, {"unreadCount"}),
+        "messages.mark-unread": ({"unreadCount": "one"}, {"unreadCount"}),
+        "facilities.create-facility": ({"name": "short", "building": "short?", "description": "text?"}, {"name"}),
+        "facilities.update-facility": ({"name": "short", "building": "short?", "description": "text?"}, set()),
+        "facilities.delete-facility": ({}, set()),
+        "facilities.create-reservation": ({"facilityId": "id", "title": "short", "requesterName": "short?", "start": "timestamp", "end": "timestamp", "notes": "text?"}, {"facilityId", "title", "start", "end"}),
+        "facilities.update-reservation": ({"facilityId": "id", "title": "short", "requesterName": "short?", "start": "timestamp", "end": "timestamp", "notes": "text?"}, {"facilityId"}),
+        "facilities.delete-reservation": ({"facilityId": "id"}, {"facilityId"}),
+        "facilities.update-group": ({"facilityId": "id", "title": "short", "requesterName": "short?", "start": "timestamp", "end": "timestamp", "notes": "text?"}, {"facilityId"}),
+        "facilities.delete-group": ({"facilityId": "id"}, {"facilityId"}),
+        "facilities.delete-series": ({"facilityId": "id"}, {"facilityId"}),
+        "facilities.delete-reservations": ({"ids": "ids"}, {"ids"}),
     }
     try: allowed, required = schemas[operation]
     except KeyError: raise _invalid_request() from None
@@ -244,6 +264,18 @@ def _m5_payload(operation: str, payload: dict[str, Any]) -> dict[str, Any]:
         if kind == "date":
             if not isinstance(value, str) or not _safe_iso_date(value): raise _invalid_request()
             return value
+        if kind == "timestamp":
+            if not isinstance(value, str) or len(value) > 64 or "T" not in value: raise _invalid_request()
+            return value
+        if kind == "zero":
+            if value != 0: raise _invalid_request()
+            return 0
+        if kind == "one":
+            if value != 1: raise _invalid_request()
+            return 1
+        if kind == "ids":
+            if not isinstance(value, list) or not value or len(value) > 100 or not all(isinstance(item, str) and _safe_id(item) for item in value): raise _invalid_request()
+            return sorted(set(value))
         if kind == "bool":
             if type(value) is not bool: raise _invalid_request()
             return value
@@ -307,7 +339,7 @@ def _operation_intent_digest(actor_id: str, workspace_id: str, task_id: str, ope
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
-def _safe_identity(payload: dict[str, Any]) -> dict[str, str]:
+def _safe_identity(payload: dict[str, Any]) -> dict[str, Any]:
     ident = payload.get("id")
     email = payload.get("email")
     if not isinstance(ident, str) or not ident or len(ident) > 128:
@@ -315,6 +347,8 @@ def _safe_identity(payload: dict[str, Any]) -> dict[str, str]:
     result = {"id": ident}
     if isinstance(email, str) and 3 <= len(email) <= 320 and "@" in email:
         result["email"] = email
+    if type(payload.get("isFacilitiesManager")) is bool:
+        result["isFacilitiesManager"] = payload["isFacilitiesManager"]
     return result
 
 
@@ -630,6 +664,82 @@ def _m5_authorization_path(operation: str, entity_id: str, payload: dict[str, An
     return f"/project-templates/{entity_id}"
 
 
+def _m6_authorization_path(operation: str, entity_id: str, payload: dict[str, Any]) -> str | None:
+    if operation.startswith("messages."): return f"/message-threads/{entity_id}"
+    if operation in {"facilities.create-facility", "facilities.delete-reservations"}: return None
+    if operation.startswith("facilities."):
+        facility_id = payload.get("facilityId")
+        return f"/facilities/{facility_id if isinstance(facility_id, str) else entity_id}"
+    return None
+
+
+def _m6_authorized(operation: str, target: Any, identity: dict[str, str], workspace: dict[str, str]) -> bool:
+    if not isinstance(target, dict) or target.get("workspaceId") != workspace["id"]: return False
+    if operation.startswith("messages."):
+        return any(isinstance(row, dict) and row.get("id") == identity["id"] for row in target.get("participants", []))
+    if identity.get("isFacilitiesManager") is True: return True
+    if operation in {"facilities.update-facility", "facilities.delete-facility"}: return False
+    return target.get("creatorId") == identity["id"] or target.get("createdByUserId") == identity["id"]
+
+
+def _m6_workspace_can_manage(workspace: dict[str, Any]) -> bool:
+    return workspace.get("role") in {"owner", "admin", "facilities_manager"}
+
+
+def _m6_result(operation: str, entity_id: str, result: dict[str, Any]) -> dict[str, Any]:
+    if operation in {"facilities.create-facility", "facilities.create-reservation"}:
+        if not isinstance(result.get("id"), str) or not result["id"]: raise RhythmProtocolError("schema_drift")
+    elif operation.startswith("facilities.delete"):
+        return {"id": entity_id, "deleted": True}
+    elif result.get("id") != entity_id:
+        raise RhythmProtocolError("schema_drift")
+    return result
+
+
+def _m6_public(operation: str, value: Any) -> Any:
+    if operation.startswith("messages."):
+        if not isinstance(value, dict) or value.get("id") is None: raise RhythmProtocolError("schema_drift")
+        return {"id": _m5_id(value), "unreadCount": value.get("unreadCount", 0)}
+    if operation.startswith("facilities."):
+        if isinstance(value, list): return [_facility_reservation(row) for row in value]
+        if not isinstance(value, dict): raise RhythmProtocolError("schema_drift")
+        return _facility_reservation(value) if "facilityId" in value else _facility(value)
+    raise RhythmProtocolError("schema_drift")
+
+
+def _facility(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict): raise RhythmProtocolError("schema_drift")
+    building = raw.get("building")
+    if building is not None and (not isinstance(building, str) or len(building) > 256): raise RhythmProtocolError("schema_drift")
+    return {"id": _m5_id(raw), "name": _m5_text(raw.get("name"), 256), "building": building.strip() if isinstance(building, str) else None, "description": _m5_text(raw.get("description"), 2_000, "")}
+
+
+def _facility_reservation(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict): raise RhythmProtocolError("schema_drift")
+    notes = raw.get("notes")
+    if notes is not None and (not isinstance(notes, str) or len(notes) > 2_000): raise RhythmProtocolError("schema_drift")
+    result = {"id": _m5_id(raw), "facilityId": _m5_id(raw, "facilityId"), "title": _m5_text(raw.get("title"), 256), "requesterName": _m5_text(raw.get("requesterName"), 256, "Unknown"), "creatorId": _m5_id(raw, "creatorId"), "start": _m5_text(raw.get("start"), 64), "end": _m5_text(raw.get("end"), 64), "notes": notes.strip() if isinstance(notes, str) else None}
+    for name in ("seriesId", "groupId"):
+        if raw.get(name) is not None: result[name] = _m5_id(raw, name)
+    for name in ("external", "conflicted", "automation"):
+        if raw.get(name) is not None:
+            if type(raw[name]) is not bool: raise RhythmProtocolError("schema_drift")
+            result[name] = raw[name]
+    return result
+
+
+def _message_thread(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict): raise RhythmProtocolError("schema_drift")
+    typ = raw.get("type", raw.get("threadType"))
+    if typ not in {"direct", "group"}: raise RhythmProtocolError("schema_drift")
+    return {"id": _m5_id(raw), "title": _m5_text(raw.get("title"), 256, "Untitled"), "type": typ, "participants": _m5_list(raw, "participants", _m5_member, 64), "messages": _m5_list(raw, "messages", _message, 500), "lastMessage": _m5_text(raw.get("lastMessage"), 2_000, ""), "updatedAt": _m5_text(raw.get("updatedAt"), 64, ""), "unreadCount": raw.get("unreadCount", 0)}
+
+
+def _message(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict): raise RhythmProtocolError("schema_drift")
+    return {"id": _m5_id(raw), "senderId": _m5_id(raw, "senderId"), "senderName": _m5_text(raw.get("senderName"), 256), "body": _m5_text(raw.get("body"), 8_192), "createdAt": _m5_text(raw.get("createdAt"), 64)}
+
+
 def _m5_authorized(raw: Any, identity: dict[str, str], workspace: dict[str, str]) -> bool:
     if not isinstance(raw, dict) or raw.get("workspaceId") != workspace["id"]: return False
     if raw.get("ownerId") == identity["id"]: return True
@@ -816,6 +926,32 @@ async def workspace_operation(incoming_request: Request):
         canonical_workspace = _safe_workspace(workspace)
         if identity["id"] != receipt.actor_id or canonical_workspace["id"] != receipt.workspace_id or _m5_digest(identity, canonical_workspace, payload) != receipt.intent_digest:
             raise HTTPException(409, detail={"error": "stale_confirmation", "recoverable": True})
+        if payload.operation.startswith(("messages.", "facilities.")):
+            target_path = _m6_authorization_path(payload.operation, payload.entityId, payload.payload)
+            if target_path is None:
+                if identity.get("isFacilitiesManager") is not True and not _m6_workspace_can_manage(workspace): raise RhythmRemoteError("forbidden")
+            else:
+                target = client.call("GET", target_path)
+                if not _m6_authorized(payload.operation, target, identity, canonical_workspace): raise RhythmRemoteError("forbidden")
+            with _oauth_lock:
+                intent = _workspace_intents.get(receipt.intent_digest)
+                if _workspace_confirmations.get(payload.confirmation) is not receipt or intent is None or intent.claimed:
+                    raise HTTPException(409, detail={"error": "stale_confirmation", "recoverable": True})
+                intent.claimed = True; _workspace_confirmations.pop(payload.confirmation, None)
+            method, template = _M5_UPSTREAM[payload.operation]
+            path = template.format(id=payload.entityId, facilityId=payload.payload.get("facilityId", ""))
+            upstream_body = {key: value for key, value in body.items() if key != "facilityId"}
+            try:
+                result = _m6_result(payload.operation, payload.entityId, client.call(method, path, body=upstream_body or None, idempotency_key=receipt.intent_digest, m5=True))
+            except RhythmRemoteError as exc:
+                if exc.kind in {"timeout", "network", "dns", "upstream_unavailable"}:
+                    raise RhythmRemoteError("uncertain", exc.status_code) from exc
+                raise
+            if method == "DELETE": return result
+            read_path = path if payload.operation not in {"facilities.create-facility", "facilities.create-reservation"} else (f"/facilities/{result['id']}" if payload.operation == "facilities.create-facility" else f"/facilities/{payload.payload['facilityId']}/reservations/{result['id']}")
+            raw = client.call("GET", read_path)
+            if raw.get("id") != result["id"]: raise RhythmRemoteError("conflict", 409)
+            return _m6_public(payload.operation, raw)
         target_path = _m5_authorization_path(payload.operation, payload.entityId, payload.payload)
         if target_path is None:
             if not _m5_workspace_can_create(workspace): raise RhythmRemoteError("forbidden")
@@ -1014,6 +1150,71 @@ async def artifact_capability(artifact_id: str, incoming_request: Request):
     except (TypeError, ValueError):
         raise _invalid_request() from None
     return artifact_host.receive(artifact_id, payload)
+
+
+@router.get("/messages")
+def message_threads():
+    try:
+        client, _, _ = _connected_client()
+        raw = client.call("GET", "/message-threads")
+        rows = raw.get("items", raw) if isinstance(raw, dict) else raw
+        if not isinstance(rows, list) or len(rows) > 500: raise RhythmProtocolError("schema_drift")
+        return [_message_thread(row) for row in rows]
+    except Exception as exc: raise _error(exc) from None
+
+
+@router.get("/messages/{thread_id}/history")
+def message_history(thread_id: str):
+    if not _safe_id(thread_id): raise _invalid_request()
+    try:
+        client, _, _ = _connected_client()
+        raw = client.call("GET", f"/message-threads/{thread_id}/messages")
+        rows = raw.get("items", raw) if isinstance(raw, dict) else raw
+        if not isinstance(rows, list) or len(rows) > 500: raise RhythmProtocolError("schema_drift")
+        return [_message(row) for row in rows]
+    except Exception as exc: raise _error(exc) from None
+
+
+@router.get("/directory")
+def directory():
+    try:
+        client, _, _ = _connected_client(); raw = client.call("GET", "/users")
+        rows = raw.get("items", raw) if isinstance(raw, dict) else raw
+        if not isinstance(rows, list) or len(rows) > 500: raise RhythmProtocolError("schema_drift")
+        return [_m5_member(row) for row in rows]
+    except Exception as exc: raise _error(exc) from None
+
+
+@router.get("/facilities")
+def facilities():
+    try:
+        client, _, _ = _connected_client(); raw = client.call("GET", "/facilities")
+        rows = raw.get("items", raw) if isinstance(raw, dict) else raw
+        if not isinstance(rows, list) or len(rows) > 500: raise RhythmProtocolError("schema_drift")
+        return [_facility(row) for row in rows]
+    except Exception as exc: raise _error(exc) from None
+
+
+@router.get("/facilities/reservations")
+def facility_reservations(start: str, end: str):
+    if not start or not end or len(start) > 64 or len(end) > 64: raise _invalid_request()
+    try:
+        client, _, _ = _connected_client(); raw = client.call("GET", f"/facilities/reservations?{urlencode({'start': start, 'end': end})}")
+        rows = raw.get("items", raw) if isinstance(raw, dict) else raw
+        if not isinstance(rows, list) or len(rows) > 500: raise RhythmProtocolError("schema_drift")
+        return [_facility_reservation(row) for row in rows]
+    except Exception as exc: raise _error(exc) from None
+
+
+@router.get("/facilities/{facility_id}/series")
+def facility_series(facility_id: str):
+    if not _safe_id(facility_id): raise _invalid_request()
+    try:
+        client, _, _ = _connected_client(); raw = client.call("GET", f"/facilities/{facility_id}/reservation-series")
+        rows = raw.get("items", raw) if isinstance(raw, dict) else raw
+        if not isinstance(rows, list) or len(rows) > 500: raise RhythmProtocolError("schema_drift")
+        return [_facility_reservation(row) for row in rows]
+    except Exception as exc: raise _error(exc) from None
 
 
 @router.post("/oauth/start")

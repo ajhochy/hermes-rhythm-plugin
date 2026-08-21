@@ -1550,6 +1550,7 @@ function FacilitiesScreen() {
   const [facilityDescription, setFacilityDescription] = useState("");
   const [facilityNameError, setFacilityNameError] = useState("");
   const [deleteFacilityTarget, setDeleteFacilityTarget] = useState(null);
+  const [operationTarget, setOperationTarget] = useState(null);
   const [automationOpen, setAutomationOpen] = useState(false);
   const [automationRoom, setAutomationRoom] = useState("");
   const [automationStart, setAutomationStart] = useState("");
@@ -1557,15 +1558,48 @@ function FacilitiesScreen() {
   const [mutationPending, setMutationPending] = useState(false);
   const [mutationNotice, setMutationNotice] = useState("");
   const requestGeneration = useRef(0);
+  const operationGeneration = useRef(0);
+  const operationEpoch = useRef(0);
   const currentRange = computeRange(rangeMode, rangeOffset);
   const handleError = (error) => {
     const kind = error instanceof RhythmGatewayError ? error.kind : "server_error";
     setSurfaceState(kind === "forbidden" ? "forbidden" : kind === "not_found" ? "unavailable" : kind === "unavailable" ? "unavailable" : "server_error");
   };
-  const canManage = host.currentUser.capabilities?.includes("facilities.manage") ?? false;
-  const canReserve = canManage || (host.currentUser.capabilities?.includes("facilities.reserve") ?? false);
-  const canEditReservation = (reservation) => Boolean(reservation && (canManage || canReserve && reservation.creatorId === host.currentUser.id));
+  const capabilities = host.currentUser.capabilities ?? [];
+  const canManage = capabilities.includes("facilities.manage");
+  const can = (operation) => canManage || capabilities.includes(operation);
+  const canReserve = can("facilities.create-reservation") || capabilities.includes("facilities.reserve");
+  const canEditReservation = (reservation, operation) => Boolean(reservation && (canManage || (capabilities.includes("facilities.reserve") || capabilities.includes(operation)) && reservation.creatorId === host.currentUser.id));
+  const canSubmitReservation = editingReservation ? canEditReservation(editingReservation, editingReservation.groupId ? "facilities.update-group" : "facilities.update-reservation") : canReserve;
   const mutationExplanation = canManage || canReserve ? "" : "You can inspect this schedule, but a Facilities manager must grant reservation access.";
+  const queueOperation = (operation, entityId, payload, mutate) => {
+    if (!can(operation) && !(operation === "facilities.create-reservation" && capabilities.includes("facilities.reserve"))) return;
+    operationGeneration.current += 1;
+    operationEpoch.current += 1;
+    setOperationTarget({ operation, entityId, payload, mutate, generation: `${entityId}:${operation}:${operationGeneration.current}` });
+  };
+  const cancelOperation = () => {
+    operationEpoch.current += 1;
+    setOperationTarget(null);
+  };
+  const confirmOperation = async () => {
+    const target = operationTarget;
+    if (!target || mutationPending) return;
+    const epoch = operationEpoch.current;
+    setMutationPending(true);
+    try {
+      const confirmation = { operation: target.operation, entityId: target.entityId, payload: target.payload, generation: target.generation };
+      if (host.confirmWorkspaceOperation && !await host.confirmWorkspaceOperation(confirmation)) return;
+      if (operationEpoch.current !== epoch) return;
+      await target.mutate();
+      if (operationEpoch.current !== epoch) return;
+      setOperationTarget(null);
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setMutationPending(false);
+    }
+  };
   const load = async (range = currentRange) => {
     const generation = ++requestGeneration.current;
     setSurfaceState("loading");
@@ -1632,7 +1666,7 @@ function FacilitiesScreen() {
   const availabilityText = !formStart || !formEnd ? "Choose a start and end time" : formConflicts.length ? `${formConflicts.length} reservation${formConflicts.length === 1 ? "" : "s"} overlap the selected slot` : "Selected slot is open";
   const submitReservation = async (event) => {
     event.preventDefault();
-    if (!canReserve || editingReservation && !canEditReservation(editingReservation)) return;
+    if (!canSubmitReservation) return;
     const errors = {};
     if (!formRoomId) errors.room = "Select a room";
     if (!formTitle.trim()) errors.title = "Title is required";
@@ -1641,74 +1675,63 @@ function FacilitiesScreen() {
     else if (!editingReservation && formConflicts.length) errors.slot = `${formTitle || "This reservation"} overlaps an existing reservation`;
     setFormErrors(errors);
     if (Object.keys(errors).length) return;
-    setMutationPending(true);
-    try {
-      const start = `${formDate}T${formStart}:00-07:00`;
-      const end = `${formDate}T${formEnd}:00-07:00`;
-      const input = { title: formTitle.trim(), requesterName: formRequesterName.trim() || host.currentUser.displayName, start, end, notes: formNotes || null };
-      if (editingReservation?.groupId) {
+    const start = `${formDate}T${formStart}:00-07:00`;
+    const end = `${formDate}T${formEnd}:00-07:00`;
+    const input = { title: formTitle.trim(), requesterName: formRequesterName.trim() || host.currentUser.displayName, start, end, notes: formNotes || null };
+    if (editingReservation?.groupId) {
+      queueOperation("facilities.update-group", editingReservation.groupId, input, async () => {
         const updated = await gateway.updateGroup(editingReservation.groupId, input);
         setReservations((current) => current.map((reservation) => updated.find((item) => item.id === reservation.id) ?? reservation));
-      } else if (editingReservation) {
+        closeReservationEditor();
+      });
+    } else if (editingReservation) {
+      queueOperation("facilities.update-reservation", editingReservation.id, input, async () => {
         const updated = await gateway.updateReservation(editingReservation.id, input);
         setReservations((current) => current.map((reservation) => reservation.id === updated.id ? updated : reservation));
-      } else {
-        const created = await gateway.createReservation({ facilityId: formRoomId, ...input, notes: formNotes || void 0 });
+        closeReservationEditor();
+      });
+    } else {
+      const createInput = { facilityId: formRoomId, ...input };
+      queueOperation("facilities.create-reservation", "new-reservation", createInput, async () => {
+        const created = await gateway.createReservation(createInput);
         setReservations((current) => [...current, created]);
-      }
-      closeReservationEditor();
-    } catch (error) {
-      handleError(error);
-    } finally {
-      setMutationPending(false);
+        closeReservationEditor();
+      });
     }
   };
   const confirmDeleteReservation = async () => {
     if (!deleteReservationTarget) return;
-    if (!canEditReservation(deleteReservationTarget)) return;
-    setMutationPending(true);
-    try {
-      await gateway.deleteReservation(deleteReservationTarget.id);
-      setReservations((current) => current.filter((reservation) => reservation.id !== deleteReservationTarget.id));
-      if (selectedReservationId === deleteReservationTarget.id) setSelectedReservationId(null);
-      setDeleteReservationTarget(null);
-    } catch (error) {
-      handleError(error);
-    } finally {
-      setMutationPending(false);
-    }
+    if (!canEditReservation(deleteReservationTarget, "facilities.delete-reservation")) return;
+    const target = deleteReservationTarget;
+    setDeleteReservationTarget(null);
+    queueOperation("facilities.delete-reservation", target.id, {}, async () => {
+      await gateway.deleteReservation(target.id);
+      setReservations((current) => current.filter((reservation) => reservation.id !== target.id));
+      if (selectedReservationId === target.id) setSelectedReservationId(null);
+    });
   };
   const confirmDeleteSeries = async () => {
     if (!deleteSeriesTarget?.seriesId) return;
-    if (!canManage) return;
-    setMutationPending(true);
-    setMutationNotice("");
-    try {
-      const result = await gateway.deleteSeries(deleteSeriesTarget.seriesId);
+    if (!can("facilities.delete-series")) return;
+    const target = deleteSeriesTarget;
+    setDeleteSeriesTarget(null);
+    queueOperation("facilities.delete-series", target.seriesId, {}, async () => {
+      const result = await gateway.deleteSeries(target.seriesId);
       setMutationNotice(`${result.deletedCount} recurring reservations were deleted. The schedule was reloaded.`);
       await load();
       setSelectedReservationId(null);
-      setDeleteSeriesTarget(null);
-    } catch (error) {
-      handleError(error);
-    } finally {
-      setMutationPending(false);
-    }
+    });
   };
   const confirmDeleteGroup = async () => {
-    if (!deleteGroupTarget?.groupId || !canEditReservation(deleteGroupTarget)) return;
-    setMutationPending(true);
-    try {
-      const result = await gateway.deleteGroup(deleteGroupTarget.groupId);
+    if (!deleteGroupTarget?.groupId || !canEditReservation(deleteGroupTarget, "facilities.delete-group")) return;
+    const target = deleteGroupTarget;
+    setDeleteGroupTarget(null);
+    queueOperation("facilities.delete-group", target.groupId, {}, async () => {
+      const result = await gateway.deleteGroup(target.groupId);
       setMutationNotice(`${result.deletedCount} linked reservations were deleted. The schedule was reloaded.`);
       await load();
       setSelectedReservationId(null);
-      setDeleteGroupTarget(null);
-    } catch (error) {
-      handleError(error);
-    } finally {
-      setMutationPending(false);
-    }
+    });
   };
   const openFacilityEditor = (facility) => {
     setEditingFacility(facility);
@@ -1722,43 +1745,35 @@ function FacilitiesScreen() {
   const closeFacilityEditor = () => setFacilityEditorOpen(false);
   const submitFacility = async (event) => {
     event.preventDefault();
-    if (!canManage) return;
+    if (!(editingFacility ? can("facilities.update-facility") : can("facilities.create-facility"))) return;
     if (!facilityName.trim()) {
       setFacilityNameError("Room name is required");
       return;
     }
     const building = facilityBuilding === "__new_building__" ? newBuilding.trim() : facilityBuilding;
-    setMutationPending(true);
-    try {
-      if (editingFacility) {
-        const updated = await gateway.updateFacility(editingFacility.id, { name: facilityName.trim(), building: building || null, description: facilityDescription.trim() });
-        setFacilities((current) => current.map((facility) => facility.id === updated.id ? updated : facility));
-      } else {
-        const created = await gateway.createFacility({ name: facilityName.trim(), building: building || null, description: facilityDescription.trim() });
-        setFacilities((current) => [...current, created]);
-      }
+    const input = { name: facilityName.trim(), building: building || null, description: facilityDescription.trim() };
+    if (editingFacility) queueOperation("facilities.update-facility", editingFacility.id, input, async () => {
+      const updated = await gateway.updateFacility(editingFacility.id, input);
+      setFacilities((current) => current.map((facility) => facility.id === updated.id ? updated : facility));
       setFacilityEditorOpen(false);
-    } catch (error) {
-      handleError(error);
-    } finally {
-      setMutationPending(false);
-    }
+    });
+    else queueOperation("facilities.create-facility", "new-facility", input, async () => {
+      const created = await gateway.createFacility(input);
+      setFacilities((current) => [...current, created]);
+      setFacilityEditorOpen(false);
+    });
   };
   const confirmDeleteFacility = async () => {
     if (!deleteFacilityTarget) return;
-    if (!canManage) return;
-    setMutationPending(true);
-    try {
-      await gateway.deleteFacility(deleteFacilityTarget.id);
-      setFacilities((current) => current.filter((facility) => facility.id !== deleteFacilityTarget.id));
-      setReservations((current) => current.filter((reservation) => reservation.facilityId !== deleteFacilityTarget.id));
-      if (selectedRoomId === deleteFacilityTarget.id) setSelectedRoomId(null);
-      setDeleteFacilityTarget(null);
-    } catch (error) {
-      handleError(error);
-    } finally {
-      setMutationPending(false);
-    }
+    if (!can("facilities.delete-facility")) return;
+    const target = deleteFacilityTarget;
+    setDeleteFacilityTarget(null);
+    queueOperation("facilities.delete-facility", target.id, {}, async () => {
+      await gateway.deleteFacility(target.id);
+      setFacilities((current) => current.filter((facility) => facility.id !== target.id));
+      setReservations((current) => current.filter((reservation) => reservation.facilityId !== target.id));
+      if (selectedRoomId === target.id) setSelectedRoomId(null);
+    });
   };
   const filteredAutomation = reservations.filter((reservation) => {
     if (!reservation.automation) return false;
@@ -1776,10 +1791,9 @@ function FacilitiesScreen() {
   };
   const cleanupAutomation = async () => {
     const targets = filteredAutomation.map((reservation) => reservation.id);
-    if (!canManage) return;
-    setMutationPending(true);
-    setMutationNotice("");
-    try {
+    if (!can("facilities.delete-reservations")) return;
+    queueOperation("facilities.delete-reservations", "automation-reservations", { ids: targets }, async () => {
+      setMutationNotice("");
       if (gateway.deleteReservations) {
         const result = await gateway.deleteReservations(targets);
         if (result.deletedIds.length !== targets.length) setMutationNotice(`${result.deletedIds.length} of ${targets.length} automation reservations were deleted. The schedule was reloaded.`);
@@ -1790,11 +1804,7 @@ function FacilitiesScreen() {
       }
       await load();
       setAutomationOpen(false);
-    } catch (error) {
-      handleError(error);
-    } finally {
-      setMutationPending(false);
-    }
+    });
   };
   return /* @__PURE__ */ jsx(ScreenRoot, { screenName: "Facilities", testId: "rhythm-facilities-screen", children: /* @__PURE__ */ jsxs("section", { className: "page-shell pg-facilities", "aria-busy": surfaceState === "loading", children: [
     /* @__PURE__ */ jsxs("header", { className: "facilities-header", children: [
@@ -1902,8 +1912,8 @@ function FacilitiesScreen() {
                   ] })
                 ] }),
                 /* @__PURE__ */ jsxs(ActionMenu, { label: `Actions for ${reservation.title}`, testId: `facility-reservation-menu-${reservation.id}`, children: [
-                  /* @__PURE__ */ jsx("button", { className: "menu-item", role: "menuitem", type: "button", disabled: !canEditReservation(reservation), onClick: () => openReservationEditor(reservation), "data-testid": `facility-reservation-menu-edit-${reservation.id}`, children: reservation.groupId ? "Edit linked group" : "Edit reservation" }),
-                  /* @__PURE__ */ jsx("button", { className: "menu-item danger-item", role: "menuitem", type: "button", disabled: reservation.seriesId ? !canManage : !canEditReservation(reservation), onClick: () => reservation.seriesId ? setDeleteSeriesTarget(reservation) : reservation.groupId ? setDeleteGroupTarget(reservation) : setDeleteReservationTarget(reservation), "data-testid": `facility-reservation-menu-delete-${reservation.id}`, children: reservation.seriesId ? "Delete series" : reservation.groupId ? "Delete linked group" : "Delete reservation" })
+                  /* @__PURE__ */ jsx("button", { className: "menu-item", role: "menuitem", type: "button", disabled: !canEditReservation(reservation, reservation.groupId ? "facilities.update-group" : "facilities.update-reservation"), onClick: () => openReservationEditor(reservation), "data-testid": `facility-reservation-menu-edit-${reservation.id}`, children: reservation.groupId ? "Edit linked group" : "Edit reservation" }),
+                  /* @__PURE__ */ jsx("button", { className: "menu-item danger-item", role: "menuitem", type: "button", disabled: reservation.seriesId ? !can("facilities.delete-series") : !canEditReservation(reservation, reservation.groupId ? "facilities.delete-group" : "facilities.delete-reservation"), onClick: () => reservation.seriesId ? setDeleteSeriesTarget(reservation) : reservation.groupId ? setDeleteGroupTarget(reservation) : setDeleteReservationTarget(reservation), "data-testid": `facility-reservation-menu-delete-${reservation.id}`, children: reservation.seriesId ? "Delete series" : reservation.groupId ? "Delete linked group" : "Delete reservation" })
                 ] })
               ] }, reservation.id);
             }) : /* @__PURE__ */ jsxs("div", { className: "facilities-local-empty", role: "status", "data-testid": "facilities-no-results", children: [
@@ -1940,7 +1950,7 @@ function FacilitiesScreen() {
               /* @__PURE__ */ jsx("dd", { children: selectedReservation.notes || "No setup notes" })
             ] })
           ] }),
-          /* @__PURE__ */ jsx("div", { className: "facilities-detail-actions", children: /* @__PURE__ */ jsx("button", { className: "text-danger-button", type: "button", disabled: mutationPending || (selectedReservation.seriesId ? !canManage : !canEditReservation(selectedReservation)), onClick: () => selectedReservation.seriesId ? setDeleteSeriesTarget(selectedReservation) : selectedReservation.groupId ? setDeleteGroupTarget(selectedReservation) : setDeleteReservationTarget(selectedReservation), "data-testid": "facility-inspector-delete", children: selectedReservation.seriesId ? "Delete entire series" : selectedReservation.groupId ? "Delete linked group" : "Delete reservation" }) })
+          /* @__PURE__ */ jsx("div", { className: "facilities-detail-actions", children: /* @__PURE__ */ jsx("button", { className: "text-danger-button", type: "button", disabled: mutationPending || (selectedReservation.seriesId ? !can("facilities.delete-series") : !canEditReservation(selectedReservation, selectedReservation.groupId ? "facilities.delete-group" : "facilities.delete-reservation")), onClick: () => selectedReservation.seriesId ? setDeleteSeriesTarget(selectedReservation) : selectedReservation.groupId ? setDeleteGroupTarget(selectedReservation) : setDeleteReservationTarget(selectedReservation), "data-testid": "facility-inspector-delete", children: selectedReservation.seriesId ? "Delete entire series" : selectedReservation.groupId ? "Delete linked group" : "Delete reservation" }) })
         ] }) : /* @__PURE__ */ jsxs("div", { className: "facilities-inspector-empty", children: [
           /* @__PURE__ */ jsx("span", { children: "Select a reservation" }),
           /* @__PURE__ */ jsx("p", { children: "Choose a schedule row to inspect its room, timing, requester, and setup notes." })
@@ -1951,10 +1961,10 @@ function FacilitiesScreen() {
             /* @__PURE__ */ jsx("strong", { children: "Space operations" }),
             /* @__PURE__ */ jsx("span", { children: "Manage rooms and automation-created reservations." })
           ] }),
-          /* @__PURE__ */ jsxs("fieldset", { disabled: mutationPending || !canManage, children: [
+          /* @__PURE__ */ jsxs("fieldset", { disabled: mutationPending, children: [
             /* @__PURE__ */ jsx("legend", { className: "sr-only", children: "Room manager actions" }),
-            /* @__PURE__ */ jsx("button", { className: "secondary-button", type: "button", onClick: openAutomation, "data-testid": "facility-automation-manage", children: "Manage automation reservations" }),
-            /* @__PURE__ */ jsx("button", { className: "primary-button", type: "button", onClick: () => openFacilityEditor(null), "data-testid": "facility-add-space", children: "Add Space" })
+            /* @__PURE__ */ jsx("button", { className: "secondary-button", type: "button", disabled: !can("facilities.delete-reservations"), onClick: openAutomation, "data-testid": "facility-automation-manage", children: "Manage automation reservations" }),
+            /* @__PURE__ */ jsx("button", { className: "primary-button", type: "button", disabled: !can("facilities.create-facility"), onClick: () => openFacilityEditor(null), "data-testid": "facility-add-space", children: "Add Space" })
           ] })
         ] }),
         /* @__PURE__ */ jsxs("div", { className: "facilities-split-shell facilities-room-split", children: [
@@ -1978,7 +1988,7 @@ function FacilitiesScreen() {
                   /* @__PURE__ */ jsx("span", { className: "facilities-room-status", children: upcoming ? `${upcoming} upcoming` : "Available" })
                 ] }),
                 /* @__PURE__ */ jsx("button", { className: "secondary-button", type: "button", disabled: mutationPending || !canReserve, onClick: () => openReservationEditor(null, facility.id), "data-testid": `facility-room-reserve-${facility.id}`, children: "Reserve" }),
-                /* @__PURE__ */ jsx(ActionMenu, { label: `Manage ${facility.name}`, testId: `facility-room-menu-${facility.id}`, children: /* @__PURE__ */ jsx("button", { className: "menu-item danger-item", role: "menuitem", type: "button", disabled: !canManage, onClick: () => setDeleteFacilityTarget(facility), "data-testid": `facility-room-menu-delete-${facility.id}`, children: "Delete room" }) })
+                /* @__PURE__ */ jsx(ActionMenu, { label: `Manage ${facility.name}`, testId: `facility-room-menu-${facility.id}`, children: /* @__PURE__ */ jsx("button", { className: "menu-item danger-item", role: "menuitem", type: "button", disabled: !can("facilities.delete-facility"), onClick: () => setDeleteFacilityTarget(facility), "data-testid": `facility-room-menu-delete-${facility.id}`, children: "Delete room" }) })
               ] }, facility.id);
             }) })
           ] }, group.building ?? "unassigned")) }),
@@ -2000,7 +2010,7 @@ function FacilitiesScreen() {
             ] }),
             /* @__PURE__ */ jsxs("div", { className: "facilities-detail-actions", children: [
               /* @__PURE__ */ jsx("button", { className: "primary-button", type: "button", disabled: mutationPending || !canReserve, onClick: () => openReservationEditor(null, selectedRoom.id), "data-testid": "facility-room-inspector-reserve", children: "Reserve this room" }),
-              /* @__PURE__ */ jsx("button", { className: "secondary-button", type: "button", disabled: mutationPending || !canManage, onClick: () => openFacilityEditor(selectedRoom), "data-testid": "facility-room-inspector-edit", children: "Edit space" })
+              /* @__PURE__ */ jsx("button", { className: "secondary-button", type: "button", disabled: mutationPending || !can("facilities.update-facility"), onClick: () => openFacilityEditor(selectedRoom), "data-testid": "facility-room-inspector-edit", children: "Edit space" })
             ] })
           ] }) : /* @__PURE__ */ jsxs("div", { className: "facilities-inspector-empty", children: [
             /* @__PURE__ */ jsx("span", { children: "Select a room" }),
@@ -2009,7 +2019,7 @@ function FacilitiesScreen() {
         ] })
       ] })
     ] }),
-    /* @__PURE__ */ jsx(FocusDialog, { open: reservationDialogOpen, onClose: closeReservationEditor, title: editingReservation ? "Edit reservation" : "Reserve space", description: "Availability is calculated from the current room schedule.", testId: "facility-reservation-dialog", wide: true, children: /* @__PURE__ */ jsx("form", { className: "facilities-reservation-form", onSubmit: (event) => void submitReservation(event), children: /* @__PURE__ */ jsxs("fieldset", { disabled: mutationPending || !canReserve || Boolean(editingReservation && !canEditReservation(editingReservation)), "aria-describedby": !canReserve ? "facilities-read-only" : void 0, children: [
+    /* @__PURE__ */ jsx(FocusDialog, { open: reservationDialogOpen, onClose: closeReservationEditor, title: editingReservation ? "Edit reservation" : "Reserve space", description: "Availability is calculated from the current room schedule.", testId: "facility-reservation-dialog", wide: true, children: /* @__PURE__ */ jsx("form", { className: "facilities-reservation-form", onSubmit: (event) => void submitReservation(event), children: /* @__PURE__ */ jsxs("fieldset", { disabled: mutationPending || !canSubmitReservation, "aria-describedby": !canSubmitReservation ? "facilities-read-only" : void 0, children: [
       /* @__PURE__ */ jsxs("div", { className: "facilities-form-grid", children: [
         /* @__PURE__ */ jsxs("label", { className: "field span-2", children: [
           "Title",
@@ -2049,7 +2059,7 @@ function FacilitiesScreen() {
         /* @__PURE__ */ jsx("button", { className: "primary-button", type: "submit", "data-testid": "facility-form-submit", children: editingReservation ? "Save changes" : "Create reservation" })
       ] })
     ] }) }) }),
-    /* @__PURE__ */ jsx(FocusDialog, { open: facilityEditorOpen, onClose: closeFacilityEditor, title: editingFacility ? "Edit space" : "Add space", description: "Facilities use only the room name, building, and description fields exposed by Rhythm.", testId: "facility-editor-dialog", children: /* @__PURE__ */ jsx("form", { onSubmit: (event) => void submitFacility(event), children: /* @__PURE__ */ jsxs("fieldset", { disabled: mutationPending || !canManage, "aria-describedby": !canManage ? "facilities-read-only" : void 0, children: [
+    /* @__PURE__ */ jsx(FocusDialog, { open: facilityEditorOpen, onClose: closeFacilityEditor, title: editingFacility ? "Edit space" : "Add space", description: "Facilities use only the room name, building, and description fields exposed by Rhythm.", testId: "facility-editor-dialog", children: /* @__PURE__ */ jsx("form", { onSubmit: (event) => void submitFacility(event), children: /* @__PURE__ */ jsxs("fieldset", { disabled: mutationPending || !(editingFacility ? can("facilities.update-facility") : can("facilities.create-facility")), "aria-describedby": !(editingFacility ? can("facilities.update-facility") : can("facilities.create-facility")) ? "facilities-read-only" : void 0, children: [
       /* @__PURE__ */ jsxs("label", { className: "field", children: [
         "Room name",
         /* @__PURE__ */ jsx("input", { "data-autofocus": true, value: facilityName, onChange: (event) => {
@@ -2079,7 +2089,7 @@ function FacilitiesScreen() {
         /* @__PURE__ */ jsx("button", { className: "primary-button", type: "submit", "data-testid": "facility-editor-submit", children: editingFacility ? "Save changes" : "Add Space" })
       ] })
     ] }) }) }),
-    /* @__PURE__ */ jsx(FocusDialog, { open: automationOpen, onClose: () => setAutomationOpen(false), title: "Manage automation reservations", description: "Preview the exact cleanup scope before deleting automation-created reservations.", testId: "facility-automation-dialog", wide: true, children: /* @__PURE__ */ jsxs("fieldset", { className: "facilities-automation-form", disabled: mutationPending || !canManage, "aria-describedby": !canManage ? "facilities-read-only" : void 0, children: [
+    /* @__PURE__ */ jsx(FocusDialog, { open: automationOpen, onClose: () => setAutomationOpen(false), title: "Manage automation reservations", description: "Preview the exact cleanup scope before deleting automation-created reservations.", testId: "facility-automation-dialog", wide: true, children: /* @__PURE__ */ jsxs("fieldset", { className: "facilities-automation-form", disabled: mutationPending || !can("facilities.delete-reservations"), "aria-describedby": !can("facilities.delete-reservations") ? "facilities-read-only" : void 0, children: [
       /* @__PURE__ */ jsxs("div", { className: "facilities-form-grid", children: [
         /* @__PURE__ */ jsxs("label", { className: "field", children: [
           "Room",
@@ -2115,19 +2125,23 @@ function FacilitiesScreen() {
     ] }) }),
     /* @__PURE__ */ jsx(FocusDialog, { open: Boolean(deleteReservationTarget), onClose: () => setDeleteReservationTarget(null), title: deleteReservationTarget ? `Delete "${deleteReservationTarget.title}"?` : "Delete reservation?", description: "This cannot be undone.", testId: "facility-reservation-delete-dialog", children: /* @__PURE__ */ jsxs("div", { className: "dialog-actions", children: [
       /* @__PURE__ */ jsx("button", { className: "secondary-button", type: "button", onClick: () => setDeleteReservationTarget(null), "data-testid": "facility-reservation-delete-cancel", children: "Cancel" }),
-      /* @__PURE__ */ jsx("button", { className: "danger-button", type: "button", disabled: mutationPending || !canEditReservation(deleteReservationTarget), onClick: () => void confirmDeleteReservation(), "data-testid": "facility-reservation-delete-confirm", children: "Delete reservation" })
+      /* @__PURE__ */ jsx("button", { className: "danger-button", type: "button", disabled: mutationPending || !canEditReservation(deleteReservationTarget, "facilities.delete-reservation"), onClick: () => void confirmDeleteReservation(), "data-testid": "facility-reservation-delete-confirm", children: "Delete reservation" })
     ] }) }),
     /* @__PURE__ */ jsx(FocusDialog, { open: Boolean(deleteSeriesTarget), onClose: () => setDeleteSeriesTarget(null), title: deleteSeriesTarget ? `Delete entire series "${deleteSeriesTarget.title}"?` : "Delete series?", description: "Every occurrence in this recurring series will be removed. This cannot be undone.", testId: "facility-series-delete-dialog", children: /* @__PURE__ */ jsxs("div", { className: "dialog-actions", children: [
       /* @__PURE__ */ jsx("button", { className: "secondary-button", type: "button", onClick: () => setDeleteSeriesTarget(null), "data-testid": "facility-series-delete-cancel", children: "Cancel" }),
-      /* @__PURE__ */ jsx("button", { className: "danger-button", type: "button", disabled: mutationPending || !canManage, onClick: () => void confirmDeleteSeries(), "data-testid": "facility-series-delete-confirm", children: "Delete entire series" })
+      /* @__PURE__ */ jsx("button", { className: "danger-button", type: "button", disabled: mutationPending || !can("facilities.delete-series"), onClick: () => void confirmDeleteSeries(), "data-testid": "facility-series-delete-confirm", children: "Delete entire series" })
     ] }) }),
     /* @__PURE__ */ jsx(FocusDialog, { open: Boolean(deleteGroupTarget), onClose: () => setDeleteGroupTarget(null), title: deleteGroupTarget ? `Delete linked group "${deleteGroupTarget.title}"?` : "Delete linked group?", description: "Every linked reservation in this group will be removed. This cannot be undone.", testId: "facility-group-delete-dialog", children: /* @__PURE__ */ jsxs("div", { className: "dialog-actions", children: [
       /* @__PURE__ */ jsx("button", { className: "secondary-button", type: "button", onClick: () => setDeleteGroupTarget(null), "data-testid": "facility-group-delete-cancel", children: "Cancel" }),
-      /* @__PURE__ */ jsx("button", { className: "danger-button", type: "button", disabled: mutationPending || !canEditReservation(deleteGroupTarget), onClick: () => void confirmDeleteGroup(), "data-testid": "facility-group-delete-confirm", children: "Delete linked group" })
+      /* @__PURE__ */ jsx("button", { className: "danger-button", type: "button", disabled: mutationPending || !canEditReservation(deleteGroupTarget, "facilities.delete-group"), onClick: () => void confirmDeleteGroup(), "data-testid": "facility-group-delete-confirm", children: "Delete linked group" })
     ] }) }),
     /* @__PURE__ */ jsx(FocusDialog, { open: Boolean(deleteFacilityTarget), onClose: () => setDeleteFacilityTarget(null), title: deleteFacilityTarget ? `Delete "${deleteFacilityTarget.name}"?` : "Delete space?", description: "This removes the room and its reservations from this workspace. This cannot be undone.", testId: "facility-delete-dialog", children: /* @__PURE__ */ jsxs("div", { className: "dialog-actions", children: [
       /* @__PURE__ */ jsx("button", { className: "secondary-button", type: "button", onClick: () => setDeleteFacilityTarget(null), "data-testid": "facility-delete-cancel", children: "Cancel" }),
-      /* @__PURE__ */ jsx("button", { className: "danger-button", type: "button", disabled: mutationPending, onClick: () => void confirmDeleteFacility(), "data-testid": "facility-delete-confirm", children: "Delete space" })
+      /* @__PURE__ */ jsx("button", { className: "danger-button", type: "button", disabled: mutationPending || !can("facilities.delete-facility"), onClick: () => void confirmDeleteFacility(), "data-testid": "facility-delete-confirm", children: "Delete space" })
+    ] }) }),
+    /* @__PURE__ */ jsx(FocusDialog, { open: Boolean(operationTarget), onClose: cancelOperation, title: "Confirm facilities change", description: "Confirm this exact facilities change before it is sent to the workspace.", testId: "facility-operation-confirmation", children: /* @__PURE__ */ jsxs("div", { className: "dialog-actions", children: [
+      /* @__PURE__ */ jsx("button", { className: "secondary-button", type: "button", disabled: mutationPending, onClick: cancelOperation, "data-testid": "facility-operation-cancel", children: "Cancel" }),
+      /* @__PURE__ */ jsx("button", { className: "primary-button", type: "button", disabled: mutationPending, onClick: () => void confirmOperation(), "data-testid": "facility-operation-confirm", children: "Confirm" })
     ] }) })
   ] }) });
 }

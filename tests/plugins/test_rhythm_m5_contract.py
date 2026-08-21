@@ -76,7 +76,8 @@ def test_live_client_has_only_pinned_m5_paths_and_never_collaborator_routes():
 
 def test_m5_operation_registry_exactly_matches_the_contract_union():
     mod = importlib.import_module("plugins.rhythm.dashboard.plugin_api")
-    approved = set(load_contract("api-operations")["milestones"]["M5"]["approved_write_operations"])
+    milestones = load_contract("api-operations")["milestones"]
+    approved = set(milestones["M5"]["approved_write_operations"]) | set(milestones["M6"]["approved_write_operations"])
     assert set(mod._M5_UPSTREAM) == approved
     assert all(method in {"POST", "PATCH", "DELETE"} and path.startswith("/") for method, path in mod._M5_UPSTREAM.values())
 
