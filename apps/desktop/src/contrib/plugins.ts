@@ -17,7 +17,13 @@ import { createPluginContext, type HermesPlugin } from './plugin'
 import { pluginActive, publishPlugin } from './plugins-store'
 import { watchRuntimePlugins } from './runtime-loader'
 
-const modules = import.meta.glob<{ default: HermesPlugin }>('../plugins/*/plugin.{js,ts,tsx}', { eager: true })
+// Keep the app-local reference plugins and independently packaged
+// `plugins/*/desktop/src/plugin.*` on the same discovery contract. Vite sees
+// both globs at build time, so production packaging matches development.
+const modules = import.meta.glob<{ default: HermesPlugin }>(
+  ['../plugins/*/plugin.{js,ts,tsx}', '../../../../plugins/*/desktop/src/plugin.{js,ts,tsx}'],
+  { eager: true }
+)
 
 // One-shot init guard. Contributions themselves register by id (re-registering
 // is idempotent), but the disk-door watcher setup below (watchRuntimePlugins)
@@ -32,7 +38,9 @@ export function discoverBundledPlugins(): void {
 
   loaded = true
 
-  for (const [path, mod] of Object.entries(modules)) {
+  const claimed = new Set<string>()
+
+  for (const [path, mod] of Object.entries(modules).sort(([a], [b]) => a.localeCompare(b))) {
     const plugin = mod.default
 
     if (!plugin?.id || typeof plugin.register !== 'function') {
@@ -40,6 +48,14 @@ export function discoverBundledPlugins(): void {
 
       continue
     }
+
+    if (claimed.has(plugin.id)) {
+      console.warn(`[plugins] ${path} duplicates plugin id "${plugin.id}" — skipped deterministically`)
+
+      continue
+    }
+
+    claimed.add(plugin.id)
 
     // Same inventory + live-toggle contract as runtime plugins: each bundled
     // plugin publishes a record with activate/deactivate handles, and a
@@ -61,6 +77,8 @@ export function discoverBundledPlugins(): void {
         plugin.register(createPluginContext(plugin.id, dispose => disposers.push(dispose)))
         publishPlugin({ ...record, status: 'loaded' })
       } catch (error) {
+        disposers.forEach(dispose => dispose())
+        disposers = []
         console.error(`[plugins] ${plugin.id} failed to register`, error)
         publishPlugin({ ...record, status: 'error', error: error instanceof Error ? error.message : String(error) })
       }

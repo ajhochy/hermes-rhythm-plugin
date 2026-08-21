@@ -28,6 +28,30 @@ export interface PluginRestOptions {
   /** Single-file multipart upload (see HermesApiRequest.upload). */
   upload?: { filename: string; contentType?: string; bytes: ArrayBuffer }
   timeoutMs?: number
+  /** Explicit backend pin captured by a plugin-owned profile picker. Unlike
+   *  ambient routing it remains stable while the user switches chats. */
+  route?: PluginRestRoute
+}
+
+export interface PluginRestRoute {
+  connectionId: string
+  mode: 'local' | 'remote'
+  profile: string
+  targetProfile: string
+}
+
+function pinnedRoute(route: PluginRestRoute): { connectionId?: string; profile: string } {
+  const connectionId = route?.connectionId?.trim()
+  const profile = route?.profile?.trim()
+  const targetProfile = route?.targetProfile?.trim()
+
+  if (!connectionId || !profile || !targetProfile || (route.mode !== 'local' && route.mode !== 'remote')) {
+    throw new Error('pluginRest: a valid route descriptor is required for a pinned request')
+  }
+
+  // `local` is an explicit local-pool pin, so it must not inherit an ambient
+  // remote connection. The main bridge treats omitted connectionId as local.
+  return { ...(connectionId === 'local' ? {} : { connectionId }), profile }
 }
 
 // Normalize `path` to a leading-slash suffix relative to `/api/plugins/<id>`.
@@ -57,14 +81,20 @@ export async function pluginRest<T>(pluginId: string, path: string, opts: Plugin
 
   const suffix = pluginPathSuffix('pluginRest', path)
 
-  return hermesApi<T>({
+  const scope = opts.route ? pinnedRoute(opts.route) : profileScoped()
+
+  const request = {
     path: `/api/plugins/${pluginId}${suffix}`,
-    method: opts.method,
-    body: opts.body,
-    upload: opts.upload,
-    timeoutMs: opts.timeoutMs,
-    ...profileScoped()
-  })
+    ...(opts.method === undefined ? {} : { method: opts.method }),
+    ...(opts.body === undefined ? {} : { body: opts.body }),
+    ...(opts.upload === undefined ? {} : { upload: opts.upload }),
+    ...(opts.timeoutMs === undefined ? {} : { timeoutMs: opts.timeoutMs }),
+    ...scope
+  }
+
+  // Explicit local pins must not be merged with connectionScoped() inside
+  // hermesApi(), otherwise an active remote chat silently reroutes the call.
+  return opts.route ? window.hermesDesktop.api<T>(request) : hermesApi<T>(request)
 }
 
 /** The plugin WebSocket door — the live twin of `pluginRest`, scoped the same
