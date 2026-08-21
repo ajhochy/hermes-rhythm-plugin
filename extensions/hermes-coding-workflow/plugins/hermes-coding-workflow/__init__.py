@@ -256,25 +256,33 @@ def _canonical_repository_for_worktree(worktree: Path) -> Path | None:
         return None
 
 
+def _linked_task_root_allowed(worktree: Path) -> bool:
+    """Recognize only the exact registered Kanban linked-worktree root."""
+    task = os.getenv("HERMES_KANBAN_TASK")
+    if (
+        worktree.parent.name != ".worktrees"
+        or not task
+        or worktree.name != task
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", task)
+    ):
+        return False
+    try:
+        branch = subprocess.run(
+            ["git", "-C", str(worktree), "branch", "--show-current"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    primary = _canonical_repository_for_worktree(worktree)
+    return branch == f"wt/{task}" and primary is not None and _git_worktree_is_registered(primary, worktree)
+
+
 def _missing_locator_error(worktree: Path) -> str | None:
     """Recognize controlled linked worktrees without inferring any stage identity."""
     if worktree.parent.name != ".worktrees":
         return None
     if not worktree.name.startswith("hcw-"):
-        task = os.getenv("HERMES_KANBAN_TASK")
-        if not task or worktree.name != task:
-            return "untrusted workflow worktree"
-        try:
-            branch = subprocess.run(
-                ["git", "-C", str(worktree), "branch", "--show-current"],
-                text=True, capture_output=True, check=True,
-            ).stdout.strip()
-        except (OSError, subprocess.CalledProcessError):
-            return "untrusted workflow worktree"
-        primary = _canonical_repository_for_worktree(worktree)
-        if branch != f"wt/{task}" or primary is None or not _git_worktree_is_registered(primary, worktree):
-            return "untrusted workflow worktree"
-        return None
+        return None if _linked_task_root_allowed(worktree) else "untrusted workflow worktree"
     repo = worktree.parent.parent
     if not _git_worktree_is_registered(repo, worktree):
         return "untrusted workflow worktree"
@@ -414,12 +422,14 @@ def _bootstrap_create_run_allowed(args: dict[str, Any] | None) -> bool:
     expected_hcw = (Path(__file__).resolve().parent / "runtime" / "bin" / "hcw").resolve()
     try:
         executable = Path(argv[0]).resolve()
-        repo = Path(argv[2]).resolve()
+        repo = _canonical_identity_directory(argv[2])
+        cwd = _canonical_identity_directory(str(Path.cwd()))
     except OSError:
         return False
-    if executable != expected_hcw or repo != Path.cwd().resolve():
+    if executable != expected_hcw or repo is None or cwd is None or repo != cwd:
         return False
-    if _canonical_repository_for_worktree(repo) != repo:
+    canonical_repository = _canonical_repository_for_worktree(repo)
+    if canonical_repository != repo and not _linked_task_root_allowed(repo):
         return False
 
     run_ids: list[str] = []

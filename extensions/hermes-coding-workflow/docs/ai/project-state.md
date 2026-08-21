@@ -30,6 +30,13 @@ Build the complete standalone Hermes coding workflow package, including the cont
 
 ## Recent coding-agent runs
 
+### 2026-08-21 — Linked-controller bootstrap authorization repair
+- Files modified: `plugins/hermes-coding-workflow/__init__.py` uses one exact registered Kanban linked-root predicate for both missing-locator guidance and `create-run` authorization; `tests/plugin/test_native_plugins.py` proves that the exact command emitted for a valid linked controller is accepted.
+- Checks run: immutable review RED reproduced a valid `.worktrees/<task>` controller receiving `create-run` guidance while the guard rejected the same command. GREEN: reviewer-focused 25 passed; serialized isolated-home full Python suite 198 passed with one dependency deprecation warning; Node tests/build 3 passed each; Python compilation, diff check, and added-line secret scan passed.
+- Decisions made: a linked root is authorized only when its canonical basename equals `HERMES_KANBAN_TASK`, its branch is exactly `wt/<task>`, it is registered under trusted Git authority, and its command repository exactly matches the canonical current directory; generic linked worktrees remain rejected.
+- Live control note: the old installed hook caused repeated automatic design-stage promotions while this repair was being verified. The design card was left intact in `triage` and temporarily unassigned to stop dispatch churn; no root retry was initiated.
+- Concerns: fresh immutable rereview, targeted hook redeployment, and one stage-only live recovery remain required.
+
 ### 2026-08-21 — Nested linked-worktree topology repair
 - Files modified: `plugins/hermes-coding-workflow/__init__.py` validates a linked Kanban task worktree and its nested HCW worktree through shared trusted Git authority plus exact worktree-list membership; missing-locator root bootstrap is limited to registered `wt/<task>` workspaces whose basename equals `HERMES_KANBAN_TASK`. `tests/plugin/test_native_plugins.py` models the real nested topology and covers root bootstrap, active stage derivation, missing nested locator, and unrelated linked-worktree rejection.
 - Checks run: RED: linked root bootstrap was rejected and nested HCW stage registration returned false. GREEN: security/live-topology-focused 45 passed; serialized isolated-home full Python suite 198 passed with one dependency deprecation warning; Node tests/build 3 passed each; 36-file source compilation, diff check, and added-line secret scan passed.

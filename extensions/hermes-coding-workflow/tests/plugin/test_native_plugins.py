@@ -132,9 +132,13 @@ def test_linked_task_worktree_remains_a_valid_root_bootstrap_repository(tmp_path
     monkeypatch.delenv("HCW_RUN_ID", raising=False); monkeypatch.delenv("HERMES_PROFILE", raising=False)
 
     bootstrap = plugin._build_bootstrap()
+    decision = plugin._pre_tool_call(
+        tool_name="terminal", args={"command": _bootstrap_command(plugin, controller, "t_root")}
+    )
 
     assert "create-run" in bootstrap
     assert str(controller) in bootstrap
+    assert decision is None
 
 
 def test_linked_task_worktree_can_control_nested_hcw_stage(nested_workflow):
