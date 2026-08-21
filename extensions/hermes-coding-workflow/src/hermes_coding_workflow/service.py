@@ -198,7 +198,7 @@ class WorkflowService:
    check_env={"PATH":os.environ.get("PATH", ""),"PYTHONDONTWRITEBYTECODE":"1","PYTHONPYCACHEPREFIX":os.environ.get("PYTHONPYCACHEPREFIX","/tmp/hcw-pyc")}
    if os.environ.get("HOME"):check_env["HOME"]=os.environ["HOME"]
    try:r=subprocess.run(argv,cwd=Path(run["worktree_path"]),text=True,capture_output=True,timeout=timeout,env=check_env)
-   except subprocess.TimeoutExpired as exc:r=subprocess.CompletedProcess(argv,124,exc.stdout or "",exc.stderr or "timeout")
+   except subprocess.TimeoutExpired as exc:raise WorkflowError("check_timeout") from exc
    must_fail=typ=="red"
    if (must_fail and r.returncode==0) or (not must_fail and r.returncode!=0):raise WorkflowError("unexpected_check_exit")
    if typ=="red" and (g.head()!=head or any(not self._test_path(run,p) for p in g.paths(head))):raise WorkflowError("red_mutation_violation")

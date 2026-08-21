@@ -129,6 +129,14 @@ def test_external_stage_skills_require_dispatch_poll_and_controller_transition(
     assert f"authoritative `{transition}`" in text
 
 
+def test_authoritative_check_skills_use_production_timeout_budget() -> None:
+    expected = {"contract-writer": ("red",), "builder": ("green",), "verifier": ("full", "security", "live")}
+    for skill, kinds in expected.items():
+        text = (ROOT / "skills" / skill / "SKILL.md").read_text()
+        for kind in kinds:
+            assert f"--timeout 600 {kind} --" in text
+
+
 def test_green_controller_commits_before_running_the_authoritative_check(workflow, monkeypatch) -> None:
     plugin = load_plugin("hermes-coding-workflow")
     repo, _, state = workflow

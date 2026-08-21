@@ -141,6 +141,15 @@ def test_check_forwards_home_location_but_not_unrelated_environment(monkeypatch,
  checked=s.check("run-1",act("verify"),"full",custom)
  assert checked["exit_code"]==0
 
+def test_check_timeout_with_byte_streams_fails_closed_without_evidence(monkeypatch,repo:Path)->None:
+ s,_,_=ready(repo);plan=payloads()[1];seed_worker_success(repo,"red");real_run=subprocess.run
+ def timed(argv,*args,**kwargs):
+  if argv==plan["commands"]["red"]["argv"]:raise subprocess.TimeoutExpired(argv,1,output=b"partial stdout",stderr=b"partial stderr")
+  return real_run(argv,*args,**kwargs)
+ monkeypatch.setattr(service_module.subprocess,"run",timed)
+ with pytest.raises(WorkflowError,match="check_timeout"):s.check("run-1",act("red"),"red",plan["commands"]["red"]["argv"],1)
+ store=RunStore(repo,"run-1");assert store.read()["status"]=="awaiting_red" and store.evidence()==[]
+
 def test_red_rejects_source_mutation_and_evidence_tampering(repo:Path)->None:
  s,run,_=ready(repo)
  plan_path=repo / ".hermes" / "workflows" / "run-1" / "plan.json"
