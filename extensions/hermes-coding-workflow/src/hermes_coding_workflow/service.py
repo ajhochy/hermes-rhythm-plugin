@@ -195,7 +195,9 @@ class WorkflowService:
    if run["status"]!=expected:raise WorkflowError("check_not_ready")
    if typ in {"red","green"}:self._require_succeeded_worker(s,run,typ)
    if typ=="green" and not any(e["type"]=="red" and e["exit_code"]!=0 and e["commit_sha"]==run["base_sha"] for e in s.evidence()):raise WorkflowError("missing_red_evidence")
-   try:r=subprocess.run(argv,cwd=Path(run["worktree_path"]),text=True,capture_output=True,timeout=timeout,env={"PATH":os.environ.get("PATH", ""),"PYTHONDONTWRITEBYTECODE":"1","PYTHONPYCACHEPREFIX":os.environ.get("PYTHONPYCACHEPREFIX","/tmp/hcw-pyc")})
+   check_env={"PATH":os.environ.get("PATH", ""),"PYTHONDONTWRITEBYTECODE":"1","PYTHONPYCACHEPREFIX":os.environ.get("PYTHONPYCACHEPREFIX","/tmp/hcw-pyc")}
+   if os.environ.get("HOME"):check_env["HOME"]=os.environ["HOME"]
+   try:r=subprocess.run(argv,cwd=Path(run["worktree_path"]),text=True,capture_output=True,timeout=timeout,env=check_env)
    except subprocess.TimeoutExpired as exc:r=subprocess.CompletedProcess(argv,124,exc.stdout or "",exc.stderr or "timeout")
    must_fail=typ=="red"
    if (must_fail and r.returncode==0) or (not must_fail and r.returncode!=0):raise WorkflowError("unexpected_check_exit")

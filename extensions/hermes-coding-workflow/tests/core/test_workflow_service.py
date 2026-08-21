@@ -132,6 +132,15 @@ def test_check_executes_argv_not_forged_exit(repo:Path)->None:
  seed_worker_success(repo,"green")
  green=s.check("run-1",act("green"),"green",payloads()[1]["commands"]["green"]["argv"]);assert green["exit_code"]==0
 
+def test_check_forwards_home_location_but_not_unrelated_environment(monkeypatch,repo:Path,tmp_path:Path)->None:
+ home=tmp_path/"controlled-home";home.mkdir();monkeypatch.setenv("HOME",str(home));monkeypatch.setenv("HCW_UNRELATED_SETTING","must-not-survive")
+ s=WorkflowService(repo);run=s.create_run("pkg",["app.txt"],"run-1","hcw-test",board(repo,[]));design,plan=payloads()
+ custom=[sys.executable,"-c",f"import os;assert os.environ.get('HOME')=={str(home)!r};assert 'HCW_UNRELATED_SETTING' not in os.environ"]
+ plan["commands"]["full"]["argv"]=custom;s.approve_design("run-1",act("design"),design);s.approve_plan("run-1",act("plan"),plan)
+ store=RunStore(repo,"run-1");state=store.read();state["status"]="awaiting_verify";state["stage_statuses"]={stage:("active" if stage=="verify" else "completed") for stage in PROFILES};state["revision"]+=1;store.write_run(state,state["revision"]-1)
+ checked=s.check("run-1",act("verify"),"full",custom)
+ assert checked["exit_code"]==0
+
 def test_red_rejects_source_mutation_and_evidence_tampering(repo:Path)->None:
  s,run,_=ready(repo)
  plan_path=repo / ".hermes" / "workflows" / "run-1" / "plan.json"
