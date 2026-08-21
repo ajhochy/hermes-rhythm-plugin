@@ -221,11 +221,17 @@ interface ProjectsGateway {
     createTemplate(input: Pick<RhythmProjectTemplate, 'name' | 'description' | 'anchorType'>): Promise<RhythmProjectTemplate>;
     updateTemplate(id: string, input: Partial<Pick<RhythmProjectTemplate, 'name' | 'description' | 'anchorType'>>): Promise<RhythmProjectTemplate>;
     deleteTemplate(id: string): Promise<void>;
-    addTemplateStep(templateId: string, input: Omit<RhythmProjectTemplateStep, 'id'>): Promise<RhythmProjectTemplateStep>;
-    updateTemplateStep(templateId: string, stepId: string, input: Partial<Omit<RhythmProjectTemplateStep, 'id'>>): Promise<RhythmProjectTemplateStep>;
+    addTemplateStep(templateId: string, input: Omit<RhythmProjectTemplateStep, 'id'> & {
+        templateId: string;
+    }): Promise<RhythmProjectTemplateStep>;
+    updateTemplateStep(templateId: string, stepId: string, input: Partial<Omit<RhythmProjectTemplateStep, 'id'>> & {
+        templateId: string;
+    }): Promise<RhythmProjectTemplateStep>;
     deleteTemplateStep(templateId: string, stepId: string): Promise<void>;
     delete(id: string): Promise<void>;
-    updateStep(instanceId: string, stepId: string, input: Partial<Pick<RhythmProjectStep, 'title' | 'notes' | 'status' | 'dueDate' | 'scheduledDate' | 'assigneeId' | 'milestoneId'>>): Promise<RhythmProjectStep>;
+    updateStep(instanceId: string, stepId: string, input: Partial<Pick<RhythmProjectStep, 'title' | 'notes' | 'status' | 'dueDate' | 'scheduledDate' | 'assigneeId' | 'milestoneId'>> & {
+        instanceId: string;
+    }): Promise<RhythmProjectStep>;
     addMilestone(instanceId: string, input: Pick<RhythmProjectMilestone, 'title'>): Promise<RhythmProjectMilestone>;
     addCollaborator(instanceId: string, memberId: string): Promise<RhythmProject>;
     removeCollaborator(instanceId: string, memberId: string): Promise<RhythmProject>;
@@ -234,7 +240,7 @@ type RhythmCadence = 'weekly' | 'monthly' | 'annual';
 interface RhythmStep {
     id: string;
     title: string;
-    assigneeId?: string;
+    assigneeId?: string | null;
 }
 interface RhythmRhythm {
     id: string;
@@ -257,16 +263,21 @@ interface RhythmRhythm {
     completionRatio: number;
     createdAt: string;
 }
-type CreateRhythmRhythmInput = Pick<RhythmRhythm, 'title' | 'frequency'> & Partial<Pick<RhythmRhythm, 'dayOfWeek' | 'dayOfMonth' | 'month' | 'sequential' | 'enabled'>>;
+type RhythmStepDraft = Pick<RhythmStep, 'title'> & {
+    assigneeId?: string | null;
+};
+type CreateRhythmRhythmInput = Pick<RhythmRhythm, 'title' | 'frequency'> & Partial<Pick<RhythmRhythm, 'dayOfWeek' | 'dayOfMonth' | 'month' | 'sequential' | 'enabled'>> & {
+    steps?: RhythmStepDraft[];
+};
 interface RhythmsGateway {
     list(): Promise<RhythmRhythm[]>;
     members(): Promise<RhythmWorkspaceMember[]>;
     create(input: CreateRhythmRhythmInput): Promise<RhythmRhythm>;
     update(id: string, input: Partial<Pick<RhythmRhythm, 'title' | 'enabled' | 'sequential' | 'frequency' | 'dayOfWeek' | 'dayOfMonth' | 'month'>>): Promise<RhythmRhythm>;
     delete(id: string): Promise<void>;
-    addStep(id: string, input: Pick<RhythmStep, 'title'> & Partial<Pick<RhythmStep, 'assigneeId'>>): Promise<RhythmStep>;
+    addStep(id: string, input: RhythmStepDraft): Promise<RhythmStep>;
     /** Replace is intentional: production persists the complete ordered workflow on edit. */
-    replaceSteps(id: string, steps: Array<Pick<RhythmStep, 'title'> & Partial<Pick<RhythmStep, 'assigneeId'>>>): Promise<RhythmRhythm>;
+    replaceSteps(id: string, steps: RhythmStepDraft[]): Promise<RhythmRhythm>;
     addCollaborator(id: string, memberId: string): Promise<RhythmRhythm>;
     removeCollaborator(id: string, memberId: string): Promise<RhythmRhythm>;
 }
@@ -533,7 +544,7 @@ interface RhythmTaskOperationConfirmation {
 interface RhythmWorkspaceOperationConfirmation {
     operation: Exclude<RhythmWorkspaceCapability, 'facilities.manage' | 'facilities.reserve' | 'automations.write' | 'integrations.write' | 'dashboard.write' | 'tasks.write'>;
     entityId: string;
-    payload: Record<string, string | number | boolean | null>;
+    payload: Record<string, string | number | boolean | null | Array<Record<string, string | null>>>;
     generation: string;
 }
 /** The ten non-agent screens this package exposes — used only for host-owned, in-package

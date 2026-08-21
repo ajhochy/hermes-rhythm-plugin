@@ -375,7 +375,7 @@ def test_m5_instance_step_update_authorizes_and_reads_back_the_exact_step(api):
         if path == "/project-instances/steps/step-1" and method == "PATCH": return 200, {}, {"id": "step-1", "raw": "untrusted"}
         raise AssertionError((method, path))
     _connect(client, mod, transport)
-    request = {"operation": "projects.update-step", "entityId": "step-1", "payload": {"status": "done"}, "generation": "generation-1"}
+    request = {"operation": "projects.update-step", "entityId": "step-1", "payload": {"instanceId": "instance-1", "status": "done"}, "generation": "generation-1"}
     receipt = client.post("/api/plugins/rhythm/workspace-operations/confirmation", json=request).json()["confirmation"]
     response = client.post("/api/plugins/rhythm/workspace-operations", json={**request, "confirmation": receipt})
     assert response.status_code == 200, response.text
@@ -386,7 +386,7 @@ def test_m5_instance_step_update_authorizes_and_reads_back_the_exact_step(api):
 @pytest.mark.parametrize("operation,entity_id,payload,post_path,readback_path", [
     ("projects.create-template", "new-template", {"name": "Template"}, "/project-templates", "/project-templates/template-1"),
     ("projects.create-instance", "template-1", {"anchorDate": "2026-08-17"}, "/project-templates/template-1/generate", "/project-instances/instance-1"),
-    ("projects.create-step", "template-1", {"title": "Step", "offsetDays": 2}, "/project-templates/template-1/steps", "/project-templates/template-1/steps/step-1"),
+    ("projects.create-step", "template-1", {"templateId": "template-1", "title": "Step", "offsetDays": 2}, "/project-templates/template-1/steps", "/project-templates/template-1/steps/step-1"),
     ("projects.create-milestone", "instance-1", {"title": "Milestone"}, "/project-instances/instance-1/milestones", "/project-instances/instance-1/milestones/milestone-1"),
 ])
 def test_m5_project_creates_return_only_exact_canonical_entity_readbacks(api, operation, entity_id, payload, post_path, readback_path):

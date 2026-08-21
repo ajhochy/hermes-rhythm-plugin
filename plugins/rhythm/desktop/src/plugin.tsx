@@ -1,7 +1,7 @@
 /**
  * Read-only host integration for the accepted @ajhochy/rhythm-workspace-ui
  * artifact, built from accepted source revision
- * f59bfa6215a846a3ef62579b478088489770f77f (see vendor provenance).
+ * b3cd1719b441fd399252e0adbfecd66ef3e02250 (see vendor provenance).
  * The package remains the owner of Dashboard/Tasks JSX and styles; this file
  * owns only the Hermes transport, lifecycle and bounded chat handoff.
  */
@@ -170,11 +170,11 @@ function createGateway(rest: Rest, confirmations = new Map<string, ConfirmationR
       updateTemplate: (id: string, input: Record<string, unknown>) => workspaceOperation('projects.update-template', id, input),
       deleteTemplate: (id: string) => workspaceOperation('projects.delete-template', id, {}),
       addTemplateStep: (id: string, input: Record<string, unknown>) => workspaceOperation('projects.create-step', id, input),
-      updateTemplateStep: (templateId: string, stepId: string, input: Record<string, unknown>) => workspaceOperation('projects.update-template-step', stepId, { templateId, ...input }),
+      updateTemplateStep: (_templateId: string, stepId: string, input: Record<string, unknown>) => workspaceOperation('projects.update-template-step', stepId, input),
       deleteTemplateStep: (templateId: string, stepId: string) => workspaceOperation('projects.delete-step', stepId, { templateId }),
       // Instance deletion has no M5 semantic grant or server operation.
       delete: unavailable,
-      updateStep: (instanceId: string, stepId: string, input: Record<string, unknown>) => workspaceOperation('projects.update-step', stepId, { instanceId, ...input }),
+      updateStep: (_instanceId: string, stepId: string, input: Record<string, unknown>) => workspaceOperation('projects.update-step', stepId, input),
       addMilestone: (id: string, input: Record<string, unknown>) => workspaceOperation('projects.create-milestone', id, input),
       addCollaborator: unavailable, removeCollaborator: unavailable,
     },
@@ -210,7 +210,7 @@ function RhythmWorkspace({ rest }: { rest: Rest }) {
     viewport: 'expanded',
     // M5 grants are semantic and receipt-bound.  The renderer never receives a
     // bearer token, URL, workspace, or user identity.
-    currentUser: { displayName: 'Hermes', initials: 'H', collaborationCapability: 'read', capabilities: ['planner.schedule-task', 'planner.update-task', 'planner.update-project-step', 'planner.schedule-project-step', 'rhythms.create-rule', 'rhythms.update-rule', 'rhythms.delete-rule', 'rhythms.create-step', 'rhythms.update-step', 'projects.create-template', 'projects.update-template', 'projects.delete-template', 'projects.create-instance', 'projects.update-step', 'projects.update-template-step', 'projects.create-step', 'projects.delete-step', 'projects.create-milestone'] },
+    currentUser: { id: 'current-user', displayName: 'Hermes', initials: 'H', collaborationCapability: 'read', capabilities: ['planner.schedule-task', 'planner.update-task', 'planner.update-project-step', 'planner.schedule-project-step', 'rhythms.create-rule', 'rhythms.update-rule', 'rhythms.delete-rule', 'rhythms.create-step', 'rhythms.update-step', 'projects.create-template', 'projects.update-template', 'projects.delete-template', 'projects.create-instance', 'projects.update-step', 'projects.update-template-step', 'projects.create-step', 'projects.delete-step', 'projects.create-milestone'] },
     confirmTaskOperation: async (confirmation: RhythmTaskOperationConfirmation) => {
       const payload = await write<{ confirmation: string }>(rest, `/tasks/${confirmation.taskId}/confirmation`, { ...confirmation })
       confirmations.set(confirmationKey(confirmation), payload.confirmation)

@@ -219,9 +219,9 @@ def _m5_payload(operation: str, payload: dict[str, Any]) -> dict[str, Any]:
         "projects.update-template": ({"name": "short", "description": "text?", "anchorType": "anchor"}, set()),
         "projects.delete-template": ({}, set()),
         "projects.create-instance": ({"anchorDate": "date", "name": "short?"}, {"anchorDate"}),
-        "projects.update-step": ({"title": "short", "notes": "text", "dueDate": "date?", "scheduledDate": "date?", "status": "step_status", "assigneeId": "id?", "milestoneId": "id?", "instanceId": "id", "templateId": "id"}, set()),
+        "projects.update-step": ({"title": "short", "notes": "text", "dueDate": "date?", "scheduledDate": "date?", "status": "step_status", "assigneeId": "id?", "milestoneId": "id?", "instanceId": "id", "templateId": "id"}, {"instanceId"}),
         "projects.update-template-step": ({"templateId": "id", "title": "short", "offsetDays": "offset", "offsetDescription": "short?", "assigneeId": "id?"}, {"templateId"}),
-        "projects.create-step": ({"title": "short", "offsetDays": "offset", "offsetDescription": "short?", "assigneeId": "id?"}, {"title", "offsetDays"}),
+        "projects.create-step": ({"templateId": "id", "title": "short", "offsetDays": "offset", "offsetDescription": "short?", "assigneeId": "id?"}, {"templateId", "title", "offsetDays"}),
         "projects.delete-step": ({"templateId": "id"}, {"templateId"}),
         "projects.create-milestone": ({"title": "short"}, {"title"}),
     }
@@ -274,10 +274,11 @@ def _m5_payload(operation: str, payload: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(value, list) or not value or len(value) > 100: raise _invalid_request()
             out = []
             for row in value:
-                if not isinstance(row, dict) or set(row) - {"id", "title", "order", "assigneeId"}: raise _invalid_request()
-                if not isinstance(row.get("id"), str) or not _safe_id(row["id"]) or not isinstance(row.get("title"), str) or not row["title"].strip() or len(row["title"]) > 256 or type(row.get("order")) is not int or not 0 <= row["order"] < 100:
+                allowed_step_keys = {"title", "assigneeId"} if operation == "rhythms.create-rule" else {"id", "title", "order", "assigneeId"}
+                if not isinstance(row, dict) or set(row) - allowed_step_keys or not isinstance(row.get("title"), str) or not row["title"].strip() or len(row["title"]) > 256:
                     raise _invalid_request()
-                item = {"id": row["id"], "title": row["title"].strip(), "order": row["order"]}
+                if operation != "rhythms.create-rule" and (not isinstance(row.get("id"), str) or not _safe_id(row["id"]) or type(row.get("order")) is not int or not 0 <= row["order"] < 100): raise _invalid_request()
+                item = {"title": row["title"].strip()} if operation == "rhythms.create-rule" else {"id": row["id"], "title": row["title"].strip(), "order": row["order"]}
                 if "assigneeId" in row: item["assigneeId"] = valid("id?", row["assigneeId"])
                 out.append(item)
             return out
@@ -705,11 +706,12 @@ def _rhythm_step(raw: Any) -> dict[str, Any]:
     return result
 
 
-def _rhythm_rule(raw: Any) -> dict[str, Any]:
+def _rhythm_rule(raw: Any, actor_id: str | None = None) -> dict[str, Any]:
     if not isinstance(raw, dict): raise RhythmProtocolError("schema_drift")
     frequency = raw.get("frequency", "weekly")
     if frequency not in {"weekly", "monthly", "annual"}: frequency = "annual" if frequency == "yearly" else (_ for _ in ()).throw(RhythmProtocolError("schema_drift"))
-    result = {"id": _m5_id(raw), "title": _m5_text(raw.get("title"), 512, "Untitled"), "frequency": frequency, "dayOfWeek": raw.get("dayOfWeek", 0), "dayOfMonth": raw.get("dayOfMonth", 1), "month": raw.get("month", 1), "sequential": raw.get("sequential", False), "enabled": raw.get("enabled", True), "ownerId": _m5_text(raw.get("ownerId"), 128, "unknown"), "ownerName": _m5_text(raw.get("ownerName"), 256, "Unknown"), "collaborators": _m5_list(raw, "collaborators", _m5_member, 32), "steps": _m5_list(raw, "steps", _rhythm_step, 100), "generatedCount": raw.get("generatedCount", 0), "completedCount": raw.get("completedCount", 0), "remainingCount": raw.get("remainingCount", 0), "waitingOn": raw.get("waitingOn", None), "nextDueDate": raw.get("nextDueDate", None), "completionRatio": raw.get("completionRatio", 0), "createdAt": _m5_text(raw.get("createdAt"), 64, "1970-01-01")}
+    owner_id = _m5_text(raw.get("ownerId"), 128, "unknown")
+    result = {"id": _m5_id(raw), "title": _m5_text(raw.get("title"), 512, "Untitled"), "frequency": frequency, "dayOfWeek": raw.get("dayOfWeek", 0), "dayOfMonth": raw.get("dayOfMonth", 1), "month": raw.get("month", 1), "sequential": raw.get("sequential", False), "enabled": raw.get("enabled", True), "ownerId": "current-user" if actor_id and owner_id == actor_id else owner_id, "ownerName": _m5_text(raw.get("ownerName"), 256, "Unknown"), "collaborators": _m5_list(raw, "collaborators", _m5_member, 32), "steps": _m5_list(raw, "steps", _rhythm_step, 100), "generatedCount": raw.get("generatedCount", 0), "completedCount": raw.get("completedCount", 0), "remainingCount": raw.get("remainingCount", 0), "waitingOn": raw.get("waitingOn", None), "nextDueDate": raw.get("nextDueDate", None), "completionRatio": raw.get("completionRatio", 0), "createdAt": _m5_text(raw.get("createdAt"), 64, "1970-01-01")}
     if not all(type(result[key]) is int and result[key] >= 0 for key in ("dayOfWeek", "dayOfMonth", "month", "generatedCount", "completedCount", "remainingCount")) or type(result["completionRatio"]) not in {int, float} or not all(type(result[key]) is bool for key in ("sequential", "enabled")) or result["waitingOn"] is not None and not isinstance(result["waitingOn"], str) or result["nextDueDate"] is not None and not isinstance(result["nextDueDate"], str): raise RhythmProtocolError("schema_drift")
     return result
 
@@ -744,11 +746,12 @@ def _milestone(raw: Any) -> dict[str, Any]:
     return {"id": _m5_id(raw), "title": _m5_text(raw.get("title"), 512, "Untitled"), "sortOrder": sort_order}
 
 
-def _instance(raw: Any) -> dict[str, Any]:
+def _instance(raw: Any, actor_id: str | None = None) -> dict[str, Any]:
     if not isinstance(raw, dict): raise RhythmProtocolError("schema_drift")
     status = raw.get("status", "planning")
     if status not in {"planning", "active", "on_hold", "complete"}: raise RhythmProtocolError("schema_drift")
-    return {"id": _m5_id(raw), "templateId": _m5_text(raw.get("templateId"), 128, "unknown"), "name": _m5_text(raw.get("name"), 512, "Untitled"), "anchorDate": _m5_text(raw.get("anchorDate"), 32, "1970-01-01"), "status": status, "ownerId": _m5_text(raw.get("ownerId"), 128, "unknown"), "collaborators": _m5_list(raw, "collaborators", _m5_member, 32), "milestones": _m5_list(raw, "milestones", _milestone, 100), "steps": _m5_list(raw, "steps", _project_step, 500)}
+    owner_id = _m5_text(raw.get("ownerId"), 128, "unknown")
+    return {"id": _m5_id(raw), "templateId": _m5_text(raw.get("templateId"), 128, "unknown"), "name": _m5_text(raw.get("name"), 512, "Untitled"), "anchorDate": _m5_text(raw.get("anchorDate"), 32, "1970-01-01"), "status": status, "ownerId": "current-user" if actor_id and owner_id == actor_id else owner_id, "collaborators": _m5_list(raw, "collaborators", _m5_member, 32), "milestones": _m5_list(raw, "milestones", _milestone, 100), "steps": _m5_list(raw, "steps", _project_step, 500)}
 
 
 def _m5_operation_kind(operation: str) -> str:
@@ -760,11 +763,15 @@ def _m5_operation_kind(operation: str) -> str:
     return "template"
 
 
-def _m5_public(kind: str, value: Any) -> dict[str, Any]:
+def _m5_public(kind: str, value: Any, actor_id: str | None = None) -> dict[str, Any]:
     if kind == "planner": return _planner_week_public(value)
     if not isinstance(value, dict): raise RhythmProtocolError("schema_drift")
-    projectors = {"rules": _rhythm_rule, "templates": _template, "instances": _instance, "rule": _rhythm_rule, "template": _template, "instance": _instance, "project_step": _project_step, "template_step": _template_step, "milestone": _milestone}
-    if kind in {"rules", "templates", "instances"}: return {"items": _m5_list(value, "items", projectors[kind], 500)}
+    projectors = {"templates": _template, "template": _template, "project_step": _project_step, "template_step": _template_step, "milestone": _milestone}
+    if kind == "templates": return {"items": _m5_list(value, "items", _template, 500)}
+    if kind == "rules": return {"items": _m5_list(value, "items", lambda row: _rhythm_rule(row, actor_id), 500)}
+    if kind == "instances": return {"items": _m5_list(value, "items", lambda row: _instance(row, actor_id), 500)}
+    if kind == "rule": return _rhythm_rule(value, actor_id)
+    if kind == "instance": return _instance(value, actor_id)
     return projectors[kind](value)
 
 
@@ -852,7 +859,7 @@ async def workspace_operation(incoming_request: Request):
         raw = client.call("GET", _m5_readback_path(payload.operation, readback_id, payload.payload, parent_id=payload.entityId))
         if not _m5_desired(raw, readback_id, body): raise RhythmRemoteError("conflict", 409)
         kind = _m5_operation_kind(payload.operation)
-        return _m5_public(kind, raw)
+        return _m5_public(kind, raw, identity["id"])
     except Exception as exc:
         raise _error(exc) from None
 
@@ -870,14 +877,14 @@ def planner_week(week_start: str, incoming_request: Request):
 def rhythm_rules(incoming_request: Request):
     if incoming_request.method != "GET": raise HTTPException(405, detail={"error": "read_only", "recoverable": True})
     try:
-        client, _, _ = _connected_client(); return _m5_public("rules", client.call("GET", "/recurring-rules"))
+        client, identity, _ = _connected_client(); return _m5_public("rules", client.call("GET", "/recurring-rules"), identity["id"])
     except Exception as exc: raise _error(exc) from None
 
 
 @router.get("/rhythm-rules/{rule_id}")
 def rhythm_rule(rule_id: str):
     try:
-        client, _, _ = _connected_client(); detail = _m5_public("rule", client.call("GET", f"/recurring-rules/{rule_id}"))
+        client, identity, _ = _connected_client(); detail = _m5_public("rule", client.call("GET", f"/recurring-rules/{rule_id}"), identity["id"])
         if detail.get("id") != rule_id: raise RhythmProtocolError("schema_drift")
         return detail
     except Exception as exc: raise _error(exc) from None
@@ -893,14 +900,14 @@ def project_templates():
 @router.get("/project-instances")
 def project_instances():
     try:
-        client, _, _ = _connected_client(); return _m5_public("instances", client.call("GET", "/project-instances"))
+        client, identity, _ = _connected_client(); return _m5_public("instances", client.call("GET", "/project-instances"), identity["id"])
     except Exception as exc: raise _error(exc) from None
 
 
 @router.get("/project-instances/{instance_id}")
 def project_instance(instance_id: str):
     try:
-        client, _, _ = _connected_client(); detail = _m5_public("instance", client.call("GET", f"/project-instances/{instance_id}"))
+        client, identity, _ = _connected_client(); detail = _m5_public("instance", client.call("GET", f"/project-instances/{instance_id}"), identity["id"])
         if detail.get("id") != instance_id: raise RhythmProtocolError("schema_drift")
         return detail
     except Exception as exc: raise _error(exc) from None
