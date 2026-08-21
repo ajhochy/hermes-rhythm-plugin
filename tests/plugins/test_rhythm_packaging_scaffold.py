@@ -20,6 +20,13 @@ from plugins.rhythm.packaging.validate import (
     validate_macos_bundle,
     validate_package_tree,
 )
+from plugins.rhythm.packaging.build import build_feature_pack, build_macos_fixture
+from plugins.rhythm.packaging.lifecycle import (
+    doctor_feature_pack,
+    install_feature_pack,
+    rollback_feature_pack,
+    uninstall_feature_pack,
+)
 
 
 REPO_ROOT = Path(__file__).parents[2]
@@ -53,16 +60,95 @@ def test_manifest_is_deterministic_and_declares_the_unified_opt_in_tree():
 
     assert manifest["install"]["root"] == "<HERMES_HOME>/plugins/rhythm"
     assert manifest["install"]["opt_in"] is True
-    assert manifest["install"]["operations"] == []
+    assert manifest["status"] == "final-automated-gates"
+    assert manifest["install"]["operations"] == ["install", "upgrade", "force-reinstall", "rollback", "uninstall"]
     assert manifest["desktop"]["format"] == "esm"
     assert manifest["desktop"]["artifact_count"] == 1
     assert manifest["content"]["package_data"] == [
         "contracts/*.json",
         "dashboard/manifest.json",
         "dashboard/dist/index.js",
+        "packaging/package-manifest.json",
+        "packaging/RELEASE-GATE.md",
+        "plugin.yaml",
         "skills/rhythm/SKILL.md",
     ]
     assert manifest["release_gate"]["status"] == "pending"
+    gate = (REPO_ROOT / "plugins/rhythm/packaging/RELEASE-GATE.md").read_text(encoding="utf-8")
+    assert "remains pending" in gate and "does **not** assert" in gate
+
+
+def test_final_builder_is_repeatable_closed_and_has_one_real_desktop_esm_artifact(tmp_path):
+    """Regression: an integrated build silently relies on source-tree leftovers."""
+    manifest = _manifest()
+    first = build_feature_pack(REPO_ROOT, tmp_path / "first")
+    second = build_feature_pack(REPO_ROOT, tmp_path / "second")
+
+    validate_package_tree(first, manifest)
+    validate_package_tree(second, manifest)
+    assert {
+        path.relative_to(first).as_posix(): path.read_bytes()
+        for path in first.rglob("*") if path.is_file()
+    } == {
+        path.relative_to(second).as_posix(): path.read_bytes()
+        for path in second.rglob("*") if path.is_file()
+    }
+    bundle = (first / manifest["desktop"]["entry"]).read_text(encoding="utf-8")
+    assert 'from"react"' in bundle
+    assert 'from"lucide-react"' not in bundle
+    assert "from'lucide-react'" not in bundle
+
+
+def test_temp_home_lifecycle_is_opt_in_reversible_and_confined_to_rhythm_tree(tmp_path):
+    """Regression: a feature-pack install enables itself or mutates unrelated home state."""
+    package = build_feature_pack(REPO_ROOT, tmp_path / "package")
+    home = tmp_path / "home"
+
+    first = install_feature_pack(package, home)
+    target = home / "plugins" / "rhythm"
+    assert first["status"] == "installed" and first["enabled"] is False
+    assert {path.relative_to(home).parts[0] for path in home.rglob("*")} == {"plugins"}
+    assert target.is_dir()
+
+    same = install_feature_pack(package, home)
+    assert same["status"] == "unchanged"
+    forced = install_feature_pack(package, home, force_reinstall=True)
+    assert forced["status"] == "reinstalled"
+    upgraded = install_feature_pack(package, home, upgrade=True)
+    assert upgraded["restart_required"] is True and upgraded["restart_signal"] == "hermes gateway restart"
+    assert rollback_feature_pack(home)["status"] == "rolled_back"
+    assert uninstall_feature_pack(home)["status"] == "uninstalled"
+    assert not target.exists()
+
+
+def test_doctor_reports_exact_tools_and_redacts_bounded_connection_errors(tmp_path, monkeypatch):
+    """Regression: doctor leaks an upstream token or claims a partial native toolset."""
+    package = build_feature_pack(REPO_ROOT, tmp_path / "package")
+    home = tmp_path / "home"
+    install_feature_pack(package, home)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    report = doctor_feature_pack(home, connection_probe=lambda: RuntimeError("Bearer " + "x" * 400))
+    assert report["compatible"] is True
+    assert report["tools"] == ["rhythm_complete_task", "rhythm_get_dashboard", "rhythm_list_tasks"]
+    assert report["connection"]["status"] == "unavailable"
+    assert "x" * 20 not in report["connection"]["error"]
+    assert len(report["connection"]["error"]) <= 160
+
+
+def test_macos_fixture_is_built_from_the_actual_feature_pack(tmp_path):
+    """Regression: macOS verification exercises a hand-written archive rather than the build."""
+    package = build_feature_pack(REPO_ROOT, tmp_path / "package")
+    app, list_asar, read_asar = build_macos_fixture(package, tmp_path / "fixture")
+    validate_macos_bundle(app, _manifest(), list_asar=list_asar, read_asar=read_asar)
+
+
+def test_nix_directory_plugin_convention_accepts_the_closed_feature_pack():
+    """Regression: Nix packaging drifts from Hermes's directory-plugin contract."""
+    nix_module = (REPO_ROOT / "nix/moduleCommon.nix").read_text(encoding="utf-8")
+    assert _manifest()["platforms"]["nix"] == "directory-plugin via services.hermes.extraPlugins"
+    assert "extraPlugins = mkOption" in nix_module
+    assert "plugin.yaml and __init__.py" in nix_module
 
 
 def test_package_gate_accepts_one_self_contained_esm_artifact(tmp_path):

@@ -1,6 +1,5 @@
-import { createContext, useContext, useState, useRef, useEffect, useLayoutEffect, useMemo, useId } from 'react';
+import { createContext, forwardRef, createElement, useContext, useState, useRef, useEffect, useLayoutEffect, useMemo, useId } from 'react';
 import { jsx, jsxs, Fragment } from 'react/jsx-runtime';
-import * as Icons from 'lucide-react';
 
 // src/context.tsx
 var DomainGatewayContext = createContext(null);
@@ -202,38 +201,335 @@ function ArtifactsScreen({ artifactsGateway, artifactHostPort }) {
     }
   );
 }
-var iconSet = {
-  activity: Icons.Activity,
-  archive: Icons.Archive,
-  attach: Icons.Paperclip,
-  bell: Icons.Bell,
-  book: Icons.BookOpen,
-  calendar: Icons.Calendar,
-  check: Icons.Check,
-  chevronDown: Icons.ChevronDown,
-  chevronRight: Icons.ChevronRight,
-  close: Icons.X,
-  copy: Icons.Copy,
-  delete: Icons.Trash2,
-  download: Icons.Download,
-  filter: Icons.ListFilter,
-  history: Icons.History,
-  link: Icons.Link,
-  mail: Icons.Mail,
-  menu: Icons.Menu,
-  more: Icons.Ellipsis,
-  plus: Icons.Plus,
-  refresh: Icons.RefreshCw,
-  rename: Icons.Pencil,
-  search: Icons.Search,
-  settings: Icons.Settings2,
-  sliders: Icons.SlidersHorizontal,
-  sparkles: Icons.Sparkles,
-  upload: Icons.Upload,
-  users: Icons.Users,
-  warning: Icons.TriangleAlert
+
+// node_modules/lucide-react/dist/esm/shared/src/utils.js
+var toKebabCase = (string) => string.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
+var mergeClasses = (...classes) => classes.filter((className, index, array) => {
+  return Boolean(className) && className.trim() !== "" && array.indexOf(className) === index;
+}).join(" ").trim();
+
+// node_modules/lucide-react/dist/esm/defaultAttributes.js
+var defaultAttributes = {
+  xmlns: "http://www.w3.org/2000/svg",
+  width: 24,
+  height: 24,
+  viewBox: "0 0 24 24",
+  fill: "none",
+  stroke: "currentColor",
+  strokeWidth: 2,
+  strokeLinecap: "round",
+  strokeLinejoin: "round"
 };
-function Icon({ name, size = 17, ...props }) {
+
+// node_modules/lucide-react/dist/esm/Icon.js
+var Icon = forwardRef(
+  ({
+    color = "currentColor",
+    size = 24,
+    strokeWidth = 2,
+    absoluteStrokeWidth,
+    className = "",
+    children,
+    iconNode,
+    ...rest
+  }, ref) => {
+    return createElement(
+      "svg",
+      {
+        ref,
+        ...defaultAttributes,
+        width: size,
+        height: size,
+        stroke: color,
+        strokeWidth: absoluteStrokeWidth ? Number(strokeWidth) * 24 / Number(size) : strokeWidth,
+        className: mergeClasses("lucide", className),
+        ...rest
+      },
+      [
+        ...iconNode.map(([tag, attrs]) => createElement(tag, attrs)),
+        ...Array.isArray(children) ? children : [children]
+      ]
+    );
+  }
+);
+
+// node_modules/lucide-react/dist/esm/createLucideIcon.js
+var createLucideIcon = (iconName, iconNode) => {
+  const Component = forwardRef(
+    ({ className, ...props }, ref) => createElement(Icon, {
+      ref,
+      iconNode,
+      className: mergeClasses(`lucide-${toKebabCase(iconName)}`, className),
+      ...props
+    })
+  );
+  Component.displayName = `${iconName}`;
+  return Component;
+};
+
+// node_modules/lucide-react/dist/esm/icons/activity.js
+var Activity = createLucideIcon("Activity", [
+  [
+    "path",
+    {
+      d: "M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2",
+      key: "169zse"
+    }
+  ]
+]);
+
+// node_modules/lucide-react/dist/esm/icons/archive.js
+var Archive = createLucideIcon("Archive", [
+  ["rect", { width: "20", height: "5", x: "2", y: "3", rx: "1", key: "1wp1u1" }],
+  ["path", { d: "M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8", key: "1s80jp" }],
+  ["path", { d: "M10 12h4", key: "a56b0p" }]
+]);
+
+// node_modules/lucide-react/dist/esm/icons/bell.js
+var Bell = createLucideIcon("Bell", [
+  ["path", { d: "M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9", key: "1qo2s2" }],
+  ["path", { d: "M10.3 21a1.94 1.94 0 0 0 3.4 0", key: "qgo35s" }]
+]);
+
+// node_modules/lucide-react/dist/esm/icons/book-open.js
+var BookOpen = createLucideIcon("BookOpen", [
+  ["path", { d: "M12 7v14", key: "1akyts" }],
+  [
+    "path",
+    {
+      d: "M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z",
+      key: "ruj8y"
+    }
+  ]
+]);
+
+// node_modules/lucide-react/dist/esm/icons/calendar.js
+var Calendar = createLucideIcon("Calendar", [
+  ["path", { d: "M8 2v4", key: "1cmpym" }],
+  ["path", { d: "M16 2v4", key: "4m81vk" }],
+  ["rect", { width: "18", height: "18", x: "3", y: "4", rx: "2", key: "1hopcy" }],
+  ["path", { d: "M3 10h18", key: "8toen8" }]
+]);
+
+// node_modules/lucide-react/dist/esm/icons/check.js
+var Check = createLucideIcon("Check", [["path", { d: "M20 6 9 17l-5-5", key: "1gmf2c" }]]);
+
+// node_modules/lucide-react/dist/esm/icons/chevron-down.js
+var ChevronDown = createLucideIcon("ChevronDown", [
+  ["path", { d: "m6 9 6 6 6-6", key: "qrunsl" }]
+]);
+
+// node_modules/lucide-react/dist/esm/icons/chevron-right.js
+var ChevronRight = createLucideIcon("ChevronRight", [
+  ["path", { d: "m9 18 6-6-6-6", key: "mthhwq" }]
+]);
+
+// node_modules/lucide-react/dist/esm/icons/copy.js
+var Copy = createLucideIcon("Copy", [
+  ["rect", { width: "14", height: "14", x: "8", y: "8", rx: "2", ry: "2", key: "17jyea" }],
+  ["path", { d: "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2", key: "zix9uf" }]
+]);
+
+// node_modules/lucide-react/dist/esm/icons/download.js
+var Download = createLucideIcon("Download", [
+  ["path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", key: "ih7n3h" }],
+  ["polyline", { points: "7 10 12 15 17 10", key: "2ggqvy" }],
+  ["line", { x1: "12", x2: "12", y1: "15", y2: "3", key: "1vk2je" }]
+]);
+
+// node_modules/lucide-react/dist/esm/icons/ellipsis.js
+var Ellipsis = createLucideIcon("Ellipsis", [
+  ["circle", { cx: "12", cy: "12", r: "1", key: "41hilf" }],
+  ["circle", { cx: "19", cy: "12", r: "1", key: "1wjl8i" }],
+  ["circle", { cx: "5", cy: "12", r: "1", key: "1pcz8c" }]
+]);
+
+// node_modules/lucide-react/dist/esm/icons/history.js
+var History = createLucideIcon("History", [
+  ["path", { d: "M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8", key: "1357e3" }],
+  ["path", { d: "M3 3v5h5", key: "1xhq8a" }],
+  ["path", { d: "M12 7v5l4 2", key: "1fdv2h" }]
+]);
+
+// node_modules/lucide-react/dist/esm/icons/link.js
+var Link = createLucideIcon("Link", [
+  ["path", { d: "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71", key: "1cjeqo" }],
+  ["path", { d: "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71", key: "19qd67" }]
+]);
+
+// node_modules/lucide-react/dist/esm/icons/list-filter.js
+var ListFilter = createLucideIcon("ListFilter", [
+  ["path", { d: "M3 6h18", key: "d0wm0j" }],
+  ["path", { d: "M7 12h10", key: "b7w52i" }],
+  ["path", { d: "M10 18h4", key: "1ulq68" }]
+]);
+
+// node_modules/lucide-react/dist/esm/icons/mail.js
+var Mail = createLucideIcon("Mail", [
+  ["rect", { width: "20", height: "16", x: "2", y: "4", rx: "2", key: "18n3k1" }],
+  ["path", { d: "m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7", key: "1ocrg3" }]
+]);
+
+// node_modules/lucide-react/dist/esm/icons/menu.js
+var Menu = createLucideIcon("Menu", [
+  ["line", { x1: "4", x2: "20", y1: "12", y2: "12", key: "1e0a9i" }],
+  ["line", { x1: "4", x2: "20", y1: "6", y2: "6", key: "1owob3" }],
+  ["line", { x1: "4", x2: "20", y1: "18", y2: "18", key: "yk5zj1" }]
+]);
+
+// node_modules/lucide-react/dist/esm/icons/paperclip.js
+var Paperclip = createLucideIcon("Paperclip", [
+  [
+    "path",
+    {
+      d: "m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48",
+      key: "1u3ebp"
+    }
+  ]
+]);
+
+// node_modules/lucide-react/dist/esm/icons/pencil.js
+var Pencil = createLucideIcon("Pencil", [
+  [
+    "path",
+    {
+      d: "M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z",
+      key: "1a8usu"
+    }
+  ],
+  ["path", { d: "m15 5 4 4", key: "1mk7zo" }]
+]);
+
+// node_modules/lucide-react/dist/esm/icons/plus.js
+var Plus = createLucideIcon("Plus", [
+  ["path", { d: "M5 12h14", key: "1ays0h" }],
+  ["path", { d: "M12 5v14", key: "s699le" }]
+]);
+
+// node_modules/lucide-react/dist/esm/icons/refresh-cw.js
+var RefreshCw = createLucideIcon("RefreshCw", [
+  ["path", { d: "M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8", key: "v9h5vc" }],
+  ["path", { d: "M21 3v5h-5", key: "1q7to0" }],
+  ["path", { d: "M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16", key: "3uifl3" }],
+  ["path", { d: "M8 16H3v5", key: "1cv678" }]
+]);
+
+// node_modules/lucide-react/dist/esm/icons/search.js
+var Search = createLucideIcon("Search", [
+  ["circle", { cx: "11", cy: "11", r: "8", key: "4ej97u" }],
+  ["path", { d: "m21 21-4.3-4.3", key: "1qie3q" }]
+]);
+
+// node_modules/lucide-react/dist/esm/icons/settings-2.js
+var Settings2 = createLucideIcon("Settings2", [
+  ["path", { d: "M20 7h-9", key: "3s1dr2" }],
+  ["path", { d: "M14 17H5", key: "gfn3mx" }],
+  ["circle", { cx: "17", cy: "17", r: "3", key: "18b49y" }],
+  ["circle", { cx: "7", cy: "7", r: "3", key: "dfmy0x" }]
+]);
+
+// node_modules/lucide-react/dist/esm/icons/sliders-horizontal.js
+var SlidersHorizontal = createLucideIcon("SlidersHorizontal", [
+  ["line", { x1: "21", x2: "14", y1: "4", y2: "4", key: "obuewd" }],
+  ["line", { x1: "10", x2: "3", y1: "4", y2: "4", key: "1q6298" }],
+  ["line", { x1: "21", x2: "12", y1: "12", y2: "12", key: "1iu8h1" }],
+  ["line", { x1: "8", x2: "3", y1: "12", y2: "12", key: "ntss68" }],
+  ["line", { x1: "21", x2: "16", y1: "20", y2: "20", key: "14d8ph" }],
+  ["line", { x1: "12", x2: "3", y1: "20", y2: "20", key: "m0wm8r" }],
+  ["line", { x1: "14", x2: "14", y1: "2", y2: "6", key: "14e1ph" }],
+  ["line", { x1: "8", x2: "8", y1: "10", y2: "14", key: "1i6ji0" }],
+  ["line", { x1: "16", x2: "16", y1: "18", y2: "22", key: "1lctlv" }]
+]);
+
+// node_modules/lucide-react/dist/esm/icons/sparkles.js
+var Sparkles = createLucideIcon("Sparkles", [
+  [
+    "path",
+    {
+      d: "M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z",
+      key: "4pj2yx"
+    }
+  ],
+  ["path", { d: "M20 3v4", key: "1olli1" }],
+  ["path", { d: "M22 5h-4", key: "1gvqau" }],
+  ["path", { d: "M4 17v2", key: "vumght" }],
+  ["path", { d: "M5 18H3", key: "zchphs" }]
+]);
+
+// node_modules/lucide-react/dist/esm/icons/trash-2.js
+var Trash2 = createLucideIcon("Trash2", [
+  ["path", { d: "M3 6h18", key: "d0wm0j" }],
+  ["path", { d: "M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6", key: "4alrt4" }],
+  ["path", { d: "M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2", key: "v07s0e" }],
+  ["line", { x1: "10", x2: "10", y1: "11", y2: "17", key: "1uufr5" }],
+  ["line", { x1: "14", x2: "14", y1: "11", y2: "17", key: "xtxkd" }]
+]);
+
+// node_modules/lucide-react/dist/esm/icons/triangle-alert.js
+var TriangleAlert = createLucideIcon("TriangleAlert", [
+  [
+    "path",
+    {
+      d: "m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3",
+      key: "wmoenq"
+    }
+  ],
+  ["path", { d: "M12 9v4", key: "juzpu7" }],
+  ["path", { d: "M12 17h.01", key: "p32p05" }]
+]);
+
+// node_modules/lucide-react/dist/esm/icons/upload.js
+var Upload = createLucideIcon("Upload", [
+  ["path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", key: "ih7n3h" }],
+  ["polyline", { points: "17 8 12 3 7 8", key: "t8dd8p" }],
+  ["line", { x1: "12", x2: "12", y1: "3", y2: "15", key: "widbto" }]
+]);
+
+// node_modules/lucide-react/dist/esm/icons/users.js
+var Users = createLucideIcon("Users", [
+  ["path", { d: "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2", key: "1yyitq" }],
+  ["circle", { cx: "9", cy: "7", r: "4", key: "nufk8" }],
+  ["path", { d: "M22 21v-2a4 4 0 0 0-3-3.87", key: "kshegd" }],
+  ["path", { d: "M16 3.13a4 4 0 0 1 0 7.75", key: "1da9ce" }]
+]);
+
+// node_modules/lucide-react/dist/esm/icons/x.js
+var X = createLucideIcon("X", [
+  ["path", { d: "M18 6 6 18", key: "1bl5f8" }],
+  ["path", { d: "m6 6 12 12", key: "d8bk6v" }]
+]);
+var iconSet = {
+  activity: Activity,
+  archive: Archive,
+  attach: Paperclip,
+  bell: Bell,
+  book: BookOpen,
+  calendar: Calendar,
+  check: Check,
+  chevronDown: ChevronDown,
+  chevronRight: ChevronRight,
+  close: X,
+  copy: Copy,
+  delete: Trash2,
+  download: Download,
+  filter: ListFilter,
+  history: History,
+  link: Link,
+  mail: Mail,
+  menu: Menu,
+  more: Ellipsis,
+  plus: Plus,
+  refresh: RefreshCw,
+  rename: Pencil,
+  search: Search,
+  settings: Settings2,
+  sliders: SlidersHorizontal,
+  sparkles: Sparkles,
+  upload: Upload,
+  users: Users,
+  warning: TriangleAlert
+};
+function Icon2({ name, size = 17, ...props }) {
   const Component = iconSet[name];
   return /* @__PURE__ */ jsx(Component, { "aria-hidden": "true", size, strokeWidth: 1.8, ...props });
 }
@@ -315,7 +611,7 @@ function FocusDialog({
         /* @__PURE__ */ jsx("h2", { id: `${testId}-title`, children: title }),
         description && /* @__PURE__ */ jsx("p", { id: `${testId}-description`, children: description })
       ] }),
-      /* @__PURE__ */ jsx("button", { className: "icon-button", type: "button", onClick: requestClose, "aria-label": `Close ${title}`, "data-testid": `${testId}-close`, children: /* @__PURE__ */ jsx(Icon, { name: "close" }) })
+      /* @__PURE__ */ jsx("button", { className: "icon-button", type: "button", onClick: requestClose, "aria-label": `Close ${title}`, "data-testid": `${testId}-close`, children: /* @__PURE__ */ jsx(Icon2, { name: "close" }) })
     ] }),
     /* @__PURE__ */ jsx("div", { className: "dialog-body", children })
   ] }) });
@@ -390,7 +686,7 @@ function StatePanel({ state, onRetry, onCreate }) {
     /* @__PURE__ */ jsx("h2", { children: "No automations yet" }),
     /* @__PURE__ */ jsx("p", { children: "Turn a repeated handoff into a dependable Rhythm rule." }),
     /* @__PURE__ */ jsxs("button", { className: "primary-button", type: "button", onClick: onCreate, "data-testid": "automations-empty-create", children: [
-      /* @__PURE__ */ jsx(Icon, { name: "plus", size: 15 }),
+      /* @__PURE__ */ jsx(Icon2, { name: "plus", size: 15 }),
       "Create automation"
     ] })
   ] });
@@ -467,7 +763,7 @@ function BuilderDialog({ open, editing, catalog, canMutate, onClose, onSubmit })
       /* @__PURE__ */ jsxs("header", { children: [
         /* @__PURE__ */ jsx("h3", { id: "automation-conditions-heading", children: "Conditions" }),
         /* @__PURE__ */ jsxs("button", { className: "secondary-button", type: "button", onClick: addCondition, "data-testid": "automation-add-condition", children: [
-          /* @__PURE__ */ jsx(Icon, { name: "plus", size: 14 }),
+          /* @__PURE__ */ jsx(Icon2, { name: "plus", size: 14 }),
           "Add condition"
         ] })
       ] }),
@@ -489,7 +785,7 @@ function BuilderDialog({ open, editing, catalog, canMutate, onClose, onSubmit })
           "Value",
           /* @__PURE__ */ jsx("input", { value: condition.value, onChange: (event) => setCondition(index, { value: event.target.value }), "data-testid": `automation-condition-value-${index}` })
         ] }),
-        /* @__PURE__ */ jsx("button", { className: "icon-button", type: "button", "aria-label": `Remove condition ${index + 1}`, onClick: () => removeCondition(index), "data-testid": `automation-condition-remove-${index}`, children: /* @__PURE__ */ jsx(Icon, { name: "delete", size: 15 }) })
+        /* @__PURE__ */ jsx("button", { className: "icon-button", type: "button", "aria-label": `Remove condition ${index + 1}`, onClick: () => removeCondition(index), "data-testid": `automation-condition-remove-${index}`, children: /* @__PURE__ */ jsx(Icon2, { name: "delete", size: 15 }) })
       ] }, index)) })
     ] }),
     /* @__PURE__ */ jsxs("section", { className: "builder-section", "aria-labelledby": "automation-action-heading", children: [
@@ -556,10 +852,10 @@ function AutomationRuleRow({ rule, onSelect, onToggle, onPreview, onEdit, onDele
         /* @__PURE__ */ jsx("input", { type: "checkbox", disabled: !canWrite, checked: rule.enabled, "aria-labelledby": labelId, onChange: (event) => onToggle(event.target.checked), "data-testid": `automation-toggle-${rule.id}` })
       ] }),
       /* @__PURE__ */ jsx("button", { className: "secondary-button", type: "button", disabled: !canWrite, onClick: onEdit, "data-testid": `automation-edit-${rule.id}`, children: "Edit" }),
-      /* @__PURE__ */ jsx("button", { className: "icon-button danger-control", type: "button", disabled: !canMutate, "aria-label": `Delete ${rule.name}`, onClick: onDelete, "data-testid": `automation-delete-${rule.id}`, children: /* @__PURE__ */ jsx(Icon, { name: "delete", size: 15 }) })
+      /* @__PURE__ */ jsx("button", { className: "icon-button danger-control", type: "button", disabled: !canMutate, "aria-label": `Delete ${rule.name}`, onClick: onDelete, "data-testid": `automation-delete-${rule.id}`, children: /* @__PURE__ */ jsx(Icon2, { name: "delete", size: 15 }) })
     ] }),
     /* @__PURE__ */ jsxs("button", { className: "rule-inspect", type: "button", onClick: onPreview, "data-testid": `automation-preview-${rule.id}`, children: [
-      /* @__PURE__ */ jsx(Icon, { name: "search", size: 14 }),
+      /* @__PURE__ */ jsx(Icon2, { name: "search", size: 14 }),
       "Preview history"
     ] })
   ] });
@@ -739,7 +1035,7 @@ function AutomationsScreen() {
             ] })
           ] }),
           /* @__PURE__ */ jsxs("button", { className: "primary-button", type: "button", onClick: () => openBuilder(), disabled: mutationPending || !canMutate, "data-testid": "automations-new", children: [
-            /* @__PURE__ */ jsx(Icon, { name: "plus", size: 15 }),
+            /* @__PURE__ */ jsx(Icon2, { name: "plus", size: 15 }),
             "New automation"
           ] })
         ] }),
@@ -821,7 +1117,7 @@ function AutomationsScreen() {
     }, title: previewRule?.name ?? "Automation preview", description: "Historical rule metadata. Preview does not execute this automation.", testId: "automation-preview-dialog", wide: true, children: previewRule && /* @__PURE__ */ jsxs("div", { className: "automation-preview", children: [
       /* @__PURE__ */ jsxs("div", { className: "preview-path", children: [
         /* @__PURE__ */ jsx("span", { children: sourceLabels[previewRule.source] }),
-        /* @__PURE__ */ jsx(Icon, { name: "chevronRight", size: 15 }),
+        /* @__PURE__ */ jsx(Icon2, { name: "chevronRight", size: 15 }),
         /* @__PURE__ */ jsx("strong", { children: previewRule.actionLabel })
       ] }),
       /* @__PURE__ */ jsx("p", { className: "preview-summary", "data-testid": "automation-preview-summary", children: fetchedPreview?.id === previewRule.id ? fetchedPreview.summary : previewRule.previewSummary }),
@@ -868,7 +1164,7 @@ function HeaderTaskAction({
       onClick,
       "data-testid": testId,
       children: [
-        /* @__PURE__ */ jsx(Icon, { name: "plus", size: 15 }),
+        /* @__PURE__ */ jsx(Icon2, { name: "plus", size: 15 }),
         /* @__PURE__ */ jsx("span", { children: label })
       ]
     }
@@ -1480,7 +1776,7 @@ function ActionMenu({ label, testId, children }) {
     items[next]?.focus();
   };
   return /* @__PURE__ */ jsxs("div", { className: "facilities-menu-anchor", ref: rootRef, children: [
-    /* @__PURE__ */ jsx("button", { ref: triggerRef, className: "icon-button", type: "button", "aria-label": label, "aria-haspopup": "menu", "aria-expanded": open, onClick: () => setOpen((value) => !value), "data-testid": testId, children: /* @__PURE__ */ jsx(Icon, { name: "more", size: 16 }) }),
+    /* @__PURE__ */ jsx("button", { ref: triggerRef, className: "icon-button", type: "button", "aria-label": label, "aria-haspopup": "menu", "aria-expanded": open, onClick: () => setOpen((value) => !value), "data-testid": testId, children: /* @__PURE__ */ jsx(Icon2, { name: "more", size: 16 }) }),
     open && /* @__PURE__ */ jsx("div", { className: "menu-popover facilities-menu", role: "menu", "aria-label": label, onKeyDown: moveFocus, onClick: () => setOpen(false), children })
   ] });
 }
@@ -1834,9 +2130,9 @@ function FacilitiesScreen() {
                 setRangeOffset(0);
               }, "data-testid": `facilities-range-${range}`, children: range.charAt(0).toUpperCase() + range.slice(1) }, range)) }),
               /* @__PURE__ */ jsxs("div", { className: "facilities-period-nav", children: [
-                /* @__PURE__ */ jsx("button", { className: "icon-button", type: "button", "aria-label": "Previous range", onClick: () => setRangeOffset((value) => value - 1), "data-testid": "facilities-range-back", children: /* @__PURE__ */ jsx(Icon, { name: "chevronRight", size: 14, style: { transform: "rotate(180deg)" } }) }),
+                /* @__PURE__ */ jsx("button", { className: "icon-button", type: "button", "aria-label": "Previous range", onClick: () => setRangeOffset((value) => value - 1), "data-testid": "facilities-range-back", children: /* @__PURE__ */ jsx(Icon2, { name: "chevronRight", size: 14, style: { transform: "rotate(180deg)" } }) }),
                 /* @__PURE__ */ jsx("strong", { "data-testid": "facilities-range-label", children: currentRange.label }),
-                /* @__PURE__ */ jsx("button", { className: "icon-button", type: "button", "aria-label": "Next range", onClick: () => setRangeOffset((value) => value + 1), "data-testid": "facilities-range-forward", children: /* @__PURE__ */ jsx(Icon, { name: "chevronRight", size: 14 }) })
+                /* @__PURE__ */ jsx("button", { className: "icon-button", type: "button", "aria-label": "Next range", onClick: () => setRangeOffset((value) => value + 1), "data-testid": "facilities-range-forward", children: /* @__PURE__ */ jsx(Icon2, { name: "chevronRight", size: 14 }) })
               ] })
             ] }),
             /* @__PURE__ */ jsxs("div", { className: "facilities-filter-row", children: [
@@ -2539,7 +2835,7 @@ function ThreadActions({ thread, canWrite, onRead, onUnread, onRename, onDelete,
     items[next]?.focus();
   };
   return /* @__PURE__ */ jsxs("div", { className: "messages-thread-menu-anchor", ref: rootRef, children: [
-    /* @__PURE__ */ jsx("button", { ref: triggerRef, className: "icon-button messages-thread-actions", type: "button", "aria-label": `Actions for ${thread.title}`, "aria-haspopup": "menu", "aria-expanded": open, onClick: () => setOpen((value) => !value), "data-testid": testId ?? `messages-thread-actions-${thread.id}`, children: /* @__PURE__ */ jsx(Icon, { name: "more", size: 16 }) }),
+    /* @__PURE__ */ jsx("button", { ref: triggerRef, className: "icon-button messages-thread-actions", type: "button", "aria-label": `Actions for ${thread.title}`, "aria-haspopup": "menu", "aria-expanded": open, onClick: () => setOpen((value) => !value), "data-testid": testId ?? `messages-thread-actions-${thread.id}`, children: /* @__PURE__ */ jsx(Icon2, { name: "more", size: 16 }) }),
     open && /* @__PURE__ */ jsxs("div", { className: "menu-popover messages-thread-menu", role: "menu", "aria-label": `Actions for ${thread.title}`, onKeyDown: moveFocus, children: [
       /* @__PURE__ */ jsx("button", { className: "menu-item", role: "menuitem", type: "button", disabled: !canWrite, title: !canWrite ? "This host grants inspection only." : void 0, onClick: () => {
         setOpen(false);
@@ -2755,7 +3051,7 @@ function MessagesScreen() {
         /* @__PURE__ */ jsx("p", { children: "Move handoffs forward without losing the thread." })
       ] }),
       /* @__PURE__ */ jsxs("button", { className: "primary-button", type: "button", disabled: !showsWorkspace || !canWrite, title: !canWrite ? "You can inspect messages, but this host has not granted write permission." : void 0, onClick: openNewThread, "data-testid": "messages-new-thread", children: [
-        /* @__PURE__ */ jsx(Icon, { name: "plus", size: 15 }),
+        /* @__PURE__ */ jsx(Icon2, { name: "plus", size: 15 }),
         /* @__PURE__ */ jsx("span", { children: "New" })
       ] })
     ] }),
@@ -2775,7 +3071,7 @@ function MessagesScreen() {
           ] })
         ] }),
         /* @__PURE__ */ jsxs("label", { className: "search-field messages-search", children: [
-          /* @__PURE__ */ jsx(Icon, { name: "search", size: 14 }),
+          /* @__PURE__ */ jsx(Icon2, { name: "search", size: 14 }),
           /* @__PURE__ */ jsx("span", { className: "sr-only", children: "Search conversations by title" }),
           /* @__PURE__ */ jsx("input", { value: search, onChange: (event) => setSearch(event.target.value), placeholder: "Search conversations", "data-testid": "messages-thread-search" })
         ] }),
@@ -2854,7 +3150,7 @@ function MessagesScreen() {
               }
             ),
             /* @__PURE__ */ jsxs("button", { className: "primary-button messages-send", type: "button", disabled: mutationPending || !canWrite, title: !canWrite ? "This host grants inspection only." : void 0, onClick: () => void sendReply(), "data-testid": "messages-send", children: [
-              /* @__PURE__ */ jsx(Icon, { name: "plus", size: 16 }),
+              /* @__PURE__ */ jsx(Icon2, { name: "plus", size: 16 }),
               /* @__PURE__ */ jsx("span", { children: "Send" })
             ] })
           ] }),
@@ -4376,7 +4672,7 @@ function TaskMenu({ task, readonly, isOwner, ownerOnlyReasonId, readonlyReasonId
     items[next]?.focus();
   };
   return /* @__PURE__ */ jsxs("div", { className: "task-menu-anchor", ref: rootRef, children: [
-    /* @__PURE__ */ jsx("button", { ref: triggerRef, className: "icon-button task-menu-trigger", type: "button", "aria-label": `Actions for ${task.title}`, "aria-haspopup": "menu", "aria-expanded": open, onClick: () => setOpen((value) => !value), "data-testid": `task-menu-${task.id}`, children: /* @__PURE__ */ jsx(Icon, { name: "more", size: 16 }) }),
+    /* @__PURE__ */ jsx("button", { ref: triggerRef, className: "icon-button task-menu-trigger", type: "button", "aria-label": `Actions for ${task.title}`, "aria-haspopup": "menu", "aria-expanded": open, onClick: () => setOpen((value) => !value), "data-testid": `task-menu-${task.id}`, children: /* @__PURE__ */ jsx(Icon2, { name: "more", size: 16 }) }),
     open && /* @__PURE__ */ jsxs("div", { className: "menu-popover task-menu", role: "menu", "aria-label": `Actions for ${task.title}`, onKeyDown: moveFocus, children: [
       /* @__PURE__ */ jsx("button", { className: "menu-item", role: "menuitem", type: "button", onClick: () => {
         setOpen(false);
@@ -4692,7 +4988,7 @@ function TasksScreen() {
         ] }),
         /* @__PURE__ */ jsx("span", { className: "task-tags", "aria-label": task.tags.length ? `Tags: ${task.tags.join(", ")}` : "No tags", children: task.tags.slice(0, 3).map((item) => /* @__PURE__ */ jsx("span", { children: item }, item)) })
       ] }) }),
-      /* @__PURE__ */ jsx("span", { className: "task-cell inspect-cell", role: "gridcell", children: /* @__PURE__ */ jsx("button", { className: "icon-button task-inspect-button", type: "button", "aria-label": `Inspect ${task.title}`, onClick: () => openInspector(task), "data-testid": `task-inspect-${task.id}`, children: /* @__PURE__ */ jsx(Icon, { name: "chevronRight", size: 15 }) }) }),
+      /* @__PURE__ */ jsx("span", { className: "task-cell inspect-cell", role: "gridcell", children: /* @__PURE__ */ jsx("button", { className: "icon-button task-inspect-button", type: "button", "aria-label": `Inspect ${task.title}`, onClick: () => openInspector(task), "data-testid": `task-inspect-${task.id}`, children: /* @__PURE__ */ jsx(Icon2, { name: "chevronRight", size: 15 }) }) }),
       /* @__PURE__ */ jsx("span", { className: "task-cell menu-cell", role: "gridcell", children: /* @__PURE__ */ jsx(TaskMenu, { task, readonly, isOwner, ownerOnlyReasonId, readonlyReasonId, onInspect: () => openInspector(task), onDelete: () => setDeleteTarget(task) }) })
     ] }, task.id);
   };
@@ -4740,10 +5036,10 @@ function TasksScreen() {
               ] }),
               /* @__PURE__ */ jsxs("div", { className: "tasks-filter-grid", children: [
                 /* @__PURE__ */ jsxs("div", { className: "search-field", children: [
-                  /* @__PURE__ */ jsx(Icon, { name: "search", size: 14 }),
+                  /* @__PURE__ */ jsx(Icon2, { name: "search", size: 14 }),
                   /* @__PURE__ */ jsx("label", { className: "sr-only", htmlFor: "tasks-search-input", children: "Search tasks" }),
                   /* @__PURE__ */ jsx("input", { id: "tasks-search-input", value: search, onChange: (event) => setSearch(event.target.value), placeholder: "Search tasks", "data-testid": "tasks-search" }),
-                  search && /* @__PURE__ */ jsx("button", { className: "tasks-search-clear", type: "button", "aria-label": "Clear task search", onClick: () => setSearch(""), "data-testid": "tasks-clear-search", children: /* @__PURE__ */ jsx(Icon, { name: "close", size: 13 }) })
+                  search && /* @__PURE__ */ jsx("button", { className: "tasks-search-clear", type: "button", "aria-label": "Clear task search", onClick: () => setSearch(""), "data-testid": "tasks-clear-search", children: /* @__PURE__ */ jsx(Icon2, { name: "close", size: 13 }) })
                 ] }),
                 /* @__PURE__ */ jsxs("label", { children: [
                   /* @__PURE__ */ jsx("span", { children: "Tag" }),
@@ -4922,14 +5218,14 @@ function TasksScreen() {
                   /* @__PURE__ */ jsx("p", { children: "Collaborators on this task." })
                 ] }),
                 /* @__PURE__ */ jsxs("button", { className: "secondary-button", type: "button", disabled: !selectedIsOwner || selectedReadonly, "aria-describedby": !selectedIsOwner ? ownerOnlyReasonId : selectedReadonly ? readonlyReasonId : void 0, onClick: () => setCollaboratorPickerOpen(true), "data-testid": "task-add-collaborator", children: [
-                  /* @__PURE__ */ jsx(Icon, { name: "plus", size: 14 }),
+                  /* @__PURE__ */ jsx(Icon2, { name: "plus", size: 14 }),
                   "Add"
                 ] })
               ] }),
               /* @__PURE__ */ jsx("div", { className: "collaborator-list", children: selectedTask.collaborators.length ? selectedTask.collaborators.map((person) => /* @__PURE__ */ jsxs("div", { className: "collaborator-chip", "data-testid": `task-collaborator-${person.id}`, children: [
                 /* @__PURE__ */ jsx("span", { "aria-hidden": "true", children: person.initials }),
                 /* @__PURE__ */ jsx("strong", { children: person.name }),
-                /* @__PURE__ */ jsx("button", { className: "icon-button", type: "button", disabled: !selectedIsOwner || selectedReadonly, "aria-label": `Remove ${person.name}`, onClick: () => void removeCollaborator(person.id), "data-testid": `task-remove-collaborator-${person.id}`, children: /* @__PURE__ */ jsx(Icon, { name: "close", size: 13 }) })
+                /* @__PURE__ */ jsx("button", { className: "icon-button", type: "button", disabled: !selectedIsOwner || selectedReadonly, "aria-label": `Remove ${person.name}`, onClick: () => void removeCollaborator(person.id), "data-testid": `task-remove-collaborator-${person.id}`, children: /* @__PURE__ */ jsx(Icon2, { name: "close", size: 13 }) })
               ] }, person.id)) : /* @__PURE__ */ jsx("p", { children: "No collaborators yet." }) })
             ] }),
             (!selectedReadonly || !canWrite) && /* @__PURE__ */ jsxs("section", { className: "task-quick-actions", "aria-labelledby": "task-quick-title", children: [
@@ -4994,7 +5290,50 @@ function TasksScreen() {
     ] })
   ] }) });
 }
+/*! Bundled license information:
 
-export { ArtifactsScreen, AutomationsScreen, DashboardScreen, FacilitiesScreen, FocusDialog, HeaderTaskAction, Icon, IntegrationsScreen, MessagesScreen, PlannerScreen, ProjectsScreen, RHYTHM_ROOT_CLASS, RhythmGatewayError, RhythmWorkspaceProvider, RhythmsScreen, TaskCreateForm, TasksScreen, defaultRhythmTokens, mapHostTokens, quickActionPresets, useRhythmDomainGateway, useRhythmHost };
+lucide-react/dist/esm/shared/src/utils.js:
+lucide-react/dist/esm/defaultAttributes.js:
+lucide-react/dist/esm/Icon.js:
+lucide-react/dist/esm/createLucideIcon.js:
+lucide-react/dist/esm/icons/activity.js:
+lucide-react/dist/esm/icons/archive.js:
+lucide-react/dist/esm/icons/bell.js:
+lucide-react/dist/esm/icons/book-open.js:
+lucide-react/dist/esm/icons/calendar.js:
+lucide-react/dist/esm/icons/check.js:
+lucide-react/dist/esm/icons/chevron-down.js:
+lucide-react/dist/esm/icons/chevron-right.js:
+lucide-react/dist/esm/icons/copy.js:
+lucide-react/dist/esm/icons/download.js:
+lucide-react/dist/esm/icons/ellipsis.js:
+lucide-react/dist/esm/icons/history.js:
+lucide-react/dist/esm/icons/link.js:
+lucide-react/dist/esm/icons/list-filter.js:
+lucide-react/dist/esm/icons/mail.js:
+lucide-react/dist/esm/icons/menu.js:
+lucide-react/dist/esm/icons/paperclip.js:
+lucide-react/dist/esm/icons/pencil.js:
+lucide-react/dist/esm/icons/plus.js:
+lucide-react/dist/esm/icons/refresh-cw.js:
+lucide-react/dist/esm/icons/search.js:
+lucide-react/dist/esm/icons/settings-2.js:
+lucide-react/dist/esm/icons/sliders-horizontal.js:
+lucide-react/dist/esm/icons/sparkles.js:
+lucide-react/dist/esm/icons/trash-2.js:
+lucide-react/dist/esm/icons/triangle-alert.js:
+lucide-react/dist/esm/icons/upload.js:
+lucide-react/dist/esm/icons/users.js:
+lucide-react/dist/esm/icons/x.js:
+lucide-react/dist/esm/lucide-react.js:
+  (**
+   * @license lucide-react v0.462.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   *)
+*/
+
+export { ArtifactsScreen, AutomationsScreen, DashboardScreen, FacilitiesScreen, FocusDialog, HeaderTaskAction, Icon2 as Icon, IntegrationsScreen, MessagesScreen, PlannerScreen, ProjectsScreen, RHYTHM_ROOT_CLASS, RhythmGatewayError, RhythmWorkspaceProvider, RhythmsScreen, TaskCreateForm, TasksScreen, defaultRhythmTokens, mapHostTokens, quickActionPresets, useRhythmDomainGateway, useRhythmHost };
 //# sourceMappingURL=index.js.map
 //# sourceMappingURL=index.js.map

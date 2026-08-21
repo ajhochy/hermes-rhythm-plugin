@@ -1,7 +1,7 @@
 /**
  * Thin host integration for the accepted @ajhochy/rhythm-workspace-ui
  * artifact, built from accepted source revision
- * fa461b35489e28b940e6f529fd9df218c148efa1 (see vendor provenance).
+ * 56fe6619299fad2f4cef2ffa8e8a9d681101bfa9 (see vendor provenance).
  * The package remains the owner of Dashboard/Tasks JSX and styles; this file
  * owns only the Hermes transport, lifecycle and bounded chat handoff.
  */
