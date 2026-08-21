@@ -1205,6 +1205,29 @@ class PluginRegistration:
                 self._on_dispose(self)
 
 
+@dataclass
+class PluginReloadReceipt:
+    """Structured result of a single-plugin manual runtime reload.
+
+    Returned by :meth:`PluginManager.reload_plugin` instead of a bare bool
+    so a caller (CLI, dashboard) can render a truthful outcome: ``ok`` is
+    only ``True`` when the old registrations were confirmed disposed AND
+    the fresh manifest reloaded without raising or recording a load error.
+    Any other outcome — disposal survivors, a missing manifest, a broken
+    ``register()`` — comes back as ``ok=False`` with ``error`` set, never
+    as a silent partial success.
+    """
+
+    plugin_id: str
+    ok: bool
+    previously_loaded: bool
+    root: str = ""
+    tools_removed: List[str] = field(default_factory=list)
+    tools_added: List[str] = field(default_factory=list)
+    disposed_clean: bool = True
+    error: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # PluginContext  – handed to each plugin's ``register()`` function
 # ---------------------------------------------------------------------------
@@ -3821,6 +3844,113 @@ class PluginManager:
         except Exception as exc:
             # Import cycle / missing module must not abort force reload.
             logger.debug("force-reload shell-hook re-register skipped: %s", exc)
+
+    def reload_plugin(self, plugin_id: str) -> "PluginReloadReceipt":
+        """Reload exactly one already-discovered plugin from disk.
+
+        Unlike ``discover_and_load(force=True)`` — which tears down and
+        re-scans every plugin source — this targets a single plugin id so a
+        developer iterating on one fixture doesn't pay for (or risk
+        disrupting) every other loaded plugin. Concurrent callers queue on
+        ``_discovery_lock`` (already held by every other mutating path:
+        ``unload``/``discover_and_load``), so two reload requests — or a
+        reload racing a full force rediscovery — run one at a time rather
+        than interleaving.
+
+        Returns a :class:`PluginReloadReceipt` rather than a bare bool: the
+        caller (CLI, dashboard) must be able to tell a genuine success from
+        "the old registration didn't fully dispose" or "the manifest wasn't
+        found" without inferring it from exceptions or logs.
+        """
+        with self._discovery_lock, _plugin_home_scope(self.home_path):
+            return self._reload_plugin_locked(plugin_id)
+
+    def _reload_plugin_locked(self, plugin_id: str) -> "PluginReloadReceipt":
+        """The reload critical section — caller must hold ``_discovery_lock``."""
+        previously_loaded = (
+            plugin_id in self._plugins or plugin_id in self._ownership_ledger
+        )
+        # Snapshot the live registration objects (not just their ledger
+        # entry) before unloading. ``_unload_scoped`` forgets ledger entries
+        # unconditionally once it has *attempted* disposal, so the ledger
+        # alone can't tell a clean disposal from a registration whose
+        # ``release()`` silently no-op'd — the object's own ``active`` flag
+        # is the only thing that still knows.
+        prior_registrations = list(self._ownership_ledger.get(plugin_id, []))
+        tools_before = set(self._plugin_tool_names)
+
+        try:
+            self._unload_scoped(plugin_id)
+        except Exception as exc:
+            return PluginReloadReceipt(
+                plugin_id=plugin_id,
+                ok=False,
+                previously_loaded=previously_loaded,
+                error=f"unload failed: {exc}",
+            )
+
+        survivors = [registration for registration in prior_registrations if registration.active]
+        if survivors:
+            return PluginReloadReceipt(
+                plugin_id=plugin_id,
+                ok=False,
+                previously_loaded=previously_loaded,
+                disposed_clean=False,
+                error=(
+                    f"{len(survivors)} registration(s) survived unload disposal "
+                    f"({', '.join(sorted({r.kind for r in survivors}))})"
+                ),
+            )
+
+        manifest = self._find_manifest_for_reload(plugin_id)
+        if manifest is None:
+            return PluginReloadReceipt(
+                plugin_id=plugin_id,
+                ok=False,
+                previously_loaded=previously_loaded,
+                error=f"plugin '{plugin_id}' was not found under any plugin root",
+            )
+
+        try:
+            self._load_plugin_scoped(manifest)
+        except Exception as exc:
+            return PluginReloadReceipt(
+                plugin_id=plugin_id,
+                ok=False,
+                previously_loaded=previously_loaded,
+                root=manifest.source,
+                error=str(exc),
+            )
+
+        loaded = self._plugins.get(plugin_id)
+        if loaded is None or loaded.error:
+            return PluginReloadReceipt(
+                plugin_id=plugin_id,
+                ok=False,
+                previously_loaded=previously_loaded,
+                root=manifest.source,
+                error=loaded.error if loaded is not None else "plugin did not register",
+            )
+
+        tools_after = set(self._plugin_tool_names)
+        return PluginReloadReceipt(
+            plugin_id=plugin_id,
+            ok=True,
+            previously_loaded=previously_loaded,
+            root=manifest.source,
+            tools_removed=sorted(tools_before - tools_after),
+            tools_added=sorted(tools_after - tools_before),
+        )
+
+    def _find_manifest_for_reload(self, plugin_id: str) -> Optional[PluginManifest]:
+        """Locate the current on-disk manifest for *plugin_id*, any root."""
+        for manifest in self._collect_directory_manifests():
+            if (manifest.key or manifest.name) == plugin_id:
+                return manifest
+        for manifest in self._scan_entry_points():
+            if (manifest.key or manifest.name) == plugin_id:
+                return manifest
+        return None
 
     def _refresh_secret_sources_after_discovery(self) -> None:
         """If any plugin secret source is enabled, reset cache and re-apply.

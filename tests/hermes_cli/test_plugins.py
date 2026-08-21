@@ -1011,6 +1011,185 @@ class TestForceReloadSymmetry:
         assert recorded["cfg"] == {"hooks": {}}
 
 
+class TestPluginManualReload:
+    """Tests for PluginManager.reload_plugin — the manual runtime-reload path.
+
+    Unlike ``discover_and_load(force=True)`` (which tears down and reloads
+    every plugin), ``reload_plugin`` targets exactly one already-loaded
+    fixture, returns a structured receipt instead of a bare bool, and never
+    reports success when disposal or reload actually failed.
+    """
+
+    def test_reload_reregisters_without_duplicate_hooks(self, tmp_path, monkeypatch):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "reload_plugin_fixture",
+            register_body="ctx.register_hook('pre_tool_call', lambda **kw: None)",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+        assert len(mgr._hooks.get("pre_tool_call", [])) == 1
+        ledger_count_before = len(mgr._ownership_ledger.get("reload_plugin_fixture", []))
+
+        receipt = mgr.reload_plugin("reload_plugin_fixture")
+
+        assert receipt.ok is True
+        assert len(mgr._hooks.get("pre_tool_call", [])) == 1
+        assert (
+            len(mgr._ownership_ledger.get("reload_plugin_fixture", []))
+            == ledger_count_before
+        )
+
+    def test_reload_returns_structured_receipt(self, tmp_path, monkeypatch):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(plugins_dir, "receipt_fixture")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        receipt = mgr.reload_plugin("receipt_fixture")
+
+        assert receipt.plugin_id == "receipt_fixture"
+        assert receipt.ok is True
+        assert receipt.previously_loaded is True
+        assert receipt.root == "user"
+        assert receipt.disposed_clean is True
+        assert receipt.error is None
+        assert receipt.tools_removed == []
+        assert receipt.tools_added == []
+
+    def test_reload_unknown_plugin_is_truthful_failure(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        receipt = mgr.reload_plugin("does-not-exist")
+
+        assert receipt.ok is False
+        assert receipt.previously_loaded is False
+        assert receipt.error is not None
+        assert "not found" in receipt.error
+
+    def test_reload_flags_disposal_survivors_instead_of_false_success(
+        self, tmp_path, monkeypatch
+    ):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "sticky_fixture",
+            register_body="ctx.register_hook('pre_tool_call', lambda **kw: None)",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        # Simulate a registration whose dispose() silently no-ops (a bad
+        # plugin release callback) — it must survive unload and be caught
+        # instead of the reload reporting a clean success.
+        survivor = mgr._ownership_ledger["sticky_fixture"][0]
+        monkeypatch.setattr(survivor, "dispose", lambda: None)
+
+        receipt = mgr.reload_plugin("sticky_fixture")
+
+        assert receipt.ok is False
+        assert receipt.disposed_clean is False
+        assert receipt.error is not None
+
+    def test_reload_broken_register_is_truthful_failure(self, tmp_path, monkeypatch):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        plugin_dir = _make_plugin_dir(plugins_dir, "flaky_fixture")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+        assert "flaky_fixture" in mgr._plugins
+
+        # A code change introduced a crash in register() before the reload.
+        (plugin_dir / "__init__.py").write_text(
+            "def register(ctx):\n    raise RuntimeError('boom')\n"
+        )
+        sys_modules_key = "hermes_plugins.flaky_fixture"
+        sys.modules.pop(sys_modules_key, None)
+
+        receipt = mgr.reload_plugin("flaky_fixture")
+
+        assert receipt.ok is False
+        assert receipt.error is not None
+        assert "boom" in receipt.error
+
+    def test_reload_covers_both_bundled_and_user_roots(self, tmp_path, monkeypatch):
+        bundled_root = tmp_path / "bundled_plugins"
+        home = tmp_path / "hermes_test"
+        user_root = home / "plugins"
+
+        _make_plugin_dir(bundled_root, "bundled_fixture", home=home)
+        _make_plugin_dir(user_root, "user_fixture", home=home)
+
+        monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(bundled_root))
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        bundled_receipt = mgr.reload_plugin("bundled_fixture")
+        user_receipt = mgr.reload_plugin("user_fixture")
+
+        assert bundled_receipt.ok is True
+        assert bundled_receipt.root == "bundled"
+        assert user_receipt.ok is True
+        assert user_receipt.root == "user"
+
+    def test_reload_calls_are_queued_not_interleaved(self, tmp_path, monkeypatch):
+        import threading
+        import time
+
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(plugins_dir, "queue_fixture")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        concurrent = {"count": 0, "max": 0}
+        guard = threading.Lock()
+        real_reload_locked = mgr._reload_plugin_locked
+
+        def _instrumented(plugin_id):
+            with guard:
+                concurrent["count"] += 1
+                concurrent["max"] = max(concurrent["max"], concurrent["count"])
+            try:
+                time.sleep(0.05)
+                return real_reload_locked(plugin_id)
+            finally:
+                with guard:
+                    concurrent["count"] -= 1
+
+        monkeypatch.setattr(mgr, "_reload_plugin_locked", _instrumented)
+
+        receipts = []
+        threads = [
+            threading.Thread(
+                target=lambda: receipts.append(mgr.reload_plugin("queue_fixture"))
+            )
+            for _ in range(4)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+
+        assert len(receipts) == 4
+        assert all(receipt.ok for receipt in receipts)
+        assert concurrent["max"] == 1
+
+
 class TestPreToolCallBlocking:
     """Tests for the pre_tool_call block directive helper."""
 

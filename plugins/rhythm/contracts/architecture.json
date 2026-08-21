@@ -1,0 +1,35 @@
+{
+  "contract": "rhythm-first-slice-architecture",
+  "version": 1,
+  "description": "First-slice architecture guardrails frozen at M0 (issue #3). Enforced by plugins/rhythm/contracts/validate.py against the real repo tree.",
+  "owner_root": "plugins/rhythm",
+  "desktop_routes": {
+    "allowed": ["/rhythm"],
+    "max_count": 1
+  },
+  "server_owned_credential_paths": [
+    "plugins/rhythm/server/**",
+    "plugins/rhythm/backend/**"
+  ],
+  "credential_identifiers": [
+    "RHYTHM_API_KEY",
+    "RHYTHM_CLIENT_SECRET",
+    "RHYTHM_ACCESS_TOKEN",
+    "RHYTHM_REFRESH_TOKEN"
+  ],
+  "forbidden_dependencies": {
+    "ports": [4001, 4097, 4098]
+  },
+  "allowed_proxy_endpoints": [
+    "/auth/me",
+    "/workspaces/me"
+  ],
+  "forbidden": [
+    "renderer_credentials",
+    "arbitrary_proxying",
+    "second_agent_runtime",
+    "forbidden_port_dependency"
+  ],
+  "embed_electron_allowed": false,
+  "embed_second_agent_ui_allowed": false
+}
