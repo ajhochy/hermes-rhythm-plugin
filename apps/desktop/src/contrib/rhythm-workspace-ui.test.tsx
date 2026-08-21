@@ -1,6 +1,6 @@
 import { host as hermesHost } from '@hermes/plugin-sdk'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { askHermes, confirmationKey, createGateway, gatewayError } from '../../../../plugins/rhythm/desktop/src/plugin'
 import {
@@ -10,6 +10,9 @@ import {
   type RhythmHostAdapter,
   RhythmWorkspaceProvider,
   TasksScreen,
+  PlannerScreen,
+  RhythmsScreen,
+  ProjectsScreen,
 } from '../../../../plugins/rhythm/desktop/vendor/rhythm-workspace-ui/dist/index.js'
 
 const host: RhythmHostAdapter = {
@@ -44,6 +47,32 @@ function restFor(value: unknown | Error) {
   return request as unknown as Parameters<typeof createGateway>[0]
 }
 
+const plannerWeek = {
+  weekLabel: 'Aug 17 – Aug 23', weekStart: '2026-08-17', backlog: [],
+  days: [{ date: '2026-08-17', tasks: [{ id: 'planner-task-1', title: 'Plan launch', notes: '', status: 'open', source: 'task' }], events: [] }],
+}
+
+const rhythmRules = [{
+  id: 'rule-1', title: 'Weekly review', frequency: 'weekly', dayOfWeek: 1, dayOfMonth: 1, month: 1, sequential: false, enabled: true,
+  ownerId: 'user-1', ownerName: 'Hermes', collaborators: [], steps: [], generatedCount: 1, completedCount: 0, remainingCount: 1,
+  waitingOn: null, nextDueDate: '2026-08-24', completionRatio: 0, createdAt: '2026-08-01',
+}]
+
+const projectTemplates = [{ id: 'template-1', name: 'Launch', description: 'Ship it.', anchorType: 'date', steps: [] }]
+const projectInstances = [{ id: 'project-1', templateId: 'template-1', name: 'August launch', anchorDate: '2026-08-17', status: 'active', ownerId: 'user-1', collaborators: [], milestones: [], steps: [] }]
+
+function m5Rest() {
+  return vi.fn(async (path: string) => {
+    if (path === '/planner/weeks/2026-08-17') return plannerWeek
+    if (path === '/rhythm-rules') return rhythmRules
+    if (path === '/project-templates') return projectTemplates
+    if (path === '/project-instances') return projectInstances
+    throw new Error(`unexpected M5 GET ${path}`)
+  })
+}
+
+afterEach(() => cleanup())
+
 describe('accepted Rhythm workspace package', () => {
   it('mounts the actual Dashboard and Tasks screens read-only through their provider', async () => {
     const rest = restFor(summary)
@@ -58,6 +87,64 @@ describe('accepted Rhythm workspace package', () => {
     expect(await screen.findByTestId('rhythm-tasks-screen')).not.toBeNull()
     expect(screen.getByText('Review brief')).not.toBeNull()
     expect((rest as unknown as { mock: { calls: Array<[string]> } }).mock.calls.map(([path]) => path)).toEqual(expect.arrayContaining(['/dashboard-summary', '/tasks']))
+  })
+
+  it.each([
+    ['Planner', PlannerScreen, 'rhythm-planner-screen', 'Plan launch', '/planner/weeks/2026-08-17'],
+    ['Rhythms', RhythmsScreen, 'rhythm-rhythms-screen', 'Weekly review', '/rhythm-rules'],
+    ['Projects', ProjectsScreen, 'rhythm-projects-screen', 'August launch', '/project-templates'],
+  ])('mounts %s with canonical M5 content and its exact pinned GET paths', async (_name, Screen, testId, content, expectedPath) => {
+    const rest = m5Rest()
+    const view = renderScreen(<Screen />, createGateway(rest as never), { ...host, currentUser: { displayName: 'Hermes', initials: 'H', id: 'user-1' } })
+    expect(await screen.findByTestId(testId)).not.toBeNull()
+    expect((await screen.findAllByText(content)).length).toBeGreaterThan(0)
+    await waitFor(() => expect(rest.mock.calls.map(([path]) => path)).toContain(expectedPath))
+    expect(rest.mock.calls.map(([path]) => path).some(path => /collaborator|member/.test(path))).toBe(false)
+    view.unmount()
+  })
+
+  it('keeps generic M5 operations confirmation-bound, exact, one-use, and re-home scoped', async () => {
+    const operation = 'planner.update-task'
+    const entityId = 'planner-task-1'
+    const payload = { notes: 'Canonical note', dueDate: '2026-08-20' }
+    const rest = vi.fn(async (path: string, init?: { method: string, body: unknown }) => {
+      if (path === '/workspace-operations') return { id: entityId, ...payload }
+      throw new Error(`unexpected route ${path}`)
+    })
+    const confirmations = new Map<string, string>()
+    const gateway = createGateway(rest as never, confirmations)
+    await expect(gateway.planner.update(entityId, payload)).rejects.toMatchObject({ kind: 'unavailable' })
+    expect(rest).not.toHaveBeenCalled()
+
+    const key = JSON.stringify([operation, entityId, payload])
+    confirmations.set(key, 'receipt-never-rendered')
+    await expect(gateway.planner.update(entityId, payload)).resolves.toMatchObject({ id: entityId })
+    expect(rest).toHaveBeenCalledWith('/workspace-operations', { method: 'POST', body: { operation, entityId, payload, confirmation: 'receipt-never-rendered' } })
+    await expect(gateway.planner.update(entityId, payload)).rejects.toMatchObject({ kind: 'unavailable' })
+
+    confirmations.set(key, 'receipt-for-different-payload')
+    await expect(gateway.planner.update(entityId, { ...payload, notes: 'changed' })).rejects.toMatchObject({ kind: 'unavailable' })
+    const rehomedGateway = createGateway(rest as never, new Map())
+    await expect(rehomedGateway.planner.update(entityId, payload)).rejects.toMatchObject({ kind: 'unavailable' })
+    expect(rest.mock.calls.every(([path]) => path === '/workspace-operations')).toBe(true)
+  })
+
+  it('advertises only granular M5 capabilities and keeps every collaborator/member port local', async () => {
+    const rest = m5Rest()
+    const gateway = createGateway(rest as never)
+    const granularHost: RhythmHostAdapter = {
+      ...host,
+      currentUser: { displayName: 'Hermes', initials: 'H', id: 'user-1', capabilities: ['planner.update-task', 'rhythms.update-rule', 'projects.update-template'] },
+    }
+    const view = renderScreen(<PlannerScreen />, gateway, granularHost)
+    await screen.findByTestId('planner-task-planner-task-1')
+    expect((screen.getByTestId('planner-header-add-task') as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByTestId('planner-complete-planner-task-1') as HTMLButtonElement).disabled).toBe(false)
+    await expect(gateway.planner.addCollaborator('planner-task-1', 'member-1')).rejects.toMatchObject({ kind: 'unavailable' })
+    await expect(gateway.rhythms.addCollaborator('rule-1', 'member-1')).rejects.toMatchObject({ kind: 'unavailable' })
+    await expect(gateway.projects.addCollaborator('project-1', 'member-1')).rejects.toMatchObject({ kind: 'unavailable' })
+    expect(rest.mock.calls.map(([path]) => path).every(path => !/collaborator|member/.test(path))).toBe(true)
+    view.unmount()
   })
 
   it.each([

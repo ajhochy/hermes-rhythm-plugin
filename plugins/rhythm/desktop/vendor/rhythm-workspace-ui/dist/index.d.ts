@@ -508,13 +508,33 @@ interface RhythmCurrentUser {
 type RhythmWorkspaceCapability = 'facilities.manage' | 'facilities.reserve' | 'automations.write' | 'integrations.write' | 'dashboard.write' | 'tasks.write'
 /** Narrow task mutation grants for hosts such as Hermes.  They deliberately do not
  * imply create/delete/edit/collaboration access. */
- | 'tasks.complete' | 'tasks.reschedule';
+ | 'tasks.complete' | 'tasks.reschedule'
+/** Broad legacy Planner access is an explicit capability, never inferred from
+ * collaborationCapability. M5 constrained hosts use the semantic grants below. */
+ | 'planner.write'
+/** M5 is intentionally semantic: constrained hosts never receive the broad
+ * planner/projects/rhythms write ports. */
+ | 'planner.schedule-task' | 'planner.update-task' | 'planner.update-project-step' | 'planner.schedule-project-step'
+/** Broad legacy Rhythms access remains explicit for general hosts. */
+ | 'rhythms.write' | 'rhythms.create-rule' | 'rhythms.update-rule' | 'rhythms.delete-rule' | 'rhythms.create-step' | 'rhythms.update-step' | 'rhythms.delete-step' | 'rhythms.reorder-step'
+/** Broad legacy Projects access remains explicit for general hosts. */
+ | 'projects.write' | 'projects.create-template' | 'projects.update-template' | 'projects.delete-template' | 'projects.create-instance' | 'projects.update-instance' | 'projects.delete-instance' | 'projects.create-step' | 'projects.update-step' | 'projects.delete-step' | 'projects.reorder-step' | 'projects.create-milestone' | 'projects.update-milestone' | 'projects.delete-milestone';
 interface RhythmTaskOperationConfirmation {
     taskId: string;
     generation: string;
     operation: 'complete' | 'reschedule';
     /** ISO date for rescheduling; omitted for completion. */
     scheduledDate?: string;
+}
+/** A host-issued, foreground-only confirmation for an exact M5 operation.
+ * `payload` must be canonical JSON (no credentials, URLs, actor, workspace or
+ * profile fields); the host binds those server-side before issuing its one-use
+ * receipt.  This is deliberately a semantic action, not a generic HTTP port. */
+interface RhythmWorkspaceOperationConfirmation {
+    operation: Exclude<RhythmWorkspaceCapability, 'facilities.manage' | 'facilities.reserve' | 'automations.write' | 'integrations.write' | 'dashboard.write' | 'tasks.write'>;
+    entityId: string;
+    payload: Record<string, string | number | boolean | null>;
+    generation: string;
 }
 /** The ten non-agent screens this package exposes — used only for host-owned, in-package
  * cross-screen navigation (e.g. Dashboard's "Open planner" shortcut). Never includes an
@@ -544,6 +564,7 @@ interface RhythmHostAdapter {
     /** A foreground-only host port.  The screen calls this only after its focus-trapped
      * confirmation dialog; the host rejects stale, mismatched, or reused payloads. */
     confirmTaskOperation?: (confirmation: RhythmTaskOperationConfirmation) => Promise<boolean>;
+    confirmWorkspaceOperation?: (confirmation: RhythmWorkspaceOperationConfirmation) => Promise<boolean>;
 }
 
 interface RhythmWorkspaceProviderProps {
@@ -695,4 +716,4 @@ interface QuickActionPreset {
 }
 declare const quickActionPresets: QuickActionPreset[];
 
-export { type ArtifactsGateway, ArtifactsScreen, type ArtifactsScreenProps, type AutomationActionType, type AutomationCondition, type AutomationSource, type AutomationsGateway, AutomationsScreen, type CreateAutomationInput, type CreateDashboardTaskInput, type CreateFacilityInput, type CreateReservationInput, type CreateRhythmRhythmInput, type CreateRhythmTaskInput, type DashboardGateway, DashboardScreen, type FacilitiesGateway, FacilitiesScreen, FocusDialog, HeaderTaskAction, Icon, type IconName, type IntegrationAccountStatus, type IntegrationProviderId, type IntegrationsGateway, IntegrationsScreen, type MessageThreadType, type MessagesGateway, MessagesScreen, type PlannerGateway, PlannerScreen, type PreferredAgent, type ProjectInstanceStatus, type ProjectsGateway, ProjectsScreen, type QuickActionPreset, type QuickActionPresetId, RHYTHM_ROOT_CLASS, type RhythmArtifact, type RhythmArtifactKind, type RhythmAutomation, type RhythmCadence, type RhythmCalendarSource, type RhythmCurrentUser, type RhythmDashboardProject, type RhythmDashboardProjectStep, type RhythmDashboardSummary, type RhythmDashboardTask, type RhythmDashboardThreadPreview, type RhythmDomainGateway, type RhythmFacility, RhythmGatewayError, type RhythmGatewayErrorKind, type RhythmGmailSignal, type RhythmHostAdapter, type RhythmHostTokens, type RhythmIntegrationAccount, type RhythmMessage, type RhythmMessageThread, type RhythmPlannerDay, type RhythmPlannerEvent, type RhythmPlannerTask, type RhythmPlannerWeek, type RhythmProject, type RhythmProjectMilestone, type RhythmProjectStep, type RhythmProjectTemplate, type RhythmProjectTemplateStep, type RhythmReservation, type RhythmRhythm, type RhythmScreenId, type RhythmStep, type RhythmTask, type RhythmTaskCollaborator, type RhythmTaskOperationConfirmation, type RhythmThemeMode, type RhythmViewport, type RhythmWorkspaceMember, RhythmWorkspaceProvider, type RhythmWorkspaceProviderProps, type RhythmsGateway, RhythmsScreen, type TaskBucket, TaskCreateForm, type TaskCreateMember, type TaskEnergy, type TaskStatus, type TasksGateway, TasksScreen, type UpdateDashboardTaskInput, type UpdateFacilityInput, type UpdateRhythmTaskInput, defaultRhythmTokens, mapHostTokens, quickActionPresets, useRhythmDomainGateway, useRhythmHost };
+export { type ArtifactsGateway, ArtifactsScreen, type ArtifactsScreenProps, type AutomationActionType, type AutomationCondition, type AutomationSource, type AutomationsGateway, AutomationsScreen, type CreateAutomationInput, type CreateDashboardTaskInput, type CreateFacilityInput, type CreateReservationInput, type CreateRhythmRhythmInput, type CreateRhythmTaskInput, type DashboardGateway, DashboardScreen, type FacilitiesGateway, FacilitiesScreen, FocusDialog, HeaderTaskAction, Icon, type IconName, type IntegrationAccountStatus, type IntegrationProviderId, type IntegrationsGateway, IntegrationsScreen, type MessageThreadType, type MessagesGateway, MessagesScreen, type PlannerGateway, PlannerScreen, type PreferredAgent, type ProjectInstanceStatus, type ProjectsGateway, ProjectsScreen, type QuickActionPreset, type QuickActionPresetId, RHYTHM_ROOT_CLASS, type RhythmArtifact, type RhythmArtifactKind, type RhythmAutomation, type RhythmCadence, type RhythmCalendarSource, type RhythmCurrentUser, type RhythmDashboardProject, type RhythmDashboardProjectStep, type RhythmDashboardSummary, type RhythmDashboardTask, type RhythmDashboardThreadPreview, type RhythmDomainGateway, type RhythmFacility, RhythmGatewayError, type RhythmGatewayErrorKind, type RhythmGmailSignal, type RhythmHostAdapter, type RhythmHostTokens, type RhythmIntegrationAccount, type RhythmMessage, type RhythmMessageThread, type RhythmPlannerDay, type RhythmPlannerEvent, type RhythmPlannerTask, type RhythmPlannerWeek, type RhythmProject, type RhythmProjectMilestone, type RhythmProjectStep, type RhythmProjectTemplate, type RhythmProjectTemplateStep, type RhythmReservation, type RhythmRhythm, type RhythmScreenId, type RhythmStep, type RhythmTask, type RhythmTaskCollaborator, type RhythmTaskOperationConfirmation, type RhythmThemeMode, type RhythmViewport, type RhythmWorkspaceMember, type RhythmWorkspaceOperationConfirmation, RhythmWorkspaceProvider, type RhythmWorkspaceProviderProps, type RhythmsGateway, RhythmsScreen, type TaskBucket, TaskCreateForm, type TaskCreateMember, type TaskEnergy, type TaskStatus, type TasksGateway, TasksScreen, type UpdateDashboardTaskInput, type UpdateFacilityInput, type UpdateRhythmTaskInput, defaultRhythmTokens, mapHostTokens, quickActionPresets, useRhythmDomainGateway, useRhythmHost };

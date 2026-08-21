@@ -2905,10 +2905,12 @@ function StatePanel6({ state, onRetry, onCreate }) {
     /* @__PURE__ */ jsxRuntime.jsx("button", { className: "primary-button", type: "button", onClick: onRetry, "data-testid": "page-retry", children: "Retry" })
   ] });
 }
-function TaskCard({ task, selected, canWrite, onInspect, onComplete, onSelect, onDragStart }) {
-  const canMutate = canWrite && (task.source === "task" || Boolean(task.projectStepId));
+function TaskCard({ task, selected, canUpdate, canSchedule, onInspect, onComplete, onSelect, onDragStart }) {
+  const hasSource = task.source === "task" || Boolean(task.projectStepId);
+  const canMutate = canUpdate && hasSource;
+  const canDrag = canSchedule && hasSource;
   return /* @__PURE__ */ jsxRuntime.jsxs("article", { className: `planner-task ${task.readonly ? "project-step" : ""} ${selected ? "selected" : ""}`, "data-status": task.status, children: [
-    /* @__PURE__ */ jsxRuntime.jsxs("button", { className: "task-main", type: "button", draggable: canMutate, "aria-label": `Inspect ${task.title}`, onDragStart: (event) => onDragStart(event, task), onClick: () => onInspect(task), "data-testid": `planner-task-${task.id}`, children: [
+    /* @__PURE__ */ jsxRuntime.jsxs("button", { className: "task-main", type: "button", draggable: canDrag, "aria-label": `Inspect ${task.title}`, onDragStart: (event) => onDragStart(event, task), onClick: () => onInspect(task), "data-testid": `planner-task-${task.id}`, children: [
       /* @__PURE__ */ jsxRuntime.jsx("span", { className: "task-source", children: task.readonly ? task.projectName ?? "Project step" : `${task.energy ?? "-"} Task` }),
       /* @__PURE__ */ jsxRuntime.jsx("strong", { children: task.title }),
       task.dueDate && task.dueDate !== task.scheduledDate && /* @__PURE__ */ jsxRuntime.jsxs("small", { children: [
@@ -2917,8 +2919,8 @@ function TaskCard({ task, selected, canWrite, onInspect, onComplete, onSelect, o
       ] })
     ] }),
     /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "task-controls", children: [
-      /* @__PURE__ */ jsxRuntime.jsx("button", { type: "button", disabled: !canMutate, title: !canWrite ? "This host grants inspection only." : !task.projectStepId && task.source === "project-step" ? "This project step is missing its source identity." : void 0, "aria-label": `Select ${task.title}`, "aria-pressed": selected, onClick: () => onSelect(task), "data-testid": `planner-task-select-${task.id}`, children: /* @__PURE__ */ jsxRuntime.jsx("span", { "aria-hidden": "true", children: selected ? "\u25C6" : "\u25C7" }) }),
-      /* @__PURE__ */ jsxRuntime.jsx("button", { type: "button", disabled: !canMutate, title: !canWrite ? "This host grants inspection only." : !task.projectStepId && task.source === "project-step" ? "This project step is missing its source identity." : void 0, "aria-label": `${task.status === "done" ? "Reopen" : "Complete"} ${task.title}`, onClick: () => onComplete(task), "data-testid": `planner-complete-${task.id}`, children: /* @__PURE__ */ jsxRuntime.jsx("span", { "aria-hidden": "true", children: task.status === "done" ? "\u21BA" : "\u2713" }) })
+      /* @__PURE__ */ jsxRuntime.jsx("button", { type: "button", disabled: !canMutate, title: !canUpdate ? "This host grants inspection only." : !hasSource ? "This project step is missing its source identity." : void 0, "aria-label": `Select ${task.title}`, "aria-pressed": selected, onClick: () => onSelect(task), "data-testid": `planner-task-select-${task.id}`, children: /* @__PURE__ */ jsxRuntime.jsx("span", { "aria-hidden": "true", children: selected ? "\u25C6" : "\u25C7" }) }),
+      /* @__PURE__ */ jsxRuntime.jsx("button", { type: "button", disabled: !canMutate, title: !canUpdate ? "This host grants inspection only." : !hasSource ? "This project step is missing its source identity." : void 0, "aria-label": `${task.status === "done" ? "Reopen" : "Complete"} ${task.title}`, onClick: () => onComplete(task), "data-testid": `planner-complete-${task.id}`, children: /* @__PURE__ */ jsxRuntime.jsx("span", { "aria-hidden": "true", children: task.status === "done" ? "\u21BA" : "\u2713" }) })
     ] })
   ] });
 }
@@ -2932,7 +2934,9 @@ function CalendarEvent({ event, onInspect }) {
 function PlannerScreen() {
   const { planner: gateway } = useRhythmDomainGateway();
   const host = useRhythmHost();
-  const canWrite = host.currentUser.collaborationCapability === "write";
+  const capabilities = host.currentUser.capabilities ?? [];
+  const can = (operation) => capabilities.includes("planner.write") || capabilities.includes(operation);
+  const canCreateOrCollaborate = capabilities.includes("planner.write");
   const [surfaceState, setSurfaceState] = react.useState("loading");
   const [weekStart, setWeekStart] = react.useState(() => startOfWeek(/* @__PURE__ */ new Date()));
   const [plan, setPlan] = react.useState(null);
@@ -2943,8 +2947,17 @@ function PlannerScreen() {
   const [collaboratorPickerOpen, setCollaboratorPickerOpen] = react.useState(false);
   const [mutationPending, setMutationPending] = react.useState(false);
   const [draggedId, setDraggedId] = react.useState(null);
+  const [operationTarget, setOperationTarget] = react.useState(null);
+  const [operationError, setOperationError] = react.useState(null);
   const createTitleRef = react.useRef(null);
   const loadGeneration = react.useRef(0);
+  const operationGeneration = react.useRef(0);
+  const operationEpoch = react.useRef(0);
+  const mounted = react.useRef(true);
+  react.useEffect(() => () => {
+    mounted.current = false;
+    operationEpoch.current += 1;
+  }, []);
   const handleError = (error) => {
     const kind = error instanceof RhythmGatewayError ? error.kind : "server_error";
     setSurfaceState(kind === "forbidden" ? "forbidden" : kind === "not_found" ? "unavailable" : kind === "unavailable" ? "unavailable" : "server_error");
@@ -2973,28 +2986,61 @@ function PlannerScreen() {
   const allTasks = react.useMemo(() => plan ? [...plan.backlog, ...plan.days.flatMap((day) => day.tasks)] : [], [plan]);
   const currentTask = inspector?.kind === "task" ? allTasks.find((task) => task.id === inspector.id) ?? null : null;
   const currentEvent = inspector?.kind === "event" ? plan?.days.flatMap((day) => day.events).find((event) => event.id === inspector.id) ?? null : null;
-  const canEditCurrentTask = Boolean(currentTask && canWrite && (currentTask.source === "task" || currentTask.projectStepId));
-  const canManageCurrentTaskCollaborators = Boolean(currentTask && canWrite && currentTask.source === "task");
+  const operationFor = (task, kind) => task.source === "project-step" ? kind === "update" ? "planner.update-project-step" : "planner.schedule-project-step" : kind === "update" ? "planner.update-task" : "planner.schedule-task";
+  const canEditCurrentTask = Boolean(currentTask && (currentTask.source === "task" || currentTask.projectStepId) && can(operationFor(currentTask, "update")));
+  const canManageCurrentTaskCollaborators = Boolean(currentTask && canCreateOrCollaborate && currentTask.source === "task");
   const backlog = react.useMemo(() => (plan?.backlog ?? []).filter((task) => filter === "all" || task.status === "open"), [plan, filter]);
   const doneCount = allTasks.filter((task) => task.status === "done").length;
   const scheduledOpenCount = plan?.days.reduce((count, day) => count + day.tasks.filter((task) => task.status === "open").length, 0) ?? 0;
   const changeWeek = (next) => setWeekStart(next);
-  const changeStatus = async (task, status) => {
-    if (!canWrite || mutationPending || task.source === "project-step" && !task.projectStepId) return;
+  const replaceTask = (updated) => setPlan((current) => current && { ...current, backlog: current.backlog.map((item) => item.id === updated.id ? updated : item), days: current.days.map((day) => ({ ...day, tasks: day.tasks.map((item) => item.id === updated.id ? updated : item) })) });
+  const closeOperation = () => {
+    operationEpoch.current += 1;
+    setOperationError(null);
+    setOperationTarget(null);
+  };
+  const requestOperation = (operation, entityId, payload, mutate) => {
+    if (!can(operation) || mutationPending) return;
+    operationGeneration.current += 1;
+    operationEpoch.current += 1;
+    setOperationError(null);
+    setOperationTarget({ operation, entityId, payload, mutate, generation: `${entityId}:${operation}:${operationGeneration.current}:${Date.now()}` });
+  };
+  const retryOperation = () => {
+    if (!operationTarget || mutationPending) return;
+    operationGeneration.current += 1;
+    operationEpoch.current += 1;
+    setOperationError(null);
+    setOperationTarget((target) => target && { ...target, generation: `${target.entityId}:${target.operation}:${operationGeneration.current}:${Date.now()}` });
+  };
+  const confirmOperation = async () => {
+    if (!operationTarget || mutationPending) return;
+    const target = operationTarget;
+    const epoch = operationEpoch.current;
     setMutationPending(true);
     try {
-      const updated = task.source === "project-step" ? await gateway.updateProjectStep(task.projectStepId, { status }) : await gateway.update(task.id, { status });
-      setPlan((current) => current && {
-        ...current,
-        backlog: current.backlog.map((item) => item.id === updated.id ? updated : item),
-        days: current.days.map((day) => ({ ...day, tasks: day.tasks.map((item) => item.id === updated.id ? updated : item) }))
-      });
-      setSelectedIds((current) => current.filter((id) => id !== task.id));
+      const confirmation = { operation: target.operation, entityId: target.entityId, payload: target.payload, generation: target.generation };
+      if (host.confirmWorkspaceOperation && !await host.confirmWorkspaceOperation(confirmation)) return;
+      if (!mounted.current || operationEpoch.current !== epoch || operationTarget !== target) return;
+      await target.mutate();
+      if (!mounted.current || operationEpoch.current !== epoch || operationTarget !== target) return;
+      setOperationTarget(null);
     } catch (error) {
-      handleError(error);
+      const kind = error?.kind;
+      if (kind === "conflict" || kind === "uncertain") setOperationError(kind);
+      else handleError(error);
     } finally {
-      setMutationPending(false);
+      if (mounted.current) setMutationPending(false);
     }
+  };
+  const changeStatus = async (task, status) => {
+    if (task.source === "project-step" && !task.projectStepId) return;
+    const operation = operationFor(task, "update");
+    requestOperation(operation, task.source === "project-step" ? task.projectStepId : task.id, { status }, async () => {
+      const updated = task.source === "project-step" ? await gateway.updateProjectStep(task.projectStepId, { status }) : await gateway.update(task.id, { status });
+      replaceTask(updated);
+      setSelectedIds((current) => current.filter((id) => id !== task.id));
+    });
   };
   const toggleSelected = (task) => setSelectedIds((current) => current.includes(task.id) ? current.filter((id) => id !== task.id) : [...current, task.id]);
   const bulkComplete = async () => {
@@ -3005,17 +3051,13 @@ function PlannerScreen() {
   const onDragStart = (_event, task) => setDraggedId(task.id);
   const moveTask = async (taskId, date) => {
     const task = allTasks.find((item) => item.id === taskId);
-    if (!canWrite || !task || mutationPending || task.status === "done" || task.source === "project-step" && !task.projectStepId) return;
-    setMutationPending(true);
-    try {
-      const updated = task.source === "project-step" ? await gateway.scheduleProjectStep(task.projectStepId, { dueDate: date }) : await gateway.scheduleTask(task.id, { scheduledDate: date });
+    if (!task || task.status === "done" || task.source === "project-step" && !task.projectStepId) return;
+    const operation = operationFor(task, "schedule");
+    requestOperation(operation, task.source === "project-step" ? task.projectStepId : task.id, task.source === "project-step" ? { dueDate: date } : { scheduledDate: date }, async () => {
+      if (task.source === "project-step") await gateway.scheduleProjectStep(task.projectStepId, { dueDate: date });
+      else await gateway.scheduleTask(task.id, { scheduledDate: date });
       await load(weekStart);
-      void updated;
-    } catch (error) {
-      handleError(error);
-    } finally {
-      setMutationPending(false);
-    }
+    });
   };
   const dropOnDay = (event, date) => {
     event.preventDefault();
@@ -3025,76 +3067,47 @@ function PlannerScreen() {
   const createTask = async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
-    if (!canWrite || !form.reportValidity()) return;
+    if (!canCreateOrCollaborate || !form.reportValidity()) return;
     const data = new FormData(form);
     const title = String(data.get("title") ?? "").trim();
     if (!title) {
       createTitleRef.current?.focus();
       return;
     }
-    setMutationPending(true);
-    try {
-      await gateway.create({
-        title,
-        notes: String(data.get("notes") ?? "").trim() || void 0,
-        scheduledDate: String(data.get("scheduledDate") ?? "") || void 0,
-        dueDate: String(data.get("dueDate") ?? "") || void 0
-      });
+    requestOperation("planner.write", "new-task", { title, notes: String(data.get("notes") ?? "").trim() || null, scheduledDate: String(data.get("scheduledDate") ?? "") || null, dueDate: String(data.get("dueDate") ?? "") || null }, async () => {
+      await gateway.create({ title, notes: String(data.get("notes") ?? "").trim() || void 0, scheduledDate: String(data.get("scheduledDate") ?? "") || void 0, dueDate: String(data.get("dueDate") ?? "") || void 0 });
       await load(weekStart);
       setInspector(null);
-    } catch (error) {
-      handleError(error);
-    } finally {
-      setMutationPending(false);
-    }
+    });
   };
   const saveTask = async (event) => {
     event.preventDefault();
-    if (!canWrite || !currentTask || currentTask.source === "project-step" && !currentTask.projectStepId) return;
+    if (!currentTask || currentTask.source === "project-step" && !currentTask.projectStepId) return;
     const data = new FormData(event.currentTarget);
-    setMutationPending(true);
-    try {
-      const notes = String(data.get("notes") ?? "");
-      const dueDate = String(data.get("dueDate") ?? "") || void 0;
-      const updated = currentTask.source === "project-step" ? await gateway.updateProjectStep(currentTask.projectStepId, { notes, dueDate }) : await gateway.update(currentTask.id, { notes, scheduledDate: String(data.get("scheduledDate") ?? "") || void 0, dueDate });
-      setPlan((current) => current && {
-        ...current,
-        backlog: current.backlog.map((item) => item.id === updated.id ? updated : item),
-        days: current.days.map((day) => ({ ...day, tasks: day.tasks.map((item) => item.id === updated.id ? updated : item) }))
-      });
+    const notes = String(data.get("notes") ?? "");
+    const dueDate = String(data.get("dueDate") ?? "") || void 0;
+    const scheduledDate = String(data.get("scheduledDate") ?? "") || void 0;
+    const operation = operationFor(currentTask, "update");
+    requestOperation(operation, currentTask.source === "project-step" ? currentTask.projectStepId : currentTask.id, currentTask.source === "project-step" ? { notes, dueDate: dueDate ?? null } : { notes, scheduledDate: scheduledDate ?? null, dueDate: dueDate ?? null }, async () => {
+      const updated = currentTask.source === "project-step" ? await gateway.updateProjectStep(currentTask.projectStepId, { notes, dueDate }) : await gateway.update(currentTask.id, { notes, scheduledDate, dueDate });
+      replaceTask(updated);
       setInspector(null);
-    } catch (error) {
-      handleError(error);
-    } finally {
-      setMutationPending(false);
-    }
+    });
   };
   const addCollaborator = async (memberId) => {
     if (!canManageCurrentTaskCollaborators || !currentTask) return;
-    try {
+    requestOperation("planner.write", currentTask.id, { memberId }, async () => {
       const updated = await gateway.addCollaborator(currentTask.id, memberId);
-      setPlan((current) => current && {
-        ...current,
-        backlog: current.backlog.map((item) => item.id === updated.id ? updated : item),
-        days: current.days.map((day) => ({ ...day, tasks: day.tasks.map((item) => item.id === updated.id ? updated : item) }))
-      });
+      replaceTask(updated);
       setCollaboratorPickerOpen(false);
-    } catch (error) {
-      handleError(error);
-    }
+    });
   };
   const removeCollaborator = async (memberId) => {
     if (!canManageCurrentTaskCollaborators || !currentTask) return;
-    try {
+    requestOperation("planner.write", currentTask.id, { memberId }, async () => {
       const updated = await gateway.removeCollaborator(currentTask.id, memberId);
-      setPlan((current) => current && {
-        ...current,
-        backlog: current.backlog.map((item) => item.id === updated.id ? updated : item),
-        days: current.days.map((day) => ({ ...day, tasks: day.tasks.map((item) => item.id === updated.id ? updated : item) }))
-      });
-    } catch (error) {
-      handleError(error);
-    }
+      replaceTask(updated);
+    });
   };
   const launchQuickAction = (actionId, label) => {
     if (!currentTask) return;
@@ -3128,7 +3141,7 @@ function PlannerScreen() {
         ] })
       ] }),
       /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "planner-header-actions", children: [
-        /* @__PURE__ */ jsxRuntime.jsx(HeaderTaskAction, { onClick: () => setInspector({ kind: "create" }), disabled: !showsWorkspace || mutationPending || !canWrite, testId: "planner-header-add-task" }),
+        /* @__PURE__ */ jsxRuntime.jsx(HeaderTaskAction, { onClick: () => setInspector({ kind: "create" }), disabled: !showsWorkspace || mutationPending || !canCreateOrCollaborate, testId: "planner-header-add-task" }),
         /* @__PURE__ */ jsxRuntime.jsxs("nav", { className: "week-controls", "aria-label": "Week navigation", children: [
           /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", "aria-label": "Previous week", onClick: () => changeWeek(shiftIsoDate(weekStart, -7)), "data-testid": "planner-prev-week", children: "\u2190" }),
           /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", disabled: weekStart === startOfWeek(/* @__PURE__ */ new Date()), onClick: () => changeWeek(startOfWeek(/* @__PURE__ */ new Date())), "data-testid": "planner-today", children: "Today" }),
@@ -3144,7 +3157,10 @@ function PlannerScreen() {
             selectedIds.length,
             " selected"
           ] }),
-          /* @__PURE__ */ jsxRuntime.jsx("button", { className: "primary-button", type: "button", disabled: !canWrite, title: !canWrite ? "This host grants inspection only." : void 0, onClick: () => void bulkComplete(), "data-testid": "planner-bulk-complete", children: "Mark complete" }),
+          /* @__PURE__ */ jsxRuntime.jsx("button", { className: "primary-button", type: "button", disabled: !selectedIds.some((id) => {
+            const task = allTasks.find((item) => item.id === id);
+            return task && can(operationFor(task, "update"));
+          }), title: "This host grants inspection only.", onClick: () => void bulkComplete(), "data-testid": "planner-bulk-complete", children: "Mark complete" }),
           /* @__PURE__ */ jsxRuntime.jsx("button", { className: "text-button", type: "button", onClick: () => setSelectedIds([]), "data-testid": "planner-clear-selection", children: "Clear" })
         ] }),
         /* @__PURE__ */ jsxRuntime.jsxs("section", { className: "planner-board", "aria-label": "Weekly plan", "data-testid": "planner-board", children: [
@@ -3153,8 +3169,8 @@ function PlannerScreen() {
               /* @__PURE__ */ jsxRuntime.jsx("span", { className: "eyebrow", children: "Unscheduled" }),
               /* @__PURE__ */ jsxRuntime.jsx("h2", { children: "Backlog" })
             ] }),
-            /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button add-control", type: "button", disabled: mutationPending || !canWrite, title: !canWrite ? "This host grants inspection only." : void 0, onClick: () => setInspector({ kind: "create" }), "data-testid": "planner-add-backlog-task", children: "+ Add unscheduled task" }),
-            /* @__PURE__ */ jsxRuntime.jsx("div", { className: "lane-list", children: backlog.map((task) => /* @__PURE__ */ jsxRuntime.jsx(TaskCard, { task, selected: selectedIds.includes(task.id), canWrite, onInspect: (item) => setInspector({ kind: "task", id: item.id }), onComplete: (item) => void changeStatus(item, item.status === "done" ? "open" : "done"), onSelect: toggleSelected, onDragStart }, task.id)) })
+            /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button add-control", type: "button", disabled: mutationPending || !canCreateOrCollaborate, title: !canCreateOrCollaborate ? "This host grants inspection only." : void 0, onClick: () => setInspector({ kind: "create" }), "data-testid": "planner-add-backlog-task", children: "+ Add unscheduled task" }),
+            /* @__PURE__ */ jsxRuntime.jsx("div", { className: "lane-list", children: backlog.map((task) => /* @__PURE__ */ jsxRuntime.jsx(TaskCard, { task, selected: selectedIds.includes(task.id), canUpdate: can(operationFor(task, "update")), canSchedule: can(operationFor(task, "schedule")), onInspect: (item) => setInspector({ kind: "task", id: item.id }), onComplete: (item) => void changeStatus(item, item.status === "done" ? "open" : "done"), onSelect: toggleSelected, onDragStart }, task.id)) })
           ] }),
           /* @__PURE__ */ jsxRuntime.jsx("div", { className: "days-grid", children: plan.days.map((day) => {
             const dayTasks = day.tasks.filter((task) => filter === "all" || task.status === "open");
@@ -3164,8 +3180,8 @@ function PlannerScreen() {
                 /* @__PURE__ */ jsxRuntime.jsx("h2", { id: `planner-day-title-${day.date}`, children: day.date })
               ] }),
               /* @__PURE__ */ jsxRuntime.jsx("div", { className: "event-list", children: day.events.map((event) => /* @__PURE__ */ jsxRuntime.jsx(CalendarEvent, { event, onInspect: (item) => setInspector({ kind: "event", id: item.id }) }, event.id)) }),
-              /* @__PURE__ */ jsxRuntime.jsx("div", { className: "lane-list", children: dayTasks.map((task) => /* @__PURE__ */ jsxRuntime.jsx(TaskCard, { task, selected: selectedIds.includes(task.id), canWrite, onInspect: (item) => setInspector({ kind: "task", id: item.id }), onComplete: (item) => void changeStatus(item, item.status === "done" ? "open" : "done"), onSelect: toggleSelected, onDragStart }, task.id)) }),
-              /* @__PURE__ */ jsxRuntime.jsx("button", { className: "text-button add-control", type: "button", disabled: mutationPending || !canWrite, title: !canWrite ? "This host grants inspection only." : void 0, onClick: () => setInspector({ kind: "create", scheduledDate: day.date }), "data-testid": `planner-add-task-${day.date}`, children: "+ Add task" })
+              /* @__PURE__ */ jsxRuntime.jsx("div", { className: "lane-list", children: dayTasks.map((task) => /* @__PURE__ */ jsxRuntime.jsx(TaskCard, { task, selected: selectedIds.includes(task.id), canUpdate: can(operationFor(task, "update")), canSchedule: can(operationFor(task, "schedule")), onInspect: (item) => setInspector({ kind: "task", id: item.id }), onComplete: (item) => void changeStatus(item, item.status === "done" ? "open" : "done"), onSelect: toggleSelected, onDragStart }, task.id)) }),
+              /* @__PURE__ */ jsxRuntime.jsx("button", { className: "text-button add-control", type: "button", disabled: mutationPending || !canCreateOrCollaborate, title: !canCreateOrCollaborate ? "This host grants inspection only." : void 0, onClick: () => setInspector({ kind: "create", scheduledDate: day.date }), "data-testid": `planner-add-task-${day.date}`, children: "+ Add task" })
             ] }, day.date);
           }) })
         ] }),
@@ -3184,7 +3200,7 @@ function PlannerScreen() {
         members,
         titleRef: createTitleRef,
         defaultScheduledDate: inspector?.kind === "create" ? inspector.scheduledDate ?? "" : "",
-        disabled: mutationPending || !canWrite,
+        disabled: mutationPending || !canCreateOrCollaborate,
         testIds: { title: "planner-create-title", notes: "planner-create-notes", scheduledDate: "planner-create-scheduled-date", dueDate: "planner-create-due-date", collaborator: "planner-create-collaborator", cancel: "planner-create-task-cancel", submit: "planner-create-task-submit" }
       }
     ) }),
@@ -3221,7 +3237,7 @@ function PlannerScreen() {
       ] }),
       /* @__PURE__ */ jsxRuntime.jsxs("footer", { className: "task-editor-footer", children: [
         /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", onClick: closeInspector, "data-testid": "planner-edit-cancel", children: "Cancel" }),
-        /* @__PURE__ */ jsxRuntime.jsx("button", { className: "primary-button", type: "submit", disabled: mutationPending || !canEditCurrentTask, title: !canWrite ? "This host grants inspection only." : currentTask.source === "project-step" && !currentTask.projectStepId ? "This project step is missing its source identity." : void 0, "data-testid": "planner-save-task", children: "Save changes" })
+        /* @__PURE__ */ jsxRuntime.jsx("button", { className: "primary-button", type: "submit", disabled: mutationPending || !canEditCurrentTask, title: !canEditCurrentTask ? "This host grants inspection only." : void 0, "data-testid": "planner-save-task", children: "Save changes" })
       ] })
     ] }) }),
     /* @__PURE__ */ jsxRuntime.jsx(FocusDialog, { open: Boolean(currentEvent), onClose: closeInspector, title: "Calendar event", description: "Calendar events provide planning context and cannot be changed here.", testId: "planner-calendar-inspector", children: currentEvent && /* @__PURE__ */ jsxRuntime.jsxs("article", { className: "readonly-details", children: [
@@ -3238,7 +3254,25 @@ function PlannerScreen() {
           /* @__PURE__ */ jsxRuntime.jsx("dd", { children: currentEvent.timeLabel })
         ] })
       ] })
-    ] }) })
+    ] }) }),
+    /* @__PURE__ */ jsxRuntime.jsxs(FocusDialog, { open: Boolean(operationTarget), onClose: closeOperation, title: "Confirm Planner change", description: "This exact change is sent only after you confirm it.", testId: "planner-operation-confirmation", children: [
+      /* @__PURE__ */ jsxRuntime.jsxs("p", { role: "status", children: [
+        "Confirm ",
+        operationTarget?.operation,
+        " for this record."
+      ] }),
+      operationError && /* @__PURE__ */ jsxRuntime.jsxs("div", { role: "alert", "data-testid": "planner-operation-outcome", children: [
+        /* @__PURE__ */ jsxRuntime.jsx("p", { children: operationError === "conflict" ? "This record changed elsewhere. Reload before retrying." : "We could not verify whether this change was applied. Reload before retrying." }),
+        /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "dialog-actions", children: [
+          /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", onClick: () => void load(weekStart), "data-testid": "planner-operation-reload", children: "Reload" }),
+          /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", onClick: retryOperation, "data-testid": "planner-operation-retry", children: "Retry" })
+        ] })
+      ] }),
+      /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "dialog-actions", children: [
+        /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", onClick: closeOperation, "data-testid": "planner-operation-cancel", children: "Cancel" }),
+        /* @__PURE__ */ jsxRuntime.jsx("button", { className: "primary-button", type: "button", disabled: mutationPending, onClick: () => void confirmOperation(), "data-autofocus": true, "data-testid": "planner-operation-confirm", children: "Confirm" })
+      ] })
+    ] })
   ] }) });
 }
 function derivedStatus(instance) {
@@ -3287,7 +3321,8 @@ function Field({ label, children }) {
 function ProjectsScreen() {
   const { projects: gateway } = useRhythmDomainGateway();
   const host = useRhythmHost();
-  const canWrite = host.currentUser.collaborationCapability === "write";
+  const capabilities = host.currentUser.capabilities ?? [];
+  const can = (operation) => capabilities.includes("projects.write") || capabilities.includes(operation);
   const isOwner = (ownerId) => Boolean(host.currentUser.id && host.currentUser.id === ownerId);
   const [surfaceState, setSurfaceState] = react.useState("loading");
   const [templates, setTemplates] = react.useState([]);
@@ -3300,14 +3335,18 @@ function ProjectsScreen() {
   const [anchorDate, setAnchorDate] = react.useState("");
   const [instanceName, setInstanceName] = react.useState("");
   const [milestoneOpen, setMilestoneOpen] = react.useState(false);
-  const [collaboratorPickerFor, setCollaboratorPickerFor] = react.useState(null);
   const [instanceDelete, setInstanceDelete] = react.useState(null);
   const [inspector, setInspector] = react.useState(null);
   const [inspectorDraft, setInspectorDraft] = react.useState(null);
   const [mutationPending, setMutationPending] = react.useState(false);
   const [templateEditor, setTemplateEditor] = react.useState(null);
   const [templateStepEditor, setTemplateStepEditor] = react.useState(null);
+  const [operationTarget, setOperationTarget] = react.useState(null);
+  const [operationError, setOperationError] = react.useState(null);
   const loadGeneration = react.useRef(0);
+  const operationGeneration = react.useRef(0);
+  const operationEpoch = react.useRef(0);
+  const mounted = react.useRef(true);
   const handleError = (error) => {
     const kind = error instanceof RhythmGatewayError ? error.kind : "server_error";
     setSurfaceState(kind === "forbidden" ? "forbidden" : kind === "not_found" ? "unavailable" : kind === "unavailable" ? "unavailable" : "server_error");
@@ -3332,6 +3371,10 @@ function ProjectsScreen() {
       loadGeneration.current += 1;
     };
   }, [gateway]);
+  react.useEffect(() => () => {
+    mounted.current = false;
+    operationEpoch.current += 1;
+  }, []);
   const showsWorkspace = surfaceState === "ready";
   const visibleInstances = react.useMemo(() => instances.filter((instance) => showCompleted || derivedStatus(instance) !== "Done"), [instances, showCompleted]);
   const selectedInstance = visibleInstances.find((instance) => instance.id === selectedInstanceId) ?? visibleInstances[0] ?? null;
@@ -3340,29 +3383,56 @@ function ProjectsScreen() {
   const inspectorStep = inspector && inspectorInstance ? inspectorInstance.steps.find((step) => step.id === inspector.stepId) ?? null : null;
   const applyInstance = (updated) => setInstances((current) => current.map((instance) => instance.id === updated.id ? updated : instance));
   const applyStep = (instanceId, step) => setInstances((current) => current.map((instance) => instance.id === instanceId ? { ...instance, steps: instance.steps.map((item) => item.id === step.id ? step : item) } : instance));
-  const toggleComplete = async (instance, step) => {
-    if (!canWrite || mutationPending) return;
+  const closeOperation = () => {
+    operationEpoch.current += 1;
+    setOperationError(null);
+    setOperationTarget(null);
+  };
+  const requestOperation = (operation, entityId, payload, mutate) => {
+    if (!can(operation) || mutationPending) return;
+    operationGeneration.current += 1;
+    operationEpoch.current += 1;
+    setOperationError(null);
+    setOperationTarget({ operation, entityId, payload, mutate, generation: `${entityId}:${operation}:${operationGeneration.current}:${Date.now()}` });
+  };
+  const retryOperation = () => {
+    if (!operationTarget || mutationPending) return;
+    operationGeneration.current += 1;
+    operationEpoch.current += 1;
+    setOperationError(null);
+    setOperationTarget((target) => target && { ...target, generation: `${target.entityId}:${target.operation}:${operationGeneration.current}:${Date.now()}` });
+  };
+  const confirmOperation = async () => {
+    if (!operationTarget || mutationPending) return;
+    const target = operationTarget;
+    const epoch = operationEpoch.current;
     setMutationPending(true);
     try {
-      const updated = await gateway.updateStep(instance.id, step.id, { status: step.status === "done" ? "open" : "done" });
-      applyStep(instance.id, updated);
+      const confirmation = { operation: target.operation, entityId: target.entityId, payload: target.payload, generation: target.generation };
+      if (host.confirmWorkspaceOperation && !await host.confirmWorkspaceOperation(confirmation)) return;
+      if (!mounted.current || operationEpoch.current !== epoch || operationTarget !== target) return;
+      await target.mutate();
+      if (!mounted.current || operationEpoch.current !== epoch || operationTarget !== target) return;
+      setOperationTarget(null);
     } catch (error) {
-      handleError(error);
+      const kind = error?.kind;
+      if (kind === "conflict" || kind === "uncertain") setOperationError(kind);
+      else handleError(error);
     } finally {
-      setMutationPending(false);
+      if (mounted.current) setMutationPending(false);
     }
   };
+  const toggleComplete = async (instance, step) => {
+    requestOperation("projects.update-step", step.id, { status: step.status === "done" ? "open" : "done" }, async () => {
+      const updated = await gateway.updateStep(instance.id, step.id, { status: step.status === "done" ? "open" : "done" });
+      applyStep(instance.id, updated);
+    });
+  };
   const assignMilestone = async (instance, step, milestoneId) => {
-    if (!canWrite || mutationPending) return;
-    setMutationPending(true);
-    try {
+    requestOperation("projects.update-step", step.id, { milestoneId: milestoneId || null }, async () => {
       const updated = await gateway.updateStep(instance.id, step.id, { milestoneId: milestoneId || null });
       applyStep(instance.id, updated);
-    } catch (error) {
-      handleError(error);
-    } finally {
-      setMutationPending(false);
-    }
+    });
   };
   const openInspector = (instance, step) => {
     setInspector({ instanceId: instance.id, stepId: step.id });
@@ -3374,118 +3444,72 @@ function ProjectsScreen() {
   };
   const saveInspector = async (event) => {
     event.preventDefault();
-    if (!canWrite || !inspector || !inspectorDraft || !inspectorDraft.title.trim() || mutationPending) return;
-    setMutationPending(true);
-    try {
-      const updated = await gateway.updateStep(inspector.instanceId, inspector.stepId, { ...inspectorDraft, title: inspectorDraft.title.trim() });
+    if (!inspector || !inspectorDraft || !inspectorDraft.title.trim()) return;
+    const input = { ...inspectorDraft, title: inspectorDraft.title.trim() };
+    requestOperation("projects.update-step", inspector.stepId, { title: input.title.slice(0, 200), notes: input.notes.slice(0, 2e3), scheduledDate: input.scheduledDate || null, dueDate: input.dueDate || null, assigneeId: input.assigneeId || null }, async () => {
+      const updated = await gateway.updateStep(inspector.instanceId, inspector.stepId, input);
       applyStep(inspector.instanceId, updated);
       closeInspector();
-    } catch (error) {
-      handleError(error);
-    } finally {
-      setMutationPending(false);
-    }
+    });
   };
   const addMilestone = async (event) => {
     event.preventDefault();
-    if (!canWrite || !selectedInstance || !isOwner(selectedInstance.ownerId) || mutationPending) return;
+    if (!selectedInstance || !isOwner(selectedInstance.ownerId)) return;
     const title = String(new FormData(event.currentTarget).get("title") ?? "").trim();
     if (!title) return;
-    setMutationPending(true);
-    try {
+    requestOperation("projects.create-milestone", selectedInstance.id, { title: title.slice(0, 200) }, async () => {
       const milestone = await gateway.addMilestone(selectedInstance.id, { title });
       applyInstance({ ...selectedInstance, milestones: [...selectedInstance.milestones, milestone] });
       setMilestoneOpen(false);
-    } catch (error) {
-      handleError(error);
-    } finally {
-      setMutationPending(false);
-    }
-  };
-  const addCollaborator = async (instanceId, memberId) => {
-    if (!canWrite || !isOwner(instances.find((instance) => instance.id === instanceId)?.ownerId ?? "")) return;
-    try {
-      const updated = await gateway.addCollaborator(instanceId, memberId);
-      applyInstance(updated);
-      setCollaboratorPickerFor(null);
-    } catch (error) {
-      handleError(error);
-    }
-  };
-  const removeCollaborator = async (instanceId, memberId) => {
-    if (!canWrite || !isOwner(instances.find((instance) => instance.id === instanceId)?.ownerId ?? "")) return;
-    try {
-      const updated = await gateway.removeCollaborator(instanceId, memberId);
-      applyInstance(updated);
-    } catch (error) {
-      handleError(error);
-    }
+    });
   };
   const confirmDelete = async () => {
-    if (!canWrite || !instanceDelete || !isOwner(instanceDelete.ownerId)) return;
-    setMutationPending(true);
-    try {
-      await gateway.delete(instanceDelete.id);
-      setInstances((current) => current.filter((instance) => instance.id !== instanceDelete.id));
-      setInstanceDelete(null);
-    } catch (error) {
-      handleError(error);
-    } finally {
-      setMutationPending(false);
-    }
+    if (!instanceDelete || !isOwner(instanceDelete.ownerId)) return;
+    const instance = instanceDelete;
+    setInstanceDelete(null);
+    requestOperation("projects.delete-instance", instance.id, {}, async () => {
+      await gateway.delete(instance.id);
+      setInstances((current) => current.filter((item) => item.id !== instance.id));
+    });
   };
   const startProject = async (event) => {
     event.preventDefault();
-    if (!canWrite || !selectedTemplate || !anchorDate || mutationPending) return;
-    setMutationPending(true);
-    try {
-      const created = await gateway.generate(selectedTemplate.id, { anchorDate, name: instanceName.trim() || void 0 });
+    if (!selectedTemplate || !anchorDate) return;
+    const input = { anchorDate, name: instanceName.trim() || void 0 };
+    requestOperation("projects.create-instance", selectedTemplate.id, { anchorDate: input.anchorDate, name: input.name?.slice(0, 200) ?? null }, async () => {
+      const created = await gateway.generate(selectedTemplate.id, input);
       setInstances((current) => [...current, created]);
       setSelectedInstanceId(created.id);
       setStartOpen(false);
       setAnchorDate("");
       setInstanceName("");
       if (surfaceState === "empty") setSurfaceState("ready");
-    } catch (error) {
-      handleError(error);
-    } finally {
-      setMutationPending(false);
-    }
+    });
   };
   const saveTemplate = async (event) => {
     event.preventDefault();
-    if (!canWrite || !templateEditor) return;
+    if (!templateEditor) return;
     const data = new FormData(event.currentTarget);
     const input = { name: String(data.get("name") ?? "").trim(), description: String(data.get("description") ?? "").trim(), anchorType: String(data.get("anchorType") ?? "").trim() };
     if (!input.name || !input.anchorType) return;
-    setMutationPending(true);
-    try {
-      const saved = templateEditor === "new" ? await gateway.createTemplate(input) : await gateway.updateTemplate(templateEditor.id, input);
+    const editor = templateEditor;
+    requestOperation(editor === "new" ? "projects.create-template" : "projects.update-template", editor === "new" ? "new-template" : editor.id, { name: input.name.slice(0, 200), description: input.description.slice(0, 2e3), anchorType: input.anchorType.slice(0, 200) }, async () => {
+      const saved = editor === "new" ? await gateway.createTemplate(input) : await gateway.updateTemplate(editor.id, input);
       setTemplates((current) => templateEditor === "new" ? current.some((template) => template.id === saved.id) ? current : [...current, saved] : current.map((template) => template.id === saved.id ? saved : template));
       setSelectedTemplateId(saved.id);
       setTemplateEditor(null);
-    } catch (error) {
-      handleError(error);
-    } finally {
-      setMutationPending(false);
-    }
+    });
   };
   const deleteTemplate = async (template) => {
-    if (!canWrite || mutationPending) return;
-    setMutationPending(true);
-    try {
+    requestOperation("projects.delete-template", template.id, {}, async () => {
       await gateway.deleteTemplate(template.id);
       setTemplates((current) => current.filter((item) => item.id !== template.id));
       setSelectedTemplateId(null);
-    } catch (error) {
-      handleError(error);
-    } finally {
-      setMutationPending(false);
-    }
+    });
   };
   const saveTemplateStep = async (event) => {
     event.preventDefault();
-    if (!canWrite || !templateStepEditor || mutationPending) return;
+    if (!templateStepEditor) return;
     const data = new FormData(event.currentTarget);
     const input = {
       title: String(data.get("title") ?? "").trim(),
@@ -3494,9 +3518,9 @@ function ProjectsScreen() {
       assigneeId: String(data.get("assigneeId") ?? "") || void 0
     };
     if (!input.title || !Number.isFinite(input.offsetDays) || !input.offsetDescription) return;
-    setMutationPending(true);
-    try {
-      const saved = templateStepEditor.step ? await gateway.updateTemplateStep(templateStepEditor.templateId, templateStepEditor.step.id, input) : await gateway.addTemplateStep(templateStepEditor.templateId, input);
+    const editor = templateStepEditor;
+    requestOperation(editor.step ? "projects.update-step" : "projects.create-step", editor.step?.id ?? editor.templateId, { title: input.title.slice(0, 200), offsetDays: input.offsetDays, offsetDescription: input.offsetDescription.slice(0, 200), assigneeId: input.assigneeId ?? null }, async () => {
+      const saved = editor.step ? await gateway.updateTemplateStep(editor.templateId, editor.step.id, input) : await gateway.addTemplateStep(editor.templateId, input);
       setTemplates((current) => current.map((template) => template.id !== templateStepEditor.templateId ? template : {
         ...template,
         steps: templateStepEditor.step ? template.steps.map((step) => step.id === saved.id ? saved : step) : template.steps.some((step) => step.id === saved.id) ? template.steps : [...template.steps, saved]
@@ -3506,25 +3530,15 @@ function ProjectsScreen() {
         steps: templateStepEditor.step ? current.steps.map((step) => step.id === saved.id ? saved : step) : current.steps.some((step) => step.id === saved.id) ? current.steps : [...current.steps, saved]
       });
       setTemplateStepEditor(null);
-    } catch (error) {
-      handleError(error);
-    } finally {
-      setMutationPending(false);
-    }
+    });
   };
   const deleteTemplateStep = async (templateId, stepId) => {
-    if (!canWrite || mutationPending) return;
-    setMutationPending(true);
-    try {
+    requestOperation("projects.delete-step", stepId, { templateId }, async () => {
       await gateway.deleteTemplateStep(templateId, stepId);
       const remove = (template) => ({ ...template, steps: template.steps.filter((step) => step.id !== stepId) });
       setTemplates((current) => current.map((template) => template.id === templateId ? remove(template) : template));
       setTemplateEditor((current) => current === "new" || !current || current.id !== templateId ? current : remove(current));
-    } catch (error) {
-      handleError(error);
-    } finally {
-      setMutationPending(false);
-    }
+    });
   };
   const renderStepRow = (instance, step) => /* @__PURE__ */ jsxRuntime.jsxs("article", { className: "instance-step", "data-status": step.status, "data-testid": `project-instance-step-${step.id}`, children: [
     /* @__PURE__ */ jsxRuntime.jsxs("label", { className: "step-check", children: [
@@ -3533,7 +3547,7 @@ function ProjectsScreen() {
         " ",
         step.title
       ] }),
-      /* @__PURE__ */ jsxRuntime.jsx("input", { type: "checkbox", checked: step.status === "done", disabled: mutationPending || !canWrite, title: !canWrite ? "This host grants inspection only." : void 0, onChange: () => void toggleComplete(instance, step), "data-testid": `project-step-complete-${step.id}` }),
+      /* @__PURE__ */ jsxRuntime.jsx("input", { type: "checkbox", checked: step.status === "done", disabled: mutationPending || !can("projects.update-step"), title: !can("projects.update-step") ? "This host grants inspection only." : void 0, onChange: () => void toggleComplete(instance, step), "data-testid": `project-step-complete-${step.id}` }),
       /* @__PURE__ */ jsxRuntime.jsx("span", { "aria-hidden": "true" })
     ] }),
     /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "step-copy", children: [
@@ -3549,7 +3563,7 @@ function ProjectsScreen() {
         "Milestone for ",
         step.title
       ] }),
-      /* @__PURE__ */ jsxRuntime.jsxs("select", { value: step.milestoneId ?? "", disabled: mutationPending || !canWrite, title: !canWrite ? "This host grants inspection only." : void 0, onChange: (event) => void assignMilestone(instance, step, event.target.value), "data-testid": `project-step-milestone-${step.id}`, children: [
+      /* @__PURE__ */ jsxRuntime.jsxs("select", { value: step.milestoneId ?? "", disabled: mutationPending || !can("projects.update-step"), title: !can("projects.update-step") ? "This host grants inspection only." : void 0, onChange: (event) => void assignMilestone(instance, step, event.target.value), "data-testid": `project-step-milestone-${step.id}`, children: [
         /* @__PURE__ */ jsxRuntime.jsx("option", { value: "", children: "Ungrouped" }),
         instance.milestones.map((milestone) => /* @__PURE__ */ jsxRuntime.jsx("option", { value: milestone.id, children: milestone.title }, milestone.id))
       ] })
@@ -3576,10 +3590,13 @@ function ProjectsScreen() {
           /* @__PURE__ */ jsxRuntime.jsxs("header", { children: [
             /* @__PURE__ */ jsxRuntime.jsx("h2", { id: "project-templates-title", children: "Templates" }),
             /* @__PURE__ */ jsxRuntime.jsx("span", { children: templates.length }),
-            /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", disabled: !canWrite, title: !canWrite ? "This host grants inspection only." : void 0, onClick: () => setTemplateEditor("new"), "data-testid": "project-template-new", children: "New template" })
+            /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", disabled: !can("projects.create-template"), title: !can("projects.create-template") ? "This host grants inspection only." : void 0, onClick: () => setTemplateEditor("new"), "data-testid": "project-template-new", children: "New template" })
           ] }),
           /* @__PURE__ */ jsxRuntime.jsx("div", { className: "template-list", role: "grid", "aria-label": "Project templates", "data-testid": "project-templates-list", children: templates.map((template) => /* @__PURE__ */ jsxRuntime.jsx("div", { className: "template-row", role: "row", "aria-selected": template.id === selectedTemplate?.id ? "true" : "false", "data-testid": `project-template-${template.id}`, children: /* @__PURE__ */ jsxRuntime.jsxs("div", { role: "gridcell", children: [
-            /* @__PURE__ */ jsxRuntime.jsxs("button", { className: "template-select", type: "button", onClick: () => setSelectedTemplateId(template.id), "data-testid": `project-template-select-${template.id}`, children: [
+            /* @__PURE__ */ jsxRuntime.jsxs("button", { className: "template-select", type: "button", onClick: () => {
+              closeOperation();
+              setSelectedTemplateId(template.id);
+            }, "data-testid": `project-template-select-${template.id}`, children: [
               /* @__PURE__ */ jsxRuntime.jsx("strong", { children: template.name }),
               /* @__PURE__ */ jsxRuntime.jsxs("span", { children: [
                 template.steps.length,
@@ -3587,10 +3604,10 @@ function ProjectsScreen() {
                 template.anchorType
               ] })
             ] }),
-            /* @__PURE__ */ jsxRuntime.jsx("button", { className: "text-button", type: "button", disabled: !canWrite, onClick: () => setTemplateEditor(template), "data-testid": `project-template-edit-${template.id}`, children: "Edit" }),
-            /* @__PURE__ */ jsxRuntime.jsx("button", { className: "text-danger-button", type: "button", disabled: !canWrite, onClick: () => void deleteTemplate(template), "data-testid": `project-template-delete-${template.id}`, children: "Delete" })
+            /* @__PURE__ */ jsxRuntime.jsx("button", { className: "text-button", type: "button", disabled: !(can("projects.update-template") || can("projects.create-step") || can("projects.update-step") || can("projects.delete-step")), onClick: () => setTemplateEditor(template), "data-testid": `project-template-edit-${template.id}`, children: "Edit" }),
+            /* @__PURE__ */ jsxRuntime.jsx("button", { className: "text-danger-button", type: "button", disabled: !can("projects.delete-template"), onClick: () => void deleteTemplate(template), "data-testid": `project-template-delete-${template.id}`, children: "Delete" })
           ] }) }, template.id)) }),
-          selectedTemplate && /* @__PURE__ */ jsxRuntime.jsx("button", { className: "primary-button", type: "button", disabled: !canWrite, title: !canWrite ? "This host grants inspection only." : void 0, onClick: () => setStartOpen(true), "data-testid": "project-start", children: "Start Project" })
+          selectedTemplate && /* @__PURE__ */ jsxRuntime.jsx("button", { className: "primary-button", type: "button", disabled: !can("projects.create-instance"), title: !can("projects.create-instance") ? "This host grants inspection only." : void 0, onClick: () => setStartOpen(true), "data-testid": "project-start", children: "Start Project" })
         ] }),
         /* @__PURE__ */ jsxRuntime.jsxs("section", { className: "active-projects", "aria-labelledby": "active-projects-title", children: [
           /* @__PURE__ */ jsxRuntime.jsxs("header", { className: "active-toolbar", children: [
@@ -3599,7 +3616,10 @@ function ProjectsScreen() {
           ] }),
           /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "project-board", children: [
             /* @__PURE__ */ jsxRuntime.jsx("section", { className: "project-list-pane", "aria-label": "Active project list", children: /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "instance-list", children: [
-              visibleInstances.map((instance) => /* @__PURE__ */ jsxRuntime.jsx("article", { className: `instance-row${selectedInstance?.id === instance.id ? " selected" : ""}`, "data-testid": `project-instance-${instance.id}`, children: /* @__PURE__ */ jsxRuntime.jsxs("button", { className: "instance-expand", type: "button", "aria-pressed": selectedInstance?.id === instance.id, onClick: () => setSelectedInstanceId(instance.id), "data-testid": `project-instance-expand-${instance.id}`, children: [
+              visibleInstances.map((instance) => /* @__PURE__ */ jsxRuntime.jsx("article", { className: `instance-row${selectedInstance?.id === instance.id ? " selected" : ""}`, "data-testid": `project-instance-${instance.id}`, children: /* @__PURE__ */ jsxRuntime.jsxs("button", { className: "instance-expand", type: "button", "aria-pressed": selectedInstance?.id === instance.id, onClick: () => {
+                closeOperation();
+                setSelectedInstanceId(instance.id);
+              }, "data-testid": `project-instance-expand-${instance.id}`, children: [
                 /* @__PURE__ */ jsxRuntime.jsx("span", { className: "instance-date", children: instance.anchorDate }),
                 /* @__PURE__ */ jsxRuntime.jsxs("span", { className: "instance-row-copy", children: [
                   /* @__PURE__ */ jsxRuntime.jsx("strong", { children: instance.name }),
@@ -3624,7 +3644,7 @@ function ProjectsScreen() {
                     derivedStatus(selectedInstance)
                   ] })
                 ] }),
-                /* @__PURE__ */ jsxRuntime.jsx("button", { className: "danger-button", type: "button", disabled: mutationPending || !canWrite || !isOwner(selectedInstance.ownerId), title: !isOwner(selectedInstance.ownerId) ? "Only the project owner can delete or manage collaborators." : !canWrite ? "This host grants inspection only." : void 0, onClick: () => setInstanceDelete(selectedInstance), "data-testid": `project-instance-delete-${selectedInstance.id}`, children: "Delete" })
+                /* @__PURE__ */ jsxRuntime.jsx("button", { className: "danger-button", type: "button", disabled: mutationPending || !can("projects.delete-instance") || !isOwner(selectedInstance.ownerId), title: !isOwner(selectedInstance.ownerId) ? "Only the project owner can delete or manage collaborators." : !can("projects.delete-instance") ? "This host grants inspection only." : void 0, onClick: () => setInstanceDelete(selectedInstance), "data-testid": `project-instance-delete-${selectedInstance.id}`, children: "Delete" })
               ] }),
               /* @__PURE__ */ jsxRuntime.jsxs("section", { className: "people-strip", "aria-labelledby": `people-${selectedInstance.id}`, children: [
                 /* @__PURE__ */ jsxRuntime.jsx("h3", { id: `people-${selectedInstance.id}`, children: "Collaborators" }),
@@ -3632,14 +3652,14 @@ function ProjectsScreen() {
                   selectedInstance.collaborators.map((person) => /* @__PURE__ */ jsxRuntime.jsxs("span", { className: "person-chip", "data-testid": `project-collaborator-${person.id}`, children: [
                     /* @__PURE__ */ jsxRuntime.jsx("i", { "aria-hidden": "true", children: person.initials }),
                     /* @__PURE__ */ jsxRuntime.jsx("strong", { children: person.name }),
-                    /* @__PURE__ */ jsxRuntime.jsx("button", { className: "icon-button", type: "button", disabled: !canWrite || !isOwner(selectedInstance.ownerId), "aria-label": `Remove ${person.name}`, onClick: () => void removeCollaborator(selectedInstance.id, person.id), "data-testid": `project-collaborator-remove-${person.id}`, children: "\xD7" })
+                    /* @__PURE__ */ jsxRuntime.jsx("button", { className: "icon-button", type: "button", disabled: true, "aria-label": `Remove ${person.name}`, title: "Collaborator management is not available in this workspace.", "data-testid": `project-collaborator-remove-${person.id}`, children: "\xD7" })
                   ] }, person.id)),
-                  /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", disabled: !canWrite || !isOwner(selectedInstance.ownerId), onClick: () => setCollaboratorPickerFor(selectedInstance.id), "data-testid": "project-collaborator-add", children: "Add person" })
+                  /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", disabled: true, title: "Collaborator management is not available in this workspace.", "data-testid": "project-collaborator-add", children: "Add person" })
                 ] })
               ] }),
               /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "timeline-toolbar", children: [
                 /* @__PURE__ */ jsxRuntime.jsx("h3", { children: "Milestones and steps" }),
-                /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", disabled: mutationPending || !canWrite || !isOwner(selectedInstance.ownerId), onClick: () => setMilestoneOpen(true), "data-testid": "project-milestone-add", children: "Add milestone" })
+                /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", disabled: mutationPending || !can("projects.create-milestone") || !isOwner(selectedInstance.ownerId), onClick: () => setMilestoneOpen(true), "data-testid": "project-milestone-add", children: "Add milestone" })
               ] }),
               /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "milestone-list", children: [
                 selectedInstance.milestones.map((milestone) => /* @__PURE__ */ jsxRuntime.jsxs("section", { className: "milestone-group", "data-testid": `project-milestone-${milestone.id}`, children: [
@@ -3674,13 +3694,13 @@ function ProjectsScreen() {
         /* @__PURE__ */ jsxRuntime.jsx(Field, { label: "Anchor type", children: /* @__PURE__ */ jsxRuntime.jsx("input", { name: "anchorType", defaultValue: templateEditor === "new" ? "Service date" : templateEditor.anchorType, "data-testid": "project-template-anchor-type" }) }),
         /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "dialog-actions", children: [
           /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", onClick: () => setTemplateEditor(null), children: "Cancel" }),
-          /* @__PURE__ */ jsxRuntime.jsx("button", { className: "primary-button", type: "submit", disabled: !canWrite || mutationPending, "data-testid": "project-template-save", children: "Save template" })
+          /* @__PURE__ */ jsxRuntime.jsx("button", { className: "primary-button", type: "submit", disabled: mutationPending || !can(templateEditor === "new" ? "projects.create-template" : "projects.update-template"), "data-testid": "project-template-save", children: "Save template" })
         ] })
       ] }),
       templateEditor !== "new" && templateEditor && /* @__PURE__ */ jsxRuntime.jsxs("section", { className: "template-step-editor", "aria-labelledby": "project-template-steps-title", children: [
         /* @__PURE__ */ jsxRuntime.jsxs("header", { children: [
           /* @__PURE__ */ jsxRuntime.jsx("h3", { id: "project-template-steps-title", children: "Template steps" }),
-          /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", disabled: !canWrite, title: !canWrite ? "This host grants inspection only." : void 0, onClick: () => setTemplateStepEditor({ templateId: templateEditor.id }), "data-testid": "project-template-step-add", children: "Add step" })
+          /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", disabled: !can("projects.create-step"), title: !can("projects.create-step") ? "This host grants inspection only." : void 0, onClick: () => setTemplateStepEditor({ templateId: templateEditor.id }), "data-testid": "project-template-step-add", children: "Add step" })
         ] }),
         templateEditor.steps.map((step) => /* @__PURE__ */ jsxRuntime.jsxs("div", { "data-testid": `project-template-step-${step.id}`, children: [
           /* @__PURE__ */ jsxRuntime.jsx("strong", { children: step.title }),
@@ -3689,8 +3709,8 @@ function ProjectsScreen() {
             " \xB7 ",
             members.find((person) => person.id === step.assigneeId)?.name ?? "Unassigned"
           ] }),
-          /* @__PURE__ */ jsxRuntime.jsx("button", { className: "text-button", type: "button", disabled: !canWrite, onClick: () => setTemplateStepEditor({ templateId: templateEditor.id, step }), "data-testid": `project-template-step-edit-${step.id}`, children: "Edit" }),
-          /* @__PURE__ */ jsxRuntime.jsx("button", { className: "text-danger-button", type: "button", disabled: !canWrite, onClick: () => void deleteTemplateStep(templateEditor.id, step.id), "data-testid": `project-template-step-delete-${step.id}`, children: "Delete" })
+          /* @__PURE__ */ jsxRuntime.jsx("button", { className: "text-button", type: "button", disabled: !can("projects.update-step"), onClick: () => setTemplateStepEditor({ templateId: templateEditor.id, step }), "data-testid": `project-template-step-edit-${step.id}`, children: "Edit" }),
+          /* @__PURE__ */ jsxRuntime.jsx("button", { className: "text-danger-button", type: "button", disabled: !can("projects.delete-step"), onClick: () => void deleteTemplateStep(templateEditor.id, step.id), "data-testid": `project-template-step-delete-${step.id}`, children: "Delete" })
         ] }, step.id))
       ] })
     ] }),
@@ -3704,7 +3724,7 @@ function ProjectsScreen() {
       ] }) }),
       /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "dialog-actions", children: [
         /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", onClick: () => setTemplateStepEditor(null), children: "Cancel" }),
-        /* @__PURE__ */ jsxRuntime.jsx("button", { className: "primary-button", type: "submit", disabled: !canWrite || mutationPending, "data-testid": "project-template-step-save", children: "Save step" })
+        /* @__PURE__ */ jsxRuntime.jsx("button", { className: "primary-button", type: "submit", disabled: mutationPending || !can(templateStepEditor.step ? "projects.update-step" : "projects.create-step"), "data-testid": "project-template-step-save", children: "Save step" })
       ] })
     ] }) }),
     /* @__PURE__ */ jsxRuntime.jsx(FocusDialog, { open: milestoneOpen, onClose: () => setMilestoneOpen(false), title: "Add milestone", description: "Milestones group steps inside this project only.", testId: "project-milestone-dialog", children: /* @__PURE__ */ jsxRuntime.jsxs("form", { className: "project-dialog-form", onSubmit: addMilestone, children: [
@@ -3714,13 +3734,6 @@ function ProjectsScreen() {
         /* @__PURE__ */ jsxRuntime.jsx("button", { className: "primary-button", type: "submit", "data-testid": "project-milestone-submit", children: "Add milestone" })
       ] })
     ] }) }),
-    /* @__PURE__ */ jsxRuntime.jsx(FocusDialog, { open: Boolean(collaboratorPickerFor), onClose: () => setCollaboratorPickerFor(null), title: "Add project collaborator", description: "The owner and existing collaborators are excluded.", testId: "project-collaborator-picker", children: /* @__PURE__ */ jsxRuntime.jsx("div", { className: "collaborator-options", role: "listbox", "aria-label": "Workspace members", children: collaboratorPickerFor && members.filter((person) => {
-      const instance = instances.find((item) => item.id === collaboratorPickerFor);
-      return person.id !== instance?.ownerId && !instance?.collaborators.some((collaborator) => collaborator.id === person.id);
-    }).map((person) => /* @__PURE__ */ jsxRuntime.jsxs("button", { className: "secondary-button", role: "option", "aria-selected": "false", type: "button", onClick: () => void addCollaborator(collaboratorPickerFor, person.id), "data-testid": `project-collaborator-option-${person.id}`, children: [
-      /* @__PURE__ */ jsxRuntime.jsx("span", { "aria-hidden": "true", children: person.initials }),
-      /* @__PURE__ */ jsxRuntime.jsx("strong", { children: person.name })
-    ] }, person.id)) }) }),
     /* @__PURE__ */ jsxRuntime.jsxs(FocusDialog, { open: Boolean(instanceDelete), onClose: () => setInstanceDelete(null), title: instanceDelete ? `Delete "${instanceDelete.name}"?` : "Delete project?", description: "Only this generated project instance will be removed.", testId: "project-instance-delete-dialog", children: [
       /* @__PURE__ */ jsxRuntime.jsx("p", { className: "delete-copy", children: "The template and neighboring project instances are preserved." }),
       /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "dialog-actions", children: [
@@ -3728,7 +3741,7 @@ function ProjectsScreen() {
         /* @__PURE__ */ jsxRuntime.jsx("button", { className: "danger-button", type: "button", disabled: mutationPending, onClick: () => void confirmDelete(), "data-testid": "project-instance-delete-confirm", children: "Delete project" })
       ] })
     ] }),
-    /* @__PURE__ */ jsxRuntime.jsx(FocusDialog, { open: Boolean(inspectorStep), onClose: closeInspector, title: inspectorStep?.title ?? "Project step", description: "Project context stays visible while supported step fields are edited.", testId: "project-step-inspector", wide: true, children: inspectorStep && inspectorDraft && /* @__PURE__ */ jsxRuntime.jsx("form", { className: "project-dialog-form inspector-form", onSubmit: saveInspector, children: /* @__PURE__ */ jsxRuntime.jsxs("fieldset", { disabled: mutationPending || !canWrite, title: !canWrite ? "This host grants inspection only." : void 0, children: [
+    /* @__PURE__ */ jsxRuntime.jsx(FocusDialog, { open: Boolean(inspectorStep), onClose: closeInspector, title: inspectorStep?.title ?? "Project step", description: "Project context stays visible while supported step fields are edited.", testId: "project-step-inspector", wide: true, children: inspectorStep && inspectorDraft && /* @__PURE__ */ jsxRuntime.jsx("form", { className: "project-dialog-form inspector-form", onSubmit: saveInspector, children: /* @__PURE__ */ jsxRuntime.jsxs("fieldset", { disabled: mutationPending || !can("projects.update-step"), title: !can("projects.update-step") ? "This host grants inspection only." : void 0, children: [
       /* @__PURE__ */ jsxRuntime.jsx("legend", { className: "sr-only", children: "Project step fields" }),
       /* @__PURE__ */ jsxRuntime.jsx(Field, { label: "Title", children: /* @__PURE__ */ jsxRuntime.jsx("input", { "data-autofocus": true, value: inspectorDraft.title, onChange: (event) => setInspectorDraft({ ...inspectorDraft, title: event.target.value }), "data-testid": "project-step-title" }) }),
       /* @__PURE__ */ jsxRuntime.jsx(Field, { label: "Notes", children: /* @__PURE__ */ jsxRuntime.jsx("textarea", { rows: 4, value: inspectorDraft.notes, onChange: (event) => setInspectorDraft({ ...inspectorDraft, notes: event.target.value }), "data-testid": "project-step-notes" }) }),
@@ -3742,7 +3755,19 @@ function ProjectsScreen() {
       ] }) }),
       inspectorDraft.scheduledDate && inspectorDraft.dueDate && inspectorDraft.scheduledDate > inspectorDraft.dueDate && /* @__PURE__ */ jsxRuntime.jsx("p", { className: "schedule-warning", role: "status", "data-testid": "project-step-schedule-warning", children: "This step is scheduled after its deadline." }),
       /* @__PURE__ */ jsxRuntime.jsx("div", { className: "dialog-actions", children: /* @__PURE__ */ jsxRuntime.jsx("button", { className: "primary-button", type: "submit", disabled: mutationPending, "data-testid": "project-step-save", children: "Save details" }) })
-    ] }) }) })
+    ] }) }) }),
+    /* @__PURE__ */ jsxRuntime.jsx(FocusDialog, { open: Boolean(operationTarget), onClose: closeOperation, title: "Confirm project operation", description: "Confirm this exact project change before it is sent to the workspace.", testId: "project-operation-confirmation", children: operationTarget && /* @__PURE__ */ jsxRuntime.jsxs(jsxRuntime.Fragment, { children: [
+      operationError && /* @__PURE__ */ jsxRuntime.jsx("p", { className: "operation-outcome", role: "alert", "data-testid": "project-operation-outcome", children: "This project changed elsewhere or its result is uncertain. Reload current data or retry with a fresh confirmation." }),
+      /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "dialog-actions", children: [
+        operationError && /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", disabled: mutationPending, onClick: () => {
+          closeOperation();
+          void load();
+        }, "data-testid": "project-operation-reload", children: "Reload" }),
+        operationError && /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", disabled: mutationPending, onClick: retryOperation, "data-testid": "project-operation-retry", children: "Retry" }),
+        /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", disabled: mutationPending, onClick: closeOperation, "data-testid": "project-operation-cancel", children: "Cancel" }),
+        /* @__PURE__ */ jsxRuntime.jsx("button", { className: "primary-button", type: "button", disabled: mutationPending, onClick: () => void confirmOperation(), "data-testid": "project-operation-confirm", children: "Confirm" })
+      ] })
+    ] }) })
   ] }) });
 }
 var weekdays = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -3817,6 +3842,13 @@ function RuleForm({ idPrefix, initial, members, showStepsBuilder = true, disable
   const addStep = () => setDraft((current) => ({ ...current, steps: [...current.steps, { title: "", assigneeId: "" }] }));
   const patchStep = (index, patch) => setDraft((current) => ({ ...current, steps: current.steps.map((step, stepIndex) => stepIndex === index ? { ...step, ...patch } : step) }));
   const removeStep = (index) => setDraft((current) => ({ ...current, steps: current.steps.filter((_, stepIndex) => stepIndex !== index) }));
+  const moveStep = (index, direction) => setDraft((current) => {
+    const destination = index + direction;
+    if (destination < 0 || destination >= current.steps.length) return current;
+    const steps = [...current.steps];
+    [steps[index], steps[destination]] = [steps[destination], steps[index]];
+    return { ...current, steps };
+  });
   const submit = (event) => {
     event.preventDefault();
     const title = draft.title.trim();
@@ -3859,7 +3891,9 @@ function RuleForm({ idPrefix, initial, members, showStepsBuilder = true, disable
             members.map((person) => /* @__PURE__ */ jsxRuntime.jsx("option", { value: person.id, children: person.name }, person.id))
           ] })
         ] }),
-        /* @__PURE__ */ jsxRuntime.jsx("button", { className: "text-danger-button", type: "button", disabled, onClick: () => removeStep(index), "data-testid": `${idPrefix}-remove-step-${index}`, children: "Remove step" })
+        /* @__PURE__ */ jsxRuntime.jsx("button", { className: "text-danger-button", type: "button", disabled, onClick: () => removeStep(index), "data-testid": `${idPrefix}-remove-step-${index}`, children: "Remove step" }),
+        /* @__PURE__ */ jsxRuntime.jsx("button", { className: "text-button", type: "button", disabled: disabled || index === 0, onClick: () => moveStep(index, -1), "data-testid": `${idPrefix}-move-step-up-${index}`, children: "Move up" }),
+        /* @__PURE__ */ jsxRuntime.jsx("button", { className: "text-button", type: "button", disabled: disabled || index === draft.steps.length - 1, onClick: () => moveStep(index, 1), "data-testid": `${idPrefix}-move-step-down-${index}`, children: "Move down" })
       ] }, index)),
       draft.steps.length > 1 && /* @__PURE__ */ jsxRuntime.jsxs("label", { className: "rhythm-sequential", children: [
         /* @__PURE__ */ jsxRuntime.jsx("input", { type: "checkbox", disabled, checked: draft.sequential, onChange: (event) => set("sequential", event.target.checked), "data-testid": `${idPrefix}-sequential` }),
@@ -3885,20 +3919,24 @@ function RuleForm({ idPrefix, initial, members, showStepsBuilder = true, disable
 function RhythmsScreen() {
   const { rhythms: gateway } = useRhythmDomainGateway();
   const host = useRhythmHost();
-  const canWrite = host.currentUser.collaborationCapability === "write";
+  const capabilities = host.currentUser.capabilities ?? [];
+  const can = (operation) => capabilities.includes("rhythms.write") || capabilities.includes(operation);
   const isOwner = (rule) => Boolean(host.currentUser.id && host.currentUser.id === rule.ownerId);
   const [surfaceState, setSurfaceState] = react.useState("loading");
   const [rules, setRules] = react.useState([]);
   const [members, setMembers] = react.useState([]);
   const [selectedId, setSelectedId] = react.useState(null);
   const [createOpen, setCreateOpen] = react.useState(false);
-  const [deleteTarget, setDeleteTarget] = react.useState(null);
-  const [collaboratorPickerOpen, setCollaboratorPickerOpen] = react.useState(false);
   const [stepTitle, setStepTitle] = react.useState("");
   const [stepAssignee, setStepAssignee] = react.useState("");
   const [mutationPending, setMutationPending] = react.useState(false);
+  const [operationTarget, setOperationTarget] = react.useState(null);
+  const [operationError, setOperationError] = react.useState(null);
   const newRuleTriggerRef = react.useRef(null);
   const loadGeneration = react.useRef(0);
+  const operationGeneration = react.useRef(0);
+  const operationEpoch = react.useRef(0);
+  const mounted = react.useRef(true);
   const selected = rules.find((rule) => rule.id === selectedId) ?? null;
   const handleError = (error) => {
     const kind = error instanceof RhythmGatewayError ? error.kind : "server_error";
@@ -3923,25 +3961,68 @@ function RhythmsScreen() {
       loadGeneration.current += 1;
     };
   }, [gateway]);
+  react.useEffect(() => () => {
+    mounted.current = false;
+    operationEpoch.current += 1;
+  }, []);
   const showsWorkspace = surfaceState === "ready";
-  const inspect = (rule) => setSelectedId(rule.id);
-  const closeSelection = () => setSelectedId(null);
-  const toggleEnabled = async (rule, enabled) => {
-    if (!canWrite || !isOwner(rule) || mutationPending) return;
+  const closeOperation = () => {
+    operationEpoch.current += 1;
+    setOperationError(null);
+    setOperationTarget(null);
+  };
+  const inspect = (rule) => {
+    closeOperation();
+    setSelectedId(rule.id);
+  };
+  const closeSelection = () => {
+    closeOperation();
+    setSelectedId(null);
+  };
+  const requestOperation = (operation, entityId, payload, mutate) => {
+    if (!can(operation) || mutationPending) return;
+    operationGeneration.current += 1;
+    operationEpoch.current += 1;
+    setOperationError(null);
+    setOperationTarget({ operation, entityId, payload, mutate, generation: `${entityId}:${operation}:${operationGeneration.current}:${Date.now()}` });
+  };
+  const retryOperation = () => {
+    if (!operationTarget || mutationPending) return;
+    operationGeneration.current += 1;
+    operationEpoch.current += 1;
+    setOperationError(null);
+    setOperationTarget((target) => target && { ...target, generation: `${target.entityId}:${target.operation}:${operationGeneration.current}:${Date.now()}` });
+  };
+  const confirmOperation = async () => {
+    if (!operationTarget || mutationPending) return;
+    const target = operationTarget;
+    const epoch = operationEpoch.current;
     setMutationPending(true);
     try {
-      const updated = await gateway.update(rule.id, { enabled });
-      setRules((current) => current.map((item) => item.id === rule.id ? updated : item));
+      const confirmation = { operation: target.operation, entityId: target.entityId, payload: target.payload, generation: target.generation };
+      if (host.confirmWorkspaceOperation && !await host.confirmWorkspaceOperation(confirmation)) return;
+      if (!mounted.current || operationEpoch.current !== epoch || operationTarget !== target) return;
+      await target.mutate();
+      if (!mounted.current || operationEpoch.current !== epoch || operationTarget !== target) return;
+      setOperationTarget(null);
     } catch (error) {
-      handleError(error);
+      const kind = error?.kind;
+      if (kind === "conflict" || kind === "uncertain") setOperationError(kind);
+      else handleError(error);
     } finally {
-      setMutationPending(false);
+      if (mounted.current) setMutationPending(false);
     }
   };
+  const toggleEnabled = async (rule, enabled) => {
+    if (!isOwner(rule)) return;
+    requestOperation("rhythms.update-rule", rule.id, { enabled }, async () => {
+      const updated = await gateway.update(rule.id, { enabled });
+      setRules((current) => current.map((item) => item.id === rule.id ? updated : item));
+    });
+  };
   const createRule = async (draft) => {
-    if (!canWrite) return;
-    setMutationPending(true);
-    try {
+    const normalizedSteps = draft.steps.map((step) => ({ title: step.title.trim().slice(0, 200), assigneeId: step.assigneeId || null }));
+    requestOperation("rhythms.create-rule", "new-rule", { title: draft.title.slice(0, 200), frequency: draft.frequency, dayOfWeek: draft.dayOfWeek, dayOfMonth: draft.dayOfMonth, month: draft.month, sequential: draft.sequential, steps: JSON.stringify(normalizedSteps).slice(0, 2e3) }, async () => {
       const created = await gateway.create({ title: draft.title, frequency: draft.frequency, dayOfWeek: draft.dayOfWeek, dayOfMonth: draft.dayOfMonth, month: draft.month, sequential: draft.sequential });
       let withSteps = created;
       for (const step of draft.steps) {
@@ -3950,77 +4031,35 @@ function RhythmsScreen() {
       setRules((current) => [...current, withSteps]);
       setSelectedId(withSteps.id);
       setCreateOpen(false);
-    } catch (error) {
-      handleError(error);
-    } finally {
-      setMutationPending(false);
-    }
+    });
   };
   const saveRule = async (draft) => {
-    if (!canWrite || !selected || !isOwner(selected)) return;
-    setMutationPending(true);
-    try {
-      await gateway.update(selected.id, { title: draft.title, frequency: draft.frequency, dayOfWeek: draft.dayOfWeek, dayOfMonth: draft.dayOfMonth, month: draft.month, sequential: draft.sequential });
-      const updated = await gateway.replaceSteps(selected.id, draft.steps.map((step) => ({ title: step.title, assigneeId: step.assigneeId || void 0 })));
+    if (!selected || !isOwner(selected)) return;
+    const steps = draft.steps.map((step) => ({ title: step.title.trim(), assigneeId: step.assigneeId || "" }));
+    const originalSteps = selected.steps.map((step) => ({ title: step.title, assigneeId: step.assigneeId ?? "" }));
+    const sameStep = (left, right) => left.title === right.title && left.assigneeId === right.assigneeId;
+    const sameStepSet = JSON.stringify([...steps].sort((left, right) => `${left.title}:${left.assigneeId}`.localeCompare(`${right.title}:${right.assigneeId}`))) === JSON.stringify([...originalSteps].sort((left, right) => `${left.title}:${left.assigneeId}`.localeCompare(`${right.title}:${right.assigneeId}`)));
+    const ruleChanged = selected.title !== draft.title || selected.frequency !== draft.frequency || selected.dayOfWeek !== draft.dayOfWeek || selected.dayOfMonth !== draft.dayOfMonth || selected.month !== draft.month || selected.sequential !== draft.sequential;
+    const stepsChanged = JSON.stringify(steps) !== JSON.stringify(originalSteps);
+    const operation = ruleChanged ? "rhythms.update-rule" : steps.length > originalSteps.length ? "rhythms.create-step" : steps.length < originalSteps.length ? "rhythms.delete-step" : sameStepSet && steps.some((step, index) => !sameStep(step, originalSteps[index])) ? "rhythms.reorder-step" : "rhythms.update-step";
+    if (!ruleChanged && !stepsChanged) return;
+    requestOperation(operation, selected.id, { title: draft.title.slice(0, 200), frequency: draft.frequency, dayOfWeek: draft.dayOfWeek, dayOfMonth: draft.dayOfMonth, month: draft.month, sequential: draft.sequential, steps: JSON.stringify(steps.map((step) => ({ title: step.title.slice(0, 200), assigneeId: step.assigneeId || null }))).slice(0, 2e3) }, async () => {
+      let updated = selected;
+      if (ruleChanged) updated = await gateway.update(selected.id, { title: draft.title, frequency: draft.frequency, dayOfWeek: draft.dayOfWeek, dayOfMonth: draft.dayOfMonth, month: draft.month, sequential: draft.sequential });
+      if (stepsChanged) updated = await gateway.replaceSteps(selected.id, steps.map((step) => ({ title: step.title, assigneeId: step.assigneeId || void 0 })));
       setRules((current) => current.map((rule) => rule.id === selected.id ? updated : rule));
-    } catch (error) {
-      handleError(error);
-    } finally {
-      setMutationPending(false);
-    }
+    });
   };
   const addWorkflowStep = async (event) => {
     event.preventDefault();
-    if (!canWrite || !selected || !isOwner(selected) || !stepTitle.trim()) return;
-    setMutationPending(true);
-    try {
+    if (!selected || !isOwner(selected) || !stepTitle.trim()) return;
+    requestOperation("rhythms.create-step", selected.id, { title: stepTitle.trim().slice(0, 200), assigneeId: stepAssignee || null }, async () => {
       const step = await gateway.addStep(selected.id, { title: stepTitle.trim(), assigneeId: stepAssignee || void 0 });
       setRules((current) => current.map((rule) => rule.id === selected.id ? { ...rule, steps: [...rule.steps, step] } : rule));
       setStepTitle("");
       setStepAssignee("");
-    } catch (error) {
-      handleError(error);
-    } finally {
-      setMutationPending(false);
-    }
+    });
   };
-  const addCollaborator = async (memberId) => {
-    if (!canWrite || !selected || !isOwner(selected)) return;
-    try {
-      const updated = await gateway.addCollaborator(selected.id, memberId);
-      setRules((current) => current.map((rule) => rule.id === updated.id ? updated : rule));
-      setCollaboratorPickerOpen(false);
-    } catch (error) {
-      handleError(error);
-    }
-  };
-  const removeCollaborator = async (memberId) => {
-    if (!canWrite || !selected || !isOwner(selected)) return;
-    try {
-      const updated = await gateway.removeCollaborator(selected.id, memberId);
-      setRules((current) => current.map((rule) => rule.id === updated.id ? updated : rule));
-    } catch (error) {
-      handleError(error);
-    }
-  };
-  const confirmDelete = async () => {
-    if (!canWrite || !deleteTarget || !isOwner(deleteTarget)) return;
-    setMutationPending(true);
-    try {
-      await gateway.delete(deleteTarget.id);
-      setRules((current) => current.filter((rule) => rule.id !== deleteTarget.id));
-      if (selectedId === deleteTarget.id) setSelectedId(null);
-      setDeleteTarget(null);
-    } catch (error) {
-      handleError(error);
-    } finally {
-      setMutationPending(false);
-    }
-  };
-  const candidates = react.useMemo(
-    () => selected ? members.filter((person) => person.id !== selected.ownerId && !selected.collaborators.some((collaborator) => collaborator.id === person.id)) : [],
-    [members, selected]
-  );
   return /* @__PURE__ */ jsxRuntime.jsx(ScreenRoot, { screenName: "Rhythms", testId: "rhythm-rhythms-screen", children: /* @__PURE__ */ jsxRuntime.jsxs("section", { className: "page-shell pg-rhythms", "aria-busy": surfaceState === "loading", children: [
     /* @__PURE__ */ jsxRuntime.jsxs("header", { className: "rhythms-header", children: [
       /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "rhythms-heading", children: [
@@ -4034,7 +4073,7 @@ function RhythmsScreen() {
           " ",
           rules.length === 1 ? "rule" : "rules"
         ] }),
-        /* @__PURE__ */ jsxRuntime.jsx("button", { ref: newRuleTriggerRef, className: "primary-button", type: "button", disabled: !showsWorkspace || !canWrite, title: !canWrite ? "This host grants inspection only." : void 0, onClick: () => setCreateOpen(true), "data-testid": "rhythms-new-rule", children: "New rule" })
+        /* @__PURE__ */ jsxRuntime.jsx("button", { ref: newRuleTriggerRef, className: "primary-button", type: "button", disabled: !showsWorkspace || !can("rhythms.create-rule"), title: !can("rhythms.create-rule") ? "This host grants inspection only." : void 0, onClick: () => setCreateOpen(true), "data-testid": "rhythms-new-rule", children: "New rule" })
       ] })
     ] }),
     /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "rhythms-scroll", children: [
@@ -4051,11 +4090,15 @@ function RhythmsScreen() {
             /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "rhythm-card-actions", children: [
               /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", "aria-label": `Inspect ${rule.title}`, onClick: () => inspect(rule), "data-testid": `rhythm-inspect-${rule.id}`, children: "Inspect" }),
               /* @__PURE__ */ jsxRuntime.jsxs("label", { className: "rhythm-enabled-toggle", children: [
-                /* @__PURE__ */ jsxRuntime.jsx("input", { type: "checkbox", checked: rule.enabled, disabled: mutationPending || !canWrite || !isOwner(rule), title: !isOwner(rule) ? "Only the rhythm owner can change this rule." : !canWrite ? "This host grants inspection only." : void 0, "aria-label": `${rule.enabled ? "Enabled" : "Paused"} - ${rule.title}`, onChange: (event) => void toggleEnabled(rule, event.target.checked), "data-testid": `rhythm-enabled-${rule.id}` }),
+                /* @__PURE__ */ jsxRuntime.jsx("input", { type: "checkbox", checked: rule.enabled, disabled: mutationPending || !can("rhythms.update-rule") || !isOwner(rule), title: !isOwner(rule) ? "Only the rhythm owner can change this rule." : !can("rhythms.update-rule") ? "This host grants inspection only." : void 0, "aria-label": `${rule.enabled ? "Enabled" : "Paused"} - ${rule.title}`, onChange: (event) => void toggleEnabled(rule, event.target.checked), "data-testid": `rhythm-enabled-${rule.id}` }),
                 /* @__PURE__ */ jsxRuntime.jsx("span", { "aria-hidden": "true" }),
                 /* @__PURE__ */ jsxRuntime.jsx("b", { children: rule.enabled ? "Enabled" : "Paused" })
               ] }),
-              /* @__PURE__ */ jsxRuntime.jsx("button", { className: "text-danger-button", type: "button", disabled: mutationPending || !canWrite || !isOwner(rule), title: !isOwner(rule) ? "Only the rhythm owner can delete this rule." : !canWrite ? "This host grants inspection only." : void 0, "aria-label": `Delete ${rule.title}`, onClick: () => setDeleteTarget(rule), "data-testid": `rhythm-delete-${rule.id}`, children: "Delete" })
+              /* @__PURE__ */ jsxRuntime.jsx("button", { className: "text-danger-button", type: "button", disabled: mutationPending || !can("rhythms.delete-rule") || !isOwner(rule), title: !isOwner(rule) ? "Only the rhythm owner can delete this rule." : !can("rhythms.delete-rule") ? "This host grants inspection only." : void 0, "aria-label": `Delete ${rule.title}`, onClick: () => requestOperation("rhythms.delete-rule", rule.id, { title: rule.title.slice(0, 200) }, async () => {
+                await gateway.delete(rule.id);
+                setRules((current) => current.filter((item) => item.id !== rule.id));
+                if (selectedId === rule.id) setSelectedId(null);
+              }), "data-testid": `rhythm-delete-${rule.id}`, children: "Delete" })
             ] })
           ] }, rule.id)) })
         ] }),
@@ -4109,7 +4152,7 @@ function RhythmsScreen() {
                 showStepsBuilder: true,
                 initial: { title: selected.title, frequency: selected.frequency, dayOfWeek: selected.dayOfWeek, dayOfMonth: selected.dayOfMonth, month: selected.month, sequential: selected.sequential, steps: selected.steps.map((step) => ({ title: step.title, assigneeId: step.assigneeId ?? "" })) },
                 members,
-                disabled: mutationPending || !canWrite || !isOwner(selected),
+                disabled: mutationPending || !isOwner(selected) || !["rhythms.update-rule", "rhythms.create-step", "rhythms.update-step", "rhythms.delete-step", "rhythms.reorder-step"].some(can),
                 onCancel: closeSelection,
                 onSave: (draft) => void saveRule(draft)
               }
@@ -4118,12 +4161,12 @@ function RhythmsScreen() {
           /* @__PURE__ */ jsxRuntime.jsxs("section", { className: "rhythm-collaborators", "aria-labelledby": "rhythm-collaborators-title", children: [
             /* @__PURE__ */ jsxRuntime.jsxs("header", { children: [
               /* @__PURE__ */ jsxRuntime.jsx("h3", { id: "rhythm-collaborators-title", children: "Collaborators" }),
-              /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", disabled: !canWrite || !isOwner(selected), onClick: () => setCollaboratorPickerOpen(true), "data-testid": "rhythm-add-collaborator", children: "Add collaborator" })
+              /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", disabled: true, title: "Collaborator changes are not available from this host-neutral surface.", "data-testid": "rhythm-add-collaborator", children: "Add collaborator" })
             ] }),
             /* @__PURE__ */ jsxRuntime.jsx("div", { className: "rhythm-people", children: selected.collaborators.length ? selected.collaborators.map((person) => /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "rhythm-person", "data-testid": `rhythm-collaborator-${person.id}`, children: [
               /* @__PURE__ */ jsxRuntime.jsx("span", { "aria-hidden": "true", children: person.initials }),
               /* @__PURE__ */ jsxRuntime.jsx("strong", { children: person.name }),
-              /* @__PURE__ */ jsxRuntime.jsx("button", { type: "button", disabled: !canWrite || !isOwner(selected), "aria-label": `Remove ${person.name}`, onClick: () => void removeCollaborator(person.id), "data-testid": `rhythm-remove-collaborator-${person.id}`, children: "Remove" })
+              /* @__PURE__ */ jsxRuntime.jsx("button", { type: "button", disabled: true, "aria-label": `Remove ${person.name}`, title: "Collaborator changes are not available from this host-neutral surface.", "data-testid": `rhythm-remove-collaborator-${person.id}`, children: "Remove" })
             ] }, person.id)) : /* @__PURE__ */ jsxRuntime.jsx("p", { children: "No collaborators yet." }) })
           ] }),
           /* @__PURE__ */ jsxRuntime.jsxs("section", { className: "rhythm-detail-steps", "aria-labelledby": "rhythm-steps-title", children: [
@@ -4135,16 +4178,16 @@ function RhythmsScreen() {
             /* @__PURE__ */ jsxRuntime.jsxs("form", { className: "rhythm-add-step-form", onSubmit: addWorkflowStep, children: [
               /* @__PURE__ */ jsxRuntime.jsxs("label", { children: [
                 "New step title",
-                /* @__PURE__ */ jsxRuntime.jsx("input", { disabled: !canWrite || !isOwner(selected), value: stepTitle, onChange: (event) => setStepTitle(event.target.value), "data-testid": "rhythm-add-step-title" })
+                /* @__PURE__ */ jsxRuntime.jsx("input", { disabled: !can("rhythms.create-step") || !isOwner(selected), value: stepTitle, onChange: (event) => setStepTitle(event.target.value), "data-testid": "rhythm-add-step-title" })
               ] }),
               /* @__PURE__ */ jsxRuntime.jsxs("label", { children: [
                 "Assignee",
-                /* @__PURE__ */ jsxRuntime.jsxs("select", { disabled: !canWrite || !isOwner(selected), value: stepAssignee, onChange: (event) => setStepAssignee(event.target.value), "data-testid": "rhythm-add-step-assignee", children: [
+                /* @__PURE__ */ jsxRuntime.jsxs("select", { disabled: !can("rhythms.create-step") || !isOwner(selected), value: stepAssignee, onChange: (event) => setStepAssignee(event.target.value), "data-testid": "rhythm-add-step-assignee", children: [
                   /* @__PURE__ */ jsxRuntime.jsx("option", { value: "", children: "None" }),
                   members.map((person) => /* @__PURE__ */ jsxRuntime.jsx("option", { value: person.id, children: person.name }, person.id))
                 ] })
               ] }),
-              /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "submit", disabled: mutationPending || !canWrite || !isOwner(selected) || !stepTitle.trim(), "data-testid": "rhythm-add-step-submit", children: "Add step" })
+              /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "submit", disabled: mutationPending || !can("rhythms.create-step") || !isOwner(selected) || !stepTitle.trim(), "data-testid": "rhythm-add-step-submit", children: "Add step" })
             ] })
           ] })
         ] }) : /* @__PURE__ */ jsxRuntime.jsxs("section", { className: "rhythm-detail-empty", "aria-labelledby": "rhythm-detail-empty-title", children: [
@@ -4153,15 +4196,31 @@ function RhythmsScreen() {
         ] }) })
       ] })
     ] }),
-    /* @__PURE__ */ jsxRuntime.jsx(FocusDialog, { open: createOpen, onClose: () => setCreateOpen(false), title: "New Recurring Rule", description: "Create a recurring rule with optional workflow steps.", testId: "rhythm-create-dialog", wide: true, children: /* @__PURE__ */ jsxRuntime.jsx(RuleForm, { idPrefix: "rhythm-create", initial: blankDraft(), members, onCancel: () => setCreateOpen(false), onSave: (draft) => void createRule(draft) }) }),
-    /* @__PURE__ */ jsxRuntime.jsx(FocusDialog, { open: Boolean(deleteTarget), onClose: () => setDeleteTarget(null), title: deleteTarget ? `Delete "${deleteTarget.title}"?` : "Delete rhythm?", description: "This will not remove already-generated tasks.", testId: "rhythm-delete-dialog", children: /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "dialog-actions", children: [
-      /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", onClick: () => setDeleteTarget(null), "data-testid": "rhythm-delete-cancel", children: "Cancel" }),
-      /* @__PURE__ */ jsxRuntime.jsx("button", { className: "danger-button", type: "button", disabled: mutationPending, onClick: () => void confirmDelete(), "data-testid": "rhythm-delete-confirm", children: "Delete rule" })
-    ] }) }),
-    /* @__PURE__ */ jsxRuntime.jsx(FocusDialog, { open: collaboratorPickerOpen && Boolean(selected), onClose: () => setCollaboratorPickerOpen(false), title: "Add collaborator", description: "Owner and existing collaborators are excluded.", testId: "rhythm-collaborator-picker", children: /* @__PURE__ */ jsxRuntime.jsx("div", { className: "rhythm-candidate-list", role: "listbox", "aria-label": "Available workspace members", children: candidates.length ? candidates.map((person) => /* @__PURE__ */ jsxRuntime.jsxs("button", { className: "rhythm-candidate", role: "option", "aria-selected": "false", type: "button", onClick: () => void addCollaborator(person.id), "data-testid": `rhythm-collaborator-option-${person.id}`, children: [
-      /* @__PURE__ */ jsxRuntime.jsx("span", { "aria-hidden": "true", children: person.initials }),
-      /* @__PURE__ */ jsxRuntime.jsx("strong", { children: person.name })
-    ] }, person.id)) : /* @__PURE__ */ jsxRuntime.jsx("p", { children: "No eligible workspace members." }) }) })
+    /* @__PURE__ */ jsxRuntime.jsx(FocusDialog, { open: createOpen, onClose: () => {
+      closeOperation();
+      setCreateOpen(false);
+    }, title: "New Recurring Rule", description: "Create a recurring rule with optional workflow steps.", testId: "rhythm-create-dialog", wide: true, children: /* @__PURE__ */ jsxRuntime.jsx(RuleForm, { idPrefix: "rhythm-create", initial: blankDraft(), members, disabled: mutationPending || !can("rhythms.create-rule"), onCancel: () => {
+      closeOperation();
+      setCreateOpen(false);
+    }, onSave: (draft) => void createRule(draft) }) }),
+    /* @__PURE__ */ jsxRuntime.jsxs(FocusDialog, { open: Boolean(operationTarget), onClose: closeOperation, title: "Confirm Rhythm change", description: "This exact change is sent only after you confirm it.", testId: "rhythm-operation-confirmation", children: [
+      /* @__PURE__ */ jsxRuntime.jsxs("p", { role: "status", children: [
+        "Confirm ",
+        operationTarget?.operation,
+        " for this rhythm."
+      ] }),
+      operationError && /* @__PURE__ */ jsxRuntime.jsxs("div", { role: "alert", "data-testid": "rhythm-operation-outcome", children: [
+        /* @__PURE__ */ jsxRuntime.jsx("p", { children: operationError === "conflict" ? "This rhythm changed elsewhere. Reload before retrying." : "We could not verify whether this change was applied. Reload before retrying." }),
+        /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "dialog-actions", children: [
+          /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", onClick: () => void load(), "data-testid": "rhythm-operation-reload", children: "Reload" }),
+          /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", onClick: retryOperation, "data-testid": "rhythm-operation-retry", children: "Retry" })
+        ] })
+      ] }),
+      /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "dialog-actions", children: [
+        /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", onClick: closeOperation, "data-testid": "rhythm-operation-cancel", children: "Cancel" }),
+        /* @__PURE__ */ jsxRuntime.jsx("button", { className: "primary-button", type: "button", disabled: mutationPending, onClick: () => void confirmOperation(), "data-autofocus": true, "data-testid": "rhythm-operation-confirm", children: "Confirm" })
+      ] })
+    ] })
   ] }) });
 }
 var boardStatuses = ["open", "in_progress", "waiting_for_reply", "done"];
