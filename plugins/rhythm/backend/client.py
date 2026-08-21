@@ -184,7 +184,7 @@ class RhythmClient:
                 raise
             uncertain = exc
         canonical = self.call("GET", f"/tasks/{task_id}")
-        matched = canonical.get("status") == "done" if operation == "complete" else canonical.get("scheduledDate") == scheduled_date
+        matched = canonical.get("id") == task_id and (canonical.get("status") == "done" if operation == "complete" else canonical.get("scheduledDate") == scheduled_date)
         # A transport ambiguity is never upgraded to success from readback: the
         # upstream might have applied a concurrent actor's identical state.
         if matched and uncertain is None:
