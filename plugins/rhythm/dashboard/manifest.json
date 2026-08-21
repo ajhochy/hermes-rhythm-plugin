@@ -1,0 +1,10 @@
+{
+  "name": "rhythm",
+  "label": "Rhythm",
+  "description": "Rhythm workspace connection",
+  "icon": "Pulse",
+  "version": "0.1.0",
+  "tab": {"path": "/rhythm", "position": "end"},
+  "entry": "../desktop/dist/index.js",
+  "api": "plugin_api.py"
+}
