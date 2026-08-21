@@ -228,6 +228,125 @@ def test_untrusted_locator_bootstrap_emits_only_invalid_identity_message(workflo
     assert "create-run" not in bootstrap
 
 
+def test_registered_stage_worktree_with_missing_locator_cannot_rebootstrap_as_root(workflow, monkeypatch):
+    """A lost locator must not let the original stage worker create a second run."""
+    plugin = load_plugin("hermes-coding-workflow")
+    repo, worktree, _ = workflow
+    locator = worktree / ".hermes" / "hcw-run.json"
+    locator.unlink()
+    monkeypatch.delenv("HCW_RUN_ID")
+
+    bootstrap = plugin._build_bootstrap()
+    decision = plugin._pre_tool_call(
+        tool_name="terminal",
+        args={"command": _bootstrap_command(plugin, worktree, "task-red")},
+    )
+
+    assert bootstrap == (
+        f"{plugin.BOOTSTRAP_MARKER}: registered HCW workflow identity is invalid; "
+        "do not run lifecycle commands."
+    )
+    assert "create-run" not in bootstrap
+    assert decision and decision["action"] == "block"
+    assert (repo / ".hermes" / "workflows" / "run-test" / "run.json").is_file()
+
+
+def test_symlinked_locator_parent_cannot_supply_active_stage_identity(workflow, monkeypatch):
+    """A locator is untrusted when any authority directory component is a symlink."""
+    plugin = load_plugin("hermes-coding-workflow")
+    repo, worktree, _ = workflow
+    locator_dir = worktree / ".hermes"
+    external = worktree.parent / "external-locator"
+    shutil.copytree(locator_dir, external)
+    (locator_dir / "hcw-run.json").unlink()
+    locator_dir.rmdir()
+    locator_dir.symlink_to(external, target_is_directory=True)
+    monkeypatch.delenv("HCW_RUN_ID")
+    launcher = Path(plugin.__file__).resolve().parent / "runtime" / "bin" / "hcw"
+
+    bootstrap = plugin._build_bootstrap()
+    decision = plugin._pre_tool_call(
+        tool_name="terminal",
+        args={"command": f"{launcher} check {repo} run-test red -- pytest"},
+    )
+
+    assert bootstrap == (
+        f"{plugin.BOOTSTRAP_MARKER}: registered HCW workflow identity is invalid; "
+        "do not run lifecycle commands."
+    )
+    assert "create-run" not in bootstrap
+    assert decision and decision["action"] == "block"
+
+
+@pytest.mark.parametrize("state_kind", ("multiple", "malformed"))
+def test_missing_locator_with_ambiguous_or_malformed_authority_fails_closed(workflow, monkeypatch, state_kind):
+    plugin = load_plugin("hermes-coding-workflow")
+    repo, worktree, state = workflow
+    (worktree / ".hermes" / "hcw-run.json").unlink()
+    extra = repo / ".hermes" / "workflows" / "other-run"
+    extra.mkdir()
+    if state_kind == "multiple":
+        extra_state = {**state, "id": "other-run"}
+        (extra / "run.json").write_text(json.dumps(extra_state))
+    else:
+        (extra / "run.json").write_text("{")
+    monkeypatch.delenv("HCW_RUN_ID")
+
+    bootstrap = plugin._build_bootstrap()
+    decision = plugin._pre_tool_call(
+        tool_name="terminal", args={"command": _bootstrap_command(plugin, worktree, "task-red")}
+    )
+
+    assert "create-run" not in bootstrap
+    assert "do not run lifecycle commands" in bootstrap
+    assert decision and decision["action"] == "block"
+
+
+def test_unregistered_linked_worktree_without_locator_cannot_borrow_another_run(workflow, monkeypatch):
+    plugin = load_plugin("hermes-coding-workflow")
+    repo, worktree, _ = workflow
+    other = repo / ".worktrees" / "unregistered"
+    subprocess.run(["git", "-C", str(repo), "worktree", "add", "-b", "other", str(other)], check=True, capture_output=True)
+    monkeypatch.chdir(other)
+    monkeypatch.delenv("HCW_RUN_ID")
+
+    bootstrap = plugin._build_bootstrap()
+    decision = plugin._pre_tool_call(
+        tool_name="terminal", args={"command": _bootstrap_command(plugin, other, "task-red")}
+    )
+
+    assert "create-run" not in bootstrap
+    assert "do not run lifecycle commands" in bootstrap
+    assert decision and decision["action"] == "block"
+    assert worktree != other
+
+
+@pytest.mark.parametrize("authority_kind", ("parent", "leaf"))
+def test_symlinked_authoritative_manifest_path_fails_closed(workflow, monkeypatch, authority_kind):
+    plugin = load_plugin("hermes-coding-workflow")
+    repo, _, _ = workflow
+    authority = repo / ".hermes"
+    external = repo.parent / f"external-authority-{authority_kind}"
+    if authority_kind == "parent":
+        shutil.copytree(authority, external)
+        shutil.rmtree(authority)
+        authority.symlink_to(external, target_is_directory=True)
+    else:
+        manifest = authority / "workflows" / "run-test" / "run.json"
+        external.write_text(manifest.read_text())
+        manifest.unlink()
+        manifest.symlink_to(external)
+    monkeypatch.delenv("HCW_RUN_ID")
+
+    bootstrap = plugin._build_bootstrap()
+
+    assert bootstrap == (
+        f"{plugin.BOOTSTRAP_MARKER}: registered HCW workflow identity is invalid; "
+        "do not run lifecycle commands."
+    )
+    assert "create-run" not in bootstrap
+
+
 def test_guard_fails_closed_without_identity_and_enforces_exact_lifecycle_commands(workflow, monkeypatch):
     plugin = load_plugin("hermes-coding-workflow"); repo, worktree, state = workflow
     assert plugin._pre_tool_call(tool_name="write_file", args={"path":"app.py"})["action"] == "block"

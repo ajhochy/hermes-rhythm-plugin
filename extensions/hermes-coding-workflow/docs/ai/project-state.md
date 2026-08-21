@@ -30,6 +30,13 @@ Build the complete standalone Hermes coding workflow package, including the cont
 
 ## Recent coding-agent runs
 
+### 2026-08-21 — Locator authority repair
+- Files modified: `plugins/hermes-coding-workflow/__init__.py` recognizes a linked worktree controlled by exactly one canonical, non-symlinked authoritative run even when its local locator is missing, without deriving stage authority; it rejects symlinked locator and manifest components and limits create-run bootstrap to a canonical repository root. `tests/plugin/test_native_plugins.py` adds immutable-review regressions and inverse coverage for missing locators, ambiguous/malformed state, unregistered worktrees, and locator/manifest parent and leaf symlinks.
+- Checks run: RED: both immutable-review regressions failed (missing locator emitted root `create-run` guidance; symlinked `.hermes` emitted active red-stage guidance). GREEN: focused plugin suite passed; isolated temporary-`HERMES_HOME` full Python suite exited 0 (existing FastAPI/TestClient deprecation warning only); Node tests/build passed 3/3; Python compilation, `git diff --check`, and strict added-line credential scan passed.
+- Decisions made: derive missing-locator control context only from the current exact Git worktree's canonical parent repository and exactly one safe authoritative match; that recognition produces only invalid-identity guidance and never stage authorization. Root bootstrap remains available only at the canonical repository root.
+- Deviations from spec: no push, merge, live-profile mutation, or Kanban mutation.
+- Concerns: the extension-local `.venv` lacks `pygments`, and Homebrew pytest runs lifecycle subprocesses without wheel build support; the documented shared Hermes venv was used for the full isolated suite.
+
 ### 2026-08-21 — Bootstrap binding error correction
 - Files modified: `plugins/hermes-coding-workflow/__init__.py` propagates an invalid active-stage binding into the existing registered-locator fail-closed bootstrap path; `tests/plugin/test_native_plugins.py` adds wrong-task, wrong-profile, inactive-stage, malformed-locator, and symlink-locator bootstrap-message coverage.
 - Checks run: RED: three parametrized binding tests failed by emitting initial `create-run` guidance. GREEN: focused native-plugin suite passed; isolated temporary-`HERMES_HOME` full Python suite: 176 passed in 255.91s; Node tests/build: 3 passed each; Python compilation, diff check, and strict added-line secret scan passed. The generic root `ai-workflow checks --level issue` remains blocked because the root package has no `typecheck` script; this is present at clean head and outside this correction.

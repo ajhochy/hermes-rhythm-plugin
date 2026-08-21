@@ -47,7 +47,7 @@ def _build_bootstrap() -> str:
                 "Apply hcw orchestration and pinned superpowers:brainstorming principles."
             )
         error = binding_error
-    if error is not None and os.path.lexists(Path.cwd() / ".hermes" / "hcw-run.json"):
+    if error is not None:
         return f"{BOOTSTRAP_MARKER}: registered HCW workflow identity is invalid; do not run lifecycle commands."
     commands = "; ".join(f"{launcher} {command}" for command in ("create-run", "approve-design", "approve-plan", "check", "commit", "review", "verify", "complete"))
     task = os.getenv("HERMES_KANBAN_TASK", "")
@@ -86,6 +86,22 @@ def _object(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def _has_no_symlink_components(path: Path, root: Path) -> bool:
+    """Refuse authority paths that traverse a symlink below their trusted root."""
+    try:
+        parts = path.relative_to(root).parts
+    except ValueError:
+        return False
+    candidate = root
+    if candidate.is_symlink():
+        return False
+    for part in parts:
+        candidate /= part
+        if candidate.is_symlink():
+            return False
+    return True
+
+
 def _git_worktree_is_registered(repo: Path, worktree: Path) -> bool:
     try:
         common = subprocess.run(["git", "-C", str(repo), "rev-parse", "--git-common-dir"], text=True, capture_output=True, check=True).stdout.strip()
@@ -98,16 +114,80 @@ def _git_worktree_is_registered(repo: Path, worktree: Path) -> bool:
         return False
 
 
+def _canonical_repository_for_worktree(worktree: Path) -> Path | None:
+    """Return the canonical parent repository for this exact registered worktree."""
+    try:
+        top = Path(subprocess.run(
+            ["git", "-C", str(worktree), "rev-parse", "--show-toplevel"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()).resolve()
+        if top != worktree:
+            return None
+        common_text = subprocess.run(
+            ["git", "-C", str(worktree), "rev-parse", "--git-common-dir"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        common = Path(common_text)
+        common = common.resolve() if common.is_absolute() else (worktree / common).resolve()
+        if common.name != ".git":
+            return None
+        repo = common.parent
+        return repo if _git_worktree_is_registered(repo, worktree) else None
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def _missing_locator_error(worktree: Path) -> str | None:
+    """Recognize controlled linked worktrees without inferring any stage identity."""
+    repo = _canonical_repository_for_worktree(worktree)
+    if repo is None or repo == worktree:
+        return None
+    workflows = repo / ".hermes" / "workflows"
+    if not _has_no_symlink_components(workflows, repo):
+        return "untrusted authoritative workflow state"
+    if not workflows.is_dir():
+        return "unregistered workflow worktree"
+    matches = 0
+    try:
+        for run_dir in workflows.iterdir():
+            manifest = run_dir / "run.json"
+            if not run_dir.is_dir() or not _has_no_symlink_components(manifest, repo):
+                return "untrusted authoritative workflow state"
+            if not manifest.is_file():
+                return "malformed authoritative workflow state"
+            run = _object(manifest)
+            if not run or run.get("schema_version") != SCHEMA_VERSION:
+                return "malformed authoritative workflow state"
+            try:
+                run_repo = Path(str(run["repo_root"])).resolve()
+                run_worktree = Path(str(run["worktree_path"])).resolve()
+            except (KeyError, TypeError, OSError):
+                return "malformed authoritative workflow state"
+            if run_repo != repo:
+                return "workflow state locator mismatch"
+            if run_worktree == worktree:
+                matches += 1
+    except OSError:
+        return "untrusted authoritative workflow state"
+    if matches == 1:
+        return "missing matching workflow locator"
+    if matches > 1:
+        return "ambiguous authoritative workflow state"
+    return "unregistered workflow worktree"
+
+
 def _load_matching_run() -> tuple[dict[str, Any] | None, str | None]:
+    cwd = Path.cwd().resolve()
+    locator_path = cwd / ".hermes" / "hcw-run.json"
+    if not _has_no_symlink_components(locator_path, cwd):
+        return None, "untrusted workflow locator"
+    if not os.path.lexists(locator_path):
+        return None, _missing_locator_error(cwd)
     identity = {name: os.getenv(name) for name in ("HCW_RUN_ID", "HERMES_KANBAN_TASK", "HERMES_PROFILE")}
     if not any(identity.values()):
         return None, None
     if not identity["HERMES_KANBAN_TASK"] or not identity["HERMES_PROFILE"]:
         return None, "incomplete workflow identity"
-    cwd = Path.cwd().resolve()
-    locator_path = cwd / ".hermes" / "hcw-run.json"
-    if locator_path.is_symlink():
-        return None, "untrusted workflow locator"
     locator = _object(locator_path)
     if locator is None:
         return None, "malformed matching workflow locator"
@@ -124,7 +204,10 @@ def _load_matching_run() -> tuple[dict[str, Any] | None, str | None]:
         return None, "workflow locator mismatch"
     if not _git_worktree_is_registered(repo, worktree):
         return None, "untrusted workflow worktree"
-    run = _object(repo / ".hermes" / "workflows" / run_id / "run.json")
+    manifest = repo / ".hermes" / "workflows" / run_id / "run.json"
+    if not _has_no_symlink_components(manifest, repo):
+        return None, "untrusted authoritative workflow state"
+    run = _object(manifest)
     if not run or run.get("schema_version") != SCHEMA_VERSION or run.get("id") != run_id:
         return None, "malformed matching workflow state"
     if Path(str(run.get("repo_root", ""))).resolve() != repo or Path(str(run.get("worktree_path", ""))).resolve() != worktree:
@@ -200,6 +283,8 @@ def _bootstrap_create_run_allowed(args: dict[str, Any] | None) -> bool:
         return False
     if executable != expected_hcw or repo != Path.cwd().resolve():
         return False
+    if _canonical_repository_for_worktree(repo) != repo:
+        return False
 
     run_ids: list[str] = []
     for index, token in enumerate(argv[3:], start=3):
@@ -223,6 +308,8 @@ def _bootstrap_create_run_allowed(args: dict[str, Any] | None) -> bool:
 
     locator = repo / ".hermes" / "hcw-run.json"
     manifest = repo / ".hermes" / "workflows" / requested_run_id / "run.json"
+    if not _has_no_symlink_components(locator, repo) or not _has_no_symlink_components(manifest, repo):
+        return False
     return not os.path.lexists(locator) and not os.path.lexists(manifest)
 
 
