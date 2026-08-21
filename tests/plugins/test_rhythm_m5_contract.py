@@ -6,6 +6,7 @@ import json
 import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -310,7 +311,10 @@ def test_m5_mutation_response_is_canonical_readback_not_raw_mutation(api):
     token = client.post("/api/plugins/rhythm/workspace-operations/confirmation", json=request).json()["confirmation"]
     response = client.post("/api/plugins/rhythm/workspace-operations", json={**request, "confirmation": token})
     assert response.status_code == 200, response.text
-    assert response.json() == {"id": "rule-1", "title": "Canonical", "enabled": False}
+    assert response.json()["id"] == "rule-1"
+    assert response.json()["title"] == "Canonical"
+    assert response.json()["enabled"] is False
+    assert set(response.json()) >= {"frequency", "ownerId", "ownerName", "collaborators", "steps", "createdAt"}
     assert [row[:2] for row in calls].count(("GET", "/recurring-rules/rule-1")) >= 2
 
 
@@ -356,3 +360,87 @@ def test_m5_template_step_is_a_distinct_confirmed_semantic_operation_and_route(a
     assert response.status_code == 200, response.text
     assert ("PATCH", "/project-templates/template-1/steps/step-1") in [(method, path) for method, path, _, _ in calls]
     assert not any(path == "/project-instances/steps/step-1" for _, path, _, _ in calls)
+
+
+def test_m5_instance_step_update_authorizes_and_reads_back_the_exact_step(api):
+    """Catches an instance step GET being rejected or replaced with a collection readback."""
+    client, mod = api
+    calls = []
+    def transport(method, url, headers, body, timeout):
+        path = url.removeprefix("https://api.rhythm.app")
+        calls.append((method, path, json.loads(body) if body else None, headers))
+        if path == "/auth/me": return 200, {}, {"id": "user-1"}
+        if path == "/workspaces/me": return 200, {}, {"id": "ws-1", "role": "owner"}
+        if path == "/project-instances/steps/step-1" and method == "GET": return 200, {}, {"id": "step-1", "title": "Canonical step", "notes": "", "status": "done", "ownerId": "user-1", "workspaceId": "ws-1"}
+        if path == "/project-instances/steps/step-1" and method == "PATCH": return 200, {}, {"id": "step-1", "raw": "untrusted"}
+        raise AssertionError((method, path))
+    _connect(client, mod, transport)
+    request = {"operation": "projects.update-step", "entityId": "step-1", "payload": {"status": "done"}, "generation": "generation-1"}
+    receipt = client.post("/api/plugins/rhythm/workspace-operations/confirmation", json=request).json()["confirmation"]
+    response = client.post("/api/plugins/rhythm/workspace-operations", json={**request, "confirmation": receipt})
+    assert response.status_code == 200, response.text
+    assert response.json()["id"] == "step-1"
+    assert [row[:2] for row in calls].count(("GET", "/project-instances/steps/step-1")) >= 2
+
+
+@pytest.mark.parametrize("operation,entity_id,payload,post_path,readback_path", [
+    ("projects.create-template", "new-template", {"name": "Template"}, "/project-templates", "/project-templates/template-1"),
+    ("projects.create-instance", "template-1", {"anchorDate": "2026-08-17"}, "/project-templates/template-1/generate", "/project-instances/instance-1"),
+    ("projects.create-step", "template-1", {"title": "Step", "offsetDays": 2}, "/project-templates/template-1/steps", "/project-templates/template-1/steps/step-1"),
+    ("projects.create-milestone", "instance-1", {"title": "Milestone"}, "/project-instances/instance-1/milestones", "/project-instances/instance-1/milestones/milestone-1"),
+])
+def test_m5_project_creates_return_only_exact_canonical_entity_readbacks(api, operation, entity_id, payload, post_path, readback_path):
+    """Catches a POST response or collection envelope being returned as a created entity."""
+    client, mod = api
+    calls = []
+    created_id = readback_path.rsplit("/", 1)[-1]
+    def transport(method, url, headers, body, timeout):
+        path = url.removeprefix("https://api.rhythm.app")
+        calls.append((method, path, json.loads(body) if body else None, headers))
+        if path == "/auth/me": return 200, {}, {"id": "user-1"}
+        if path == "/workspaces/me": return 200, {}, {"id": "ws-1", "role": "owner"}
+        if method == "GET" and path in {"/project-templates/template-1", "/project-instances/instance-1"}:
+            raw = {"id": path.rsplit("/", 1)[-1], "ownerId": "user-1", "workspaceId": "ws-1", "name": "Parent"}
+            if path == readback_path:
+                raw.update({"title": "Created", "anchorDate": "2026-08-17", "status": "active", "templateId": "template-1", **payload})
+            return 200, {}, raw
+        if method == "POST" and path == post_path: return 200, {}, {"id": created_id, "accessToken": TOKEN, "raw": "untrusted"}
+        if method == "GET" and path == readback_path:
+            raw = {"id": created_id, "ownerId": "user-1", "workspaceId": "ws-1", "name": "Created", "title": "Created", "anchorDate": "2026-08-17", "status": "active", "templateId": "template-1", "raw": "untrusted"}
+            raw.update(payload)
+            return 200, {}, raw
+        raise AssertionError((method, path))
+    _connect(client, mod, transport)
+    request = {"operation": operation, "entityId": entity_id, "payload": payload, "generation": "generation-1"}
+    receipt = client.post("/api/plugins/rhythm/workspace-operations/confirmation", json=request).json()["confirmation"]
+    response = client.post("/api/plugins/rhythm/workspace-operations", json={**request, "confirmation": receipt})
+    assert response.status_code == 200, response.text
+    assert response.json()["id"] == created_id
+    assert "accessToken" not in response.text and "raw" not in response.text
+    assert ("GET", readback_path) in [(method, path) for method, path, _, _ in calls]
+
+
+def test_m5_vendor_runtime_carries_template_step_operation_and_matching_capability_gates():
+    """Catches the accepted runtime advertising a template-step operation behind instance-step gates."""
+    runtime = (Path(__file__).parents[2] / "plugins/rhythm/desktop/vendor/rhythm-workspace-ui/dist/index.js").read_text()
+    assert '"projects.update-template-step"' in runtime
+    assert 'requestOperation(editor.step ? "projects.update-template-step" : "projects.create-step"' in runtime
+    assert 'can("projects.update-template-step")' in runtime
+    assert 'can(templateStepEditor.step ? "projects.update-template-step" : "projects.create-step")' in runtime
+
+
+def test_m5_dto_fixtures_include_every_required_screen_field_and_strip_nested_secrets(api):
+    """Catches a partial projection that type-casts but crashes a mounted screen's array/render path."""
+    _, mod = api
+    planner = mod._m5_public("planner", {"weekStart": "2026-08-17", "days": [{"date": "2026-08-17", "tasks": [{"id": "task-1", "title": "Plan", "nested": {"token": TOKEN}}], "events": [{"id": "event-1", "title": "Launch", "date": "2026-08-17"}]}], "backlog": []})
+    rule = mod._m5_public("rule", {"id": "rule-1", "title": "Review", "steps": [{"id": "step-1", "title": "Read"}], "nested": {"token": TOKEN}})
+    template = mod._m5_public("template", {"id": "template-1", "name": "Launch", "steps": [{"id": "step-1", "title": "Draft"}]})
+    instance = mod._m5_public("instance", {"id": "instance-1", "name": "Launch", "steps": [{"id": "step-1", "title": "Ship"}], "milestones": [{"id": "milestone-1", "title": "Release"}]})
+    assert set(planner) == {"weekStart", "weekLabel", "days", "backlog"}
+    assert set(planner["days"][0]) == {"date", "label", "tasks", "events"}
+    assert {"id", "source", "title", "notes", "status", "scheduledOrder", "collaborators", "readonly"} <= set(planner["days"][0]["tasks"][0])
+    assert set(planner["days"][0]["events"][0]) == {"id", "title", "date", "timeLabel", "notes", "allDay"}
+    assert {"id", "frequency", "ownerId", "ownerName", "collaborators", "steps", "generatedCount", "completedCount", "remainingCount", "waitingOn", "nextDueDate", "completionRatio", "createdAt"} <= set(rule)
+    assert set(template) == {"id", "name", "description", "anchorType", "steps"}
+    assert {"id", "templateId", "name", "anchorDate", "status", "ownerId", "collaborators", "milestones", "steps"} == set(instance)
+    assert TOKEN not in json.dumps([planner, rule, template, instance])
