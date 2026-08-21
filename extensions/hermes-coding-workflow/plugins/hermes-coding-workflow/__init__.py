@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shlex
+import stat
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -102,27 +103,66 @@ def _has_no_symlink_components(path: Path, root: Path) -> bool:
     return True
 
 
-def _raw_git_path(path_text: str, worktree: Path) -> Path | None:
-    """Anchor Git output without resolving away its authority spelling."""
-    if not path_text:
+def _raw_git_path(path_text: str, parent: Path) -> Path | None:
+    """Anchor Git metadata without resolving away its authority spelling."""
+    if not path_text or "\0" in path_text:
         return None
     path = Path(path_text)
-    return Path(os.path.abspath(path if path.is_absolute() else worktree / path))
+    return path if path.is_absolute() else parent / path
 
 
 def _is_nonsymlink_directory(path: Path) -> bool:
-    """Require every raw authority component to be a real directory."""
+    """Require every raw authority component to be a real directory before resolving."""
     if not path.is_absolute():
         return False
     candidate = Path(path.anchor)
     try:
+        if not stat.S_ISDIR(candidate.lstat().st_mode):
+            return False
         for component in path.parts[1:]:
+            if component == ".":
+                continue
+            if component == "..":
+                candidate = candidate.parent
+                continue
             candidate /= component
-            if candidate.is_symlink() or not candidate.is_dir():
+            mode = candidate.lstat().st_mode
+            if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
                 return False
     except OSError:
         return False
     return True
+
+
+def _read_regular_file(path: Path) -> str | None:
+    """Read a metadata file only after rejecting links and special files."""
+    try:
+        if not stat.S_ISREG(path.lstat().st_mode):
+            return None
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+
+
+def _gitdir_target(marker: Path) -> Path | None:
+    """Parse Git's one-line linked-worktree marker without following it first."""
+    text = _read_regular_file(marker)
+    if text is None or "\0" in text:
+        return None
+    lines = text.splitlines()
+    if len(lines) != 1:
+        return None
+    match = re.fullmatch(r"gitdir: (.+)", lines[0])
+    return _raw_git_path(match.group(1), marker.parent) if match else None
+
+
+def _git_commondir_target(gitdir: Path) -> Path | None:
+    """Read a linked-worktree commondir only through a regular local file."""
+    text = _read_regular_file(gitdir / "commondir")
+    if text is None or "\0" in text:
+        return None
+    lines = text.splitlines()
+    return _raw_git_path(lines[0], gitdir) if len(lines) == 1 and lines[0] else None
 
 
 def _trusted_git_common_dir(worktree: Path) -> Path | None:
@@ -130,6 +170,26 @@ def _trusted_git_common_dir(worktree: Path) -> Path | None:
     try:
         raw_worktree = Path(os.path.abspath(worktree))
         if not _is_nonsymlink_directory(raw_worktree):
+            return None
+        marker = raw_worktree / ".git"
+        marker_mode = marker.lstat().st_mode
+        linked_gitdir: Path | None = None
+        expected_common: Path | None = None
+        if stat.S_ISDIR(marker_mode):
+            if marker.is_symlink() or not _is_nonsymlink_directory(marker):
+                return None
+        elif stat.S_ISREG(marker_mode):
+            linked_gitdir = _gitdir_target(marker)
+            if linked_gitdir is None or not _is_nonsymlink_directory(linked_gitdir):
+                return None
+            commondir = linked_gitdir / "commondir"
+            if os.path.lexists(commondir):
+                expected_common = _git_commondir_target(linked_gitdir)
+                if expected_common is None or not _is_nonsymlink_directory(expected_common):
+                    return None
+            else:
+                expected_common = linked_gitdir
+        else:
             return None
         top_text = subprocess.run(
             ["git", "-C", str(raw_worktree), "rev-parse", "--show-toplevel"],
@@ -145,15 +205,23 @@ def _trusted_git_common_dir(worktree: Path) -> Path | None:
         common = _raw_git_path(common_text, raw_worktree)
         if common is None or common.name != ".git" or not _is_nonsymlink_directory(common):
             return None
-        return common.resolve(strict=True)
+        canonical_common = common.resolve(strict=True)
+        if linked_gitdir is None:
+            return canonical_common if canonical_common == marker.resolve(strict=True) else None
+        if expected_common is None or canonical_common != expected_common.resolve(strict=True):
+            return None
+        return canonical_common
     except (OSError, subprocess.CalledProcessError):
         return None
 
 
 def _git_worktree_is_registered(repo: Path, worktree: Path) -> bool:
     try:
+        worktree_common = _trusted_git_common_dir(worktree)
+        if worktree_common is None:
+            return False
         common_path = _trusted_git_common_dir(repo)
-        if common_path is None or common_path != repo / ".git":
+        if common_path is None or common_path != repo / ".git" or worktree_common != common_path:
             return False
         listing = subprocess.run(["git", "-C", str(repo), "worktree", "list", "--porcelain"], text=True, capture_output=True, check=True).stdout.splitlines()
         return any(line == f"worktree {worktree}" for line in listing)

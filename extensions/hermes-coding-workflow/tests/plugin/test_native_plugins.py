@@ -239,6 +239,94 @@ def test_git_authority_accepts_regular_primary_and_linked_worktrees(workflow):
     assert plugin._canonical_repository_for_worktree(worktree) == repo
 
 
+def test_git_authority_accepts_regular_relative_linked_worktree_metadata(workflow):
+    """Git's valid relative gitdir and commondir metadata retains raw authority."""
+    plugin = load_plugin("hermes-coding-workflow")
+    repo, worktree, _ = workflow
+    marker = worktree / ".git"
+    gitdir = Path(marker.read_text().strip().split(": ", 1)[1])
+    commondir = gitdir / "commondir"
+
+    marker.write_text(f"gitdir: {os.path.relpath(gitdir, marker.parent)}\n")
+    commondir.write_text(f"{os.path.relpath(repo / '.git', gitdir)}\n")
+
+    assert plugin._canonical_repository_for_worktree(worktree) == repo
+
+
+def test_linked_worktree_git_marker_symlink_fails_closed_before_git_trust(workflow):
+    """A linked-worktree marker may not be replaced by a symlink to valid metadata."""
+    plugin = load_plugin("hermes-coding-workflow")
+    repo, worktree, _ = workflow
+    marker = worktree / ".git"
+    original = worktree.parent / "original-linked-git-marker"
+    shutil.move(str(marker), str(original))
+    marker.symlink_to(original)
+    launcher = Path(plugin.__file__).resolve().parent / "runtime" / "bin" / "hcw"
+
+    assert plugin._canonical_repository_for_worktree(worktree) is None
+    bootstrap = plugin._build_bootstrap()
+    decision = plugin._pre_tool_call(
+        tool_name="terminal",
+        args={"command": f"{launcher} check {repo} run-test red -- pytest"},
+    )
+
+    assert bootstrap == (
+        f"{plugin.BOOTSTRAP_MARKER}: registered HCW workflow identity is invalid; "
+        "do not run lifecycle commands."
+    )
+    assert decision and decision["action"] == "block"
+
+
+@pytest.mark.parametrize("marker_kind", ("malformed", "directory"))
+def test_linked_worktree_git_marker_must_be_a_regular_gitdir_file(workflow, marker_kind):
+    """Linked worktree authority rejects malformed and non-regular .git markers."""
+    plugin = load_plugin("hermes-coding-workflow")
+    _, worktree, _ = workflow
+    marker = worktree / ".git"
+    marker.unlink()
+    if marker_kind == "malformed":
+        marker.write_text("not a gitdir marker\n")
+    else:
+        marker.mkdir()
+
+    assert plugin._canonical_repository_for_worktree(worktree) is None
+
+
+def test_linked_worktree_git_marker_rejects_malformed_commondir(workflow):
+    """A present commondir must be one safe, non-empty Git metadata line."""
+    plugin = load_plugin("hermes-coding-workflow")
+    _, worktree, _ = workflow
+    gitdir = Path((worktree / ".git").read_text().strip().split(": ", 1)[1])
+    (gitdir / "commondir").write_text("../.git\nextra\n")
+
+    assert plugin._canonical_repository_for_worktree(worktree) is None
+
+
+@pytest.mark.parametrize("redirect_kind", ("gitdir-leaf", "gitdir-parent", "commondir-leaf"))
+def test_linked_worktree_git_marker_rejects_symlinked_metadata_components(workflow, redirect_kind):
+    """Every raw marker and commondir authority component must remain non-symlinked."""
+    plugin = load_plugin("hermes-coding-workflow")
+    _, worktree, _ = workflow
+    marker = worktree / ".git"
+    gitdir = Path(marker.read_text().strip().split(": ", 1)[1])
+    if redirect_kind == "gitdir-leaf":
+        external = worktree.parent / "gitdir-leaf"
+        shutil.move(str(gitdir), str(external))
+        gitdir.symlink_to(external, target_is_directory=True)
+    elif redirect_kind == "gitdir-parent":
+        parent = gitdir.parent
+        external = worktree.parent / "gitdir-parent"
+        shutil.move(str(parent), str(external))
+        parent.symlink_to(external, target_is_directory=True)
+    else:
+        commondir = gitdir / "commondir"
+        external = worktree.parent / "commondir-leaf"
+        shutil.move(str(commondir), str(external))
+        commondir.symlink_to(external)
+
+    assert plugin._canonical_repository_for_worktree(worktree) is None
+
+
 @pytest.mark.parametrize("locator_kind", ("malformed", "symlink"))
 def test_untrusted_locator_bootstrap_emits_only_invalid_identity_message(workflow, monkeypatch, locator_kind):
     plugin = load_plugin("hermes-coding-workflow")
