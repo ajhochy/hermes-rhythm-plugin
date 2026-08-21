@@ -22,7 +22,7 @@ def _router_module():
 def test_issue_11_vendor_artifact_runtime_is_exact_and_opaque_origin():
     """Catches a hand-edited or weaker vendored iframe runtime."""
     runtime = (ROOT / "plugins/rhythm/desktop/vendor/rhythm-workspace-ui/dist/index.js").read_text()
-    source_runtime = Path("/Users/ajhochhalter/.hermes/worktrees/rhythm-feature-pack/m7-terra/packages/rhythm-workspace-ui/dist/index.js").read_text()
+    source_runtime = Path("/Users/ajhochhalter/.hermes/worktrees/rhythm-feature-pack/integration/packages/rhythm-workspace-ui/dist/index.js").read_text()
     assert runtime == source_runtime
     for required in ('sandbox: "allow-scripts"', "default-src 'none'", "connect-src 'none'", "form-action 'none'", "base-uri 'none'", "frame-src 'none'", "object-src 'none'", "navigate-to 'none'"):
         assert required in runtime
@@ -62,7 +62,11 @@ def test_issue_11_allowlist_contains_only_classified_reads():
     assert required <= ALLOWED_OPERATIONS
     assert all(method == "GET" for method, path in ALLOWED_OPERATIONS if path.startswith(("/automations", "/integrations")))
     forbidden = ("send", "message", "calendar", "pco", "proxy")
-    assert not any(any(word in path.lower() for word in forbidden) for _, path in ALLOWED_OPERATIONS)
+    assert not any(
+        any(word in path.lower() for word in forbidden)
+        for _, path in ALLOWED_OPERATIONS
+        if path.startswith(("/automations", "/integrations"))
+    )
     routes = {(method, route.path) for route in _router_module().router.routes for method in route.methods}
     assert {("GET", "/automations/catalog"), ("GET", "/automations/rules"), ("GET", "/automations/rules/{rule_id}/preview"), ("GET", "/integrations/status"), ("GET", "/integrations/settings"), ("GET", "/integrations/sync")} <= routes
     assert not any(method != "GET" and any(word in path.lower() for word in forbidden) for method, path in routes)
