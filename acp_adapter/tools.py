@@ -27,6 +27,9 @@ logger = logging.getLogger(__name__)
 # IDE plugin), not the user's own terminal, so it must be a hard safety
 # floor independent of the user's ``security.redact_secrets`` preference.
 _RAW_IO_MAX_CHARS = 4000
+# Keep individual leaves comfortably below the whole-payload cap so structured
+# approval/tool metadata can survive alongside a large value.
+_RAW_VALUE_MAX_CHARS = 1000
 
 # Hard cap on any single polished ``content`` text/diff block. Per-formatter
 # truncation (see the various ``_format_*_result`` limits above, all <=8000)
@@ -61,10 +64,12 @@ def _redact_raw_value(value: Any, *, _depth: int = 0) -> Any:
     if _depth > 6:
         return "…"
     if isinstance(value, str):
-        return _truncate_text(_redact_display(value), limit=_RAW_IO_MAX_CHARS)
+        return _truncate_text(_redact_display(value), limit=_RAW_VALUE_MAX_CHARS)
     if isinstance(value, dict):
         return {
-            key: _redact_raw_value(val, _depth=_depth + 1) for key, val in value.items()
+            _truncate_text(_redact_display(str(key)), limit=_RAW_VALUE_MAX_CHARS):
+            _redact_raw_value(val, _depth=_depth + 1)
+            for key, val in value.items()
         }
     if isinstance(value, list):
         return [_redact_raw_value(item, _depth=_depth + 1) for item in value[:50]]
@@ -89,6 +94,7 @@ def _bounded_raw_output(result: Optional[str]) -> Optional[str]:
     if result is None:
         return None
     return _truncate_text(_redact_display(result), limit=_RAW_IO_MAX_CHARS)
+
 
 # ---------------------------------------------------------------------------
 # Map hermes tool names -> ACP ToolKind
@@ -305,6 +311,15 @@ def _diff_content(
     if old_text:
         old_text = _truncate_text(old_text, limit=_DIFF_TEXT_MAX_CHARS)
     return acp.tool_diff_content(path=path, old_text=old_text or None, new_text=new_text)
+
+
+# Public ACP wire-boundary helpers. Approval requests are emitted outside the
+# normal tool start/complete flow, so they must use these exact helpers rather
+# than reimplementing their own redaction or limits.
+safe_title = _safe_title
+bounded_raw_input = _bounded_raw_input
+safe_text = _text
+safe_diff_content = _diff_content
 
 
 def _json_loads_maybe(value: Optional[str]) -> Any:
