@@ -81,6 +81,11 @@ def test_red_worker_has_the_full_implementation_turn_budget():
     assert argv[argv.index("--max-turns") + 1] == "60"
 
 
+def test_green_worker_has_the_full_implementation_turn_budget():
+    argv = claude_worker.build_argv("/usr/local/bin/claude", "green")
+    assert argv[argv.index("--max-turns") + 1] == "60"
+
+
 def test_build_argv_rejects_stages_outside_the_claude_tier_map() -> None:
     with pytest.raises(ValueError, match="unsupported_claude_stage"):
         claude_worker.build_argv("/usr/local/bin/claude", "verify")

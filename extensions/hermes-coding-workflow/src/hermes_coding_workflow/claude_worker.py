@@ -44,7 +44,7 @@ TOOLS = {
 # Never a wildcard: no `Bash(git:*)`, which would also auto-allow `git push`,
 # `git commit`, `git reset --hard`, etc.
 NARROW_GIT_READS = ("Bash(git status)", "Bash(git diff)")
-MAX_TURNS = {"red": 60, "green": 30, "quality-review": 20, "complete": 8}
+MAX_TURNS = {"red": 60, "green": 60, "quality-review": 20, "complete": 8}
 
 
 def resolve_claude_executable() -> str:
