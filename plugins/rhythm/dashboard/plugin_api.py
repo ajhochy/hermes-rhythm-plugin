@@ -18,7 +18,6 @@ from pydantic import BaseModel, Field, ValidationError
 
 from plugins.rhythm.backend.client import (
     OAUTH_CLIENT_ID,
-    OAUTH_REDIRECT_URI,
     RhythmClient,
     RhythmProtocolError,
     RhythmRemoteError,
@@ -39,6 +38,7 @@ class _OAuthState:
     verifier: str
     expires_at: float
     home: str
+    redirect_uri: str
     consumed: bool = False
 
 
@@ -70,6 +70,25 @@ def _canonical_home() -> str:
     from hermes_constants import get_hermes_home
 
     return str(get_hermes_home().resolve(strict=False))
+
+
+def _loopback_redirect_uri(request: Request) -> str:
+    """Build a callback URI from an unproxied, exact loopback request origin."""
+    if request.url.scheme != "http" or any(
+        request.headers.get(header)
+        for header in ("forwarded", "x-forwarded-host", "x-forwarded-proto", "x-forwarded-port")
+    ):
+        raise HTTPException(400, detail={"error": "invalid_oauth_origin", "recoverable": True})
+    host = request.headers.get("host", "").lower()
+    if ":" not in host:
+        raise HTTPException(400, detail={"error": "invalid_oauth_origin", "recoverable": True})
+    hostname, port_text = host.rsplit(":", 1)
+    if hostname not in {"127.0.0.1", "localhost"} or not port_text.isdigit():
+        raise HTTPException(400, detail={"error": "invalid_oauth_origin", "recoverable": True})
+    port = int(port_text)
+    if not 1 <= port <= 65535:
+        raise HTTPException(400, detail={"error": "invalid_oauth_origin", "recoverable": True})
+    return f"http://{hostname}:{port}/api/plugins/rhythm/oauth/callback"
 
 
 @contextmanager
@@ -175,22 +194,23 @@ def health():
 
 
 @router.post("/oauth/start")
-def oauth_start():
+def oauth_start(incoming_request: Request):
     verifier = secrets.token_urlsafe(64)
     state = secrets.token_urlsafe(32)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    redirect_uri = _loopback_redirect_uri(incoming_request)
     with _oauth_lock:
         _prune_oauth_states_locked()
         if len(_oauth_states) >= MAX_PENDING_OAUTH_STATES:
             raise HTTPException(429, detail={"error": "oauth_pending_limit", "recoverable": True})
         _oauth_states[state] = _OAuthState(
-            verifier, time.monotonic() + _OAUTH_TTL_SECONDS, _canonical_home()
+            verifier, time.monotonic() + _OAUTH_TTL_SECONDS, _canonical_home(), redirect_uri
         )
     query = urlencode(
         {
             "response_type": "code",
             "client_id": OAUTH_CLIENT_ID,
-            "redirect_uri": OAUTH_REDIRECT_URI,
+            "redirect_uri": redirect_uri,
             "scope": "openid email profile",
             "code_challenge_method": "S256",
             "code_challenge": challenge,
@@ -200,7 +220,7 @@ def oauth_start():
     return {"state": state, "authorization_url": f"https://accounts.google.com/o/oauth2/v2/auth?{query}"}
 
 
-def _complete_oauth_callback(state_key: str, code: str):
+def _complete_oauth_callback(state_key: str, code: str, incoming_request: Request):
     with _oauth_lock:
         expired = _prune_oauth_states_locked()
         if state_key in expired:
@@ -210,9 +230,11 @@ def _complete_oauth_callback(state_key: str, code: str):
             raise HTTPException(409, detail={"error": "oauth_state_replayed", "recoverable": True})
         if state.home != _canonical_home():
             raise HTTPException(409, detail={"error": "oauth_state_profile_mismatch", "recoverable": True})
+        if state.redirect_uri != _loopback_redirect_uri(incoming_request):
+            raise HTTPException(409, detail={"error": "oauth_state_origin_mismatch", "recoverable": True})
         state.consumed = True
     try:
-        token = RhythmClient("", transport=request).exchange_code(code, state.verifier)
+        token = RhythmClient("", transport=request).exchange_code(code, state.verifier, state.redirect_uri)
         identity, workspace = _validated_connection(token)
         with _home_scope(state.home):
             store.save(token, identity, workspace)
@@ -227,7 +249,7 @@ def _complete_oauth_callback(state_key: str, code: str):
 @router.post("/oauth/callback")
 async def oauth_callback(request: Request):
     payload = await _validated_body(request, OAuthCallback)
-    return _complete_oauth_callback(payload.state, payload.code)
+    return _complete_oauth_callback(payload.state, payload.code, request)
 
 
 @router.get("/oauth/callback")
@@ -241,4 +263,4 @@ def oauth_callback_handoff(request: Request):
         )
     except ValidationError:
         raise _invalid_request() from None
-    return _complete_oauth_callback(payload.state, payload.code)
+    return _complete_oauth_callback(payload.state, payload.code, request)

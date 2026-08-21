@@ -14,7 +14,6 @@ from urllib.parse import urljoin, urlparse
 APPROVED_ORIGIN = "https://api.rhythm.app"
 GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 OAUTH_CLIENT_ID = "hermes-desktop"
-OAUTH_REDIRECT_URI = "http://127.0.0.1/api/plugins/rhythm/oauth/callback"
 ALLOWED_OPERATIONS = {("GET", "/auth/me"), ("GET", "/workspaces/me")}
 MAX_RESPONSE_BYTES = 32_768
 REQUEST_TIMEOUT_SECONDS = 10.0
@@ -136,9 +135,9 @@ class RhythmClient:
             return payload
         raise RhythmRemoteError("upstream_unavailable")
 
-    def exchange_code(self, code: str, verifier: str) -> str:
+    def exchange_code(self, code: str, verifier: str, redirect_uri: str) -> str:
         """Perform the one explicitly-defined OAuth exchange; never redirect."""
-        if not code or not verifier:
+        if not code or not verifier or not redirect_uri:
             raise RhythmProtocolError("invalid_oauth_callback")
         body = json.dumps(
             {
@@ -146,7 +145,7 @@ class RhythmClient:
                 "code": code,
                 "code_verifier": verifier,
                 "client_id": OAUTH_CLIENT_ID,
-                "redirect_uri": OAUTH_REDIRECT_URI,
+                "redirect_uri": redirect_uri,
             }
         ).encode()
         status, headers, payload = self.transport(
