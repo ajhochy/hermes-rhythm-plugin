@@ -518,7 +518,7 @@ type RhythmWorkspaceCapability = 'facilities.manage' | 'facilities.reserve' | 'a
 /** Broad legacy Rhythms access remains explicit for general hosts. */
  | 'rhythms.write' | 'rhythms.create-rule' | 'rhythms.update-rule' | 'rhythms.delete-rule' | 'rhythms.create-step' | 'rhythms.update-step' | 'rhythms.delete-step' | 'rhythms.reorder-step'
 /** Broad legacy Projects access remains explicit for general hosts. */
- | 'projects.write' | 'projects.create-template' | 'projects.update-template' | 'projects.delete-template' | 'projects.create-instance' | 'projects.update-instance' | 'projects.delete-instance' | 'projects.create-step' | 'projects.update-step' | 'projects.delete-step' | 'projects.reorder-step' | 'projects.create-milestone' | 'projects.update-milestone' | 'projects.delete-milestone';
+ | 'projects.write' | 'projects.create-template' | 'projects.update-template' | 'projects.delete-template' | 'projects.create-instance' | 'projects.update-instance' | 'projects.delete-instance' | 'projects.create-step' | 'projects.update-step' | 'projects.update-template-step' | 'projects.delete-step' | 'projects.reorder-step' | 'projects.create-milestone' | 'projects.update-milestone' | 'projects.delete-milestone';
 interface RhythmTaskOperationConfirmation {
     taskId: string;
     generation: string;

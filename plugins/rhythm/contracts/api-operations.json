@@ -64,7 +64,7 @@
       "approved_write_operations": [
         "planner.schedule-task", "planner.update-task", "planner.update-project-step", "planner.schedule-project-step",
         "rhythms.create-rule", "rhythms.update-rule", "rhythms.delete-rule", "rhythms.create-step", "rhythms.update-step",
-        "projects.create-template", "projects.update-template", "projects.delete-template", "projects.create-instance", "projects.update-step", "projects.create-step", "projects.delete-step", "projects.create-milestone"
+        "projects.create-template", "projects.update-template", "projects.delete-template", "projects.create-instance", "projects.update-step", "projects.update-template-step", "projects.create-step", "projects.delete-step", "projects.create-milestone"
       ],
       "write_gate": "server_bearer_profile_workspace_actor_generation_payload_digest_one_use_ttl_intent_lease",
       "fail_closed": true,
