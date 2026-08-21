@@ -233,6 +233,36 @@ def test_read_only_dashboard_and_tasks_are_sanitized(api, monkeypatch):
     assert JOIN_CODE not in summary.text + listing.text + detail.text
 
 
+@pytest.mark.parametrize(
+    ("endpoint", "payload"),
+    [
+        ("/dashboard-summary", {"openTaskCount": True, "threadCount": 0, "tasks": [], "project": None, "unreadThreads": []}),
+        ("/dashboard-summary", {"openTaskCount": 0, "threadCount": True, "tasks": [], "project": None, "unreadThreads": []}),
+        ("/tasks", {"tasks": [{"id": "task-1", "title": "Review", "status": "open", "bucket": "today", "priority": True, "tags": [], "createdAt": "2026-08-21", "createdBy": "Me", "ownerId": "user-1"}]}),
+    ],
+)
+def test_canonical_numeric_dtos_reject_booleans(api, monkeypatch, endpoint, payload):
+    """Python bool is an int subclass; canonical DTO counts must not admit it."""
+    client, mod = api
+
+    def transport(method, url, headers, body, timeout):
+        if url.endswith("/auth/me"):
+            return 200, {}, {"id": "user-1"}
+        if url.endswith("/workspaces/me"):
+            return 200, {}, {"id": "ws-1"}
+        if url.endswith("/dashboard/summary") and endpoint == "/dashboard-summary":
+            return 200, {}, payload
+        if url.endswith(endpoint):
+            return 200, {}, payload
+        raise AssertionError(url)
+
+    monkeypatch.setattr(mod, "request", transport)
+    assert client.put("/api/plugins/rhythm/connection", json={"access_token": TOKEN}).status_code == 200
+    response = client.get(f"/api/plugins/rhythm{endpoint}")
+    assert response.status_code == 502
+    assert response.json() == {"detail": {"error": "schema_drift", "recoverable": True}}
+
+
 def test_task_detail_rejects_unsafe_or_write_receipts():
     from plugins.rhythm.backend.client import RhythmProtocolError, RhythmClient
 

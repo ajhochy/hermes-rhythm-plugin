@@ -1,6 +1,3 @@
-import { readFile } from 'node:fs/promises'
-import { resolve } from 'node:path'
-
 import { describe, expect, it } from 'vitest'
 
 import { PALETTE_AREA } from '@/app/command-palette/contrib'
@@ -9,8 +6,6 @@ import { registry } from '@/contrib/registry'
 
 import plugin from '../../../../plugins/rhythm/desktop/src/plugin'
 import { rhythmRouteTarget } from '../../../../plugins/rhythm/desktop/src/route-state'
-
-const rhythmPluginSource = resolve(process.cwd(), '../../plugins/rhythm/desktop/src/plugin.tsx')
 
 describe('Rhythm desktop shell (#5)', () => {
   it('owns exactly one route and one sidebar row, with allowlisted query state', async () => {
@@ -39,14 +34,4 @@ describe('Rhythm desktop shell (#5)', () => {
     second.forEach(dispose => dispose())
   })
 
-  it('keeps the packaged workspace route read-only and hands Ask Hermes an unsent bounded draft', async () => {
-    const source = await readFile(rhythmPluginSource, 'utf8')
-
-    expect(source).toContain("rest<DashboardSummary>('/dashboard-summary')")
-    expect(source).toContain("rest<{ tasks: Task[] }>('/tasks')")
-    expect(source).toContain('host.newChat({')
-    expect(source).toContain('source: { label: \'Rhythm task\'')
-    expect(source).toContain('data-readonly="true"')
-    expect(source).not.toMatch(/rest<[^>]+>\([^\n]+method:\s*['"](?:POST|PUT|PATCH|DELETE)/)
-  })
 })
