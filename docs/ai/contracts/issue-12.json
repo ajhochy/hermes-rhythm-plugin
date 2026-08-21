@@ -1,0 +1,24 @@
+{
+  "issue": 12,
+  "generated": "2026-08-21",
+  "criteria": [
+    {
+      "criterion_id": "issue-12-c1",
+      "text": "Register only rhythm_get_dashboard, rhythm_list_tasks, and rhythm_complete_task as native Rhythm tools; reads use the existing pinned backend client, are bounded and non-mutating, and mark returned user text untrusted.",
+      "mode": "integration",
+      "test_file": "tests/plugins/test_rhythm_m8_native_tools.py"
+    },
+    {
+      "criterion_id": "issue-12-c2",
+      "text": "rhythm_complete_task performs no PATCH unless the current ACP requester returns allow_once for the exact scoped completion. Its single-use receipt binds action, normalized payload, canonical pre-state digest, remote context digest, profile, session, and generation; stale, altered, replayed, cross-session/profile, denied, timed-out, missing-ACP, or changed-state paths perform zero PATCH.",
+      "mode": "adversarial",
+      "test_file": "tests/plugins/test_rhythm_m8_native_tools.py"
+    },
+    {
+      "criterion_id": "issue-12-c3",
+      "text": "Ambiguous completion transport outcomes are reported as uncertain with no retry or false success; no renderer/model input supplies URL, credentials, user, or workspace authority.",
+      "mode": "adversarial",
+      "test_file": "tests/plugins/test_rhythm_m8_native_tools.py"
+    }
+  ]
+}
