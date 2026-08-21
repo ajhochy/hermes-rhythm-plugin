@@ -47,9 +47,11 @@ describe('PluginProfileRouteTokens', () => {
     expect(tokens.validate(updated)).toEqual({ ...route, targetProfile: 'new-target' })
   })
 
-  it('rejects forged and stale explicit plugin requests before the network boundary', async () => {
-    const tokens = new PluginProfileRouteTokens({ createToken: () => 'issued-token' })
-    const [issued] = tokens.issue([route])
+  it('rejects unbound, forged, and stale explicit plugin requests before the network boundary', async () => {
+    let nextToken = 0
+    const tokens = new PluginProfileRouteTokens({ createToken: () => `issued-token-${++nextToken}` })
+    const localRoute = { ...route, connectionId: 'local', mode: 'local' as const }
+    const [issued, issuedLocal] = tokens.issue([route, localRoute])
     const fetch = vi.fn()
 
     const request = async (candidate: Record<string, unknown>) => {
@@ -62,13 +64,33 @@ describe('PluginProfileRouteTokens', () => {
       request({ connectionId: 'homelab', path: '/api/plugins/rhythm/tasks', pluginRoute: { ...issued, profile: 'forged' }, profile: 'forged' })
     ).rejects.toThrow(/invalid or stale/i)
 
+    await expect(request({ connectionId: '', path: '/api/plugins/rhythm/tasks', pluginRoute: issued, profile: 'rhythm' })).rejects.toThrow(
+      /invalid or stale/i
+    )
+    await expect(
+      request({ connectionId: undefined, path: '/api/plugins/rhythm/tasks', pluginRoute: issued, profile: 'rhythm' })
+    ).rejects.toThrow(/invalid or stale/i)
     await expect(request({ connectionId: 'homelab', path: '/api/plugins/rhythm/tasks', profile: 'rhythm' })).rejects.toThrow(
       /invalid or stale/i
     )
     await expect(
+      request({ connectionId: 'local', path: '/api/plugins/rhythm/tasks', pluginRoute: issued, profile: 'rhythm' })
+    ).rejects.toThrow(/invalid or stale/i)
+
+    await expect(
       request({ connectionId: 'homelab', path: '/api/plugins/rhythm/tasks', pluginRoute: issued, profile: 'rhythm' })
     ).resolves.toBeUndefined()
+    await expect(
+      request({ connectionId: 'local', path: '/api/plugins/rhythm/tasks', pluginRoute: issuedLocal, profile: 'rhythm' })
+    ).resolves.toBeUndefined()
+    await expect(request({ path: '/api/plugins/rhythm/tasks', profile: 'rhythm' })).resolves.toBeUndefined()
 
-    expect(fetch).toHaveBeenCalledTimes(1)
+    tokens.issue([])
+
+    await expect(
+      request({ connectionId: 'homelab', path: '/api/plugins/rhythm/tasks', pluginRoute: issued, profile: 'rhythm' })
+    ).rejects.toThrow(/invalid or stale/i)
+
+    expect(fetch).toHaveBeenCalledTimes(3)
   })
 })
