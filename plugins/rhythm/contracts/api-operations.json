@@ -19,6 +19,16 @@
           "method": "GET",
           "path": "/workspaces/me",
           "purpose": "sanitized workspace summary for the Dashboard/Tasks slice"
+        },
+        {
+          "method": "GET",
+          "path": "/dashboard/summary",
+          "purpose": "canonical dashboard summary DTO"
+        },
+        {
+          "method": "GET",
+          "path": "/tasks and /tasks/{task_id}",
+          "purpose": "read-only task list and detail DTOs"
         }
       ],
       "read_only": true,

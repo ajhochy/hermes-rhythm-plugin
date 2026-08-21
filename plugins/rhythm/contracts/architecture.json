@@ -22,7 +22,10 @@
   },
   "allowed_proxy_endpoints": [
     "/auth/me",
-    "/workspaces/me"
+    "/workspaces/me",
+    "/dashboard/summary",
+    "/tasks",
+    "/tasks/{task_id}"
   ],
   "forbidden": [
     "renderer_credentials",
