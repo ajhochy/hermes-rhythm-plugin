@@ -25,10 +25,17 @@ Build the complete standalone Hermes coding workflow package, including the cont
 ## Test status
 
 - Control plane, native plugins, role profiles, installer, read-only API, Desktop UI, public installed lifecycle, and the async Claude Code CLI worker dispatch/runner are implemented.
-- Branch gates: `193 passed` (Python) with zero skipped/xfailed/xpassed; security-focused `38 passed`; Node `3/3`, production ESM build, 36-file source compilation, diff check, added-line secret scan, installed-runner importability, source/profile rollback, OpenAI runtime/API-mode allowlists, account-auth parsing, credential-minimal worker/probe environments, descriptor-bound atomic writes, registered-worktree identity, authoritative brief binding, stale-process reconciliation, and authoritative worker-repository binding all pass.
+- Branch gates: `195 passed` (Python) with zero skipped/xfailed/xpassed; security-focused `42 passed`; Node `3/3`, production ESM build, 36-file source compilation, diff check, added-line secret scan, installed-runner importability, source/profile rollback, OpenAI runtime/API-mode allowlists, account-auth parsing, credential-minimal worker/probe environments, descriptor-bound atomic writes, registered-worktree identity, authoritative brief binding, stale-process reconciliation, and authoritative worker-repository binding all pass.
 - The older `live-tracer-1787210374` proof validates the pre-pivot workflow only. A fresh real Team-account asynchronous dispatch smoke is still required for this adapter; the first matcher probe reached the account's normal session cap and reported a 17:30 PDT reset.
 
 ## Recent coding-agent runs
+
+### 2026-08-21 — Canonical locator/manifest identity repair
+- Files modified: `plugins/hermes-coding-workflow/__init__.py` requires repository and worktree identity fields to be exact canonical absolute existing non-symlink directory spellings before comparison; `tests/plugin/test_native_plugins.py` replays symlink aliases in both locator and authoritative manifest identity fields.
+- Checks run: RED: both aliased `repo_root` and `worktree_path` cases emitted active red-stage guidance and authorized the exact lifecycle command. GREEN: security-focused 42 passed; serialized isolated-home full Python suite 195 passed with one dependency deprecation warning; Node tests/build 3 passed each; 36-file source compilation, diff check, and added-line secret scan passed.
+- Decisions made: parse locator and manifest repository/worktree identity through one exact canonical directory helper before any authorization or missing-locator matching.
+- Deviations from spec: no push, merge, live-profile mutation, or Kanban mutation.
+- Concerns: fresh immutable rereview, targeted hook redeployment, and stage-only live recovery remain required.
 
 ### 2026-08-21 — Linked-worktree Git marker authority repair
 - Files modified: `plugins/hermes-coding-workflow/__init__.py` lstat-validates primary `.git` directories, linked-worktree `.git` regular files, raw `gitdir` targets, and `commondir` metadata before canonicalization; `tests/plugin/test_native_plugins.py` adds the immutable-review symlink replay plus malformed, nonregular, relative-metadata, and symlinked-component coverage.

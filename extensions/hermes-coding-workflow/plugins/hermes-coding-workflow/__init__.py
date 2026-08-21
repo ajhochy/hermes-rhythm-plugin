@@ -144,6 +144,20 @@ def _read_regular_file(path: Path) -> str | None:
         return None
 
 
+def _canonical_identity_directory(value: Any) -> Path | None:
+    """Accept only an exact canonical absolute non-symlink directory spelling."""
+    if not isinstance(value, str) or not value or "\0" in value:
+        return None
+    raw = Path(value)
+    if not raw.is_absolute() or str(raw) != value or not _is_nonsymlink_directory(raw):
+        return None
+    try:
+        canonical = raw.resolve(strict=True)
+    except OSError:
+        return None
+    return canonical if canonical == raw else None
+
+
 def _gitdir_target(marker: Path) -> Path | None:
     """Parse Git's one-line linked-worktree marker without following it first."""
     text = _read_regular_file(marker)
@@ -262,10 +276,9 @@ def _missing_locator_error(worktree: Path) -> str | None:
             run = _object(manifest)
             if not run or run.get("schema_version") != SCHEMA_VERSION:
                 return "malformed authoritative workflow state"
-            try:
-                run_repo = Path(str(run["repo_root"])).resolve()
-                run_worktree = Path(str(run["worktree_path"])).resolve()
-            except (KeyError, TypeError, OSError):
+            run_repo = _canonical_identity_directory(run.get("repo_root"))
+            run_worktree = _canonical_identity_directory(run.get("worktree_path"))
+            if run_repo is None or run_worktree is None:
                 return "malformed authoritative workflow state"
             if run_repo != repo:
                 return "workflow state locator mismatch"
@@ -295,10 +308,9 @@ def _load_matching_run() -> tuple[dict[str, Any] | None, str | None]:
     locator = _object(locator_path)
     if locator is None:
         return None, "malformed matching workflow locator"
-    try:
-        repo = Path(locator["repo_root"]).resolve()
-        worktree = Path(locator["worktree_path"]).resolve()
-    except (KeyError, TypeError, OSError):
+    repo = _canonical_identity_directory(locator.get("repo_root"))
+    worktree = _canonical_identity_directory(locator.get("worktree_path"))
+    if repo is None or worktree is None:
         return None, "malformed matching workflow locator"
     locator_run_id = locator.get("run_id")
     run_id = identity["HCW_RUN_ID"] or locator_run_id
@@ -314,7 +326,9 @@ def _load_matching_run() -> tuple[dict[str, Any] | None, str | None]:
     run = _object(manifest)
     if not run or run.get("schema_version") != SCHEMA_VERSION or run.get("id") != run_id:
         return None, "malformed matching workflow state"
-    if Path(str(run.get("repo_root", ""))).resolve() != repo or Path(str(run.get("worktree_path", ""))).resolve() != worktree:
+    run_repo = _canonical_identity_directory(run.get("repo_root"))
+    run_worktree = _canonical_identity_directory(run.get("worktree_path"))
+    if run_repo != repo or run_worktree != worktree:
         return None, "workflow state locator mismatch"
     return run, None
 

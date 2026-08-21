@@ -185,6 +185,39 @@ def test_registered_locator_with_invalid_stage_binding_never_emits_bootstrap_lif
         assert command not in bootstrap
 
 
+@pytest.mark.parametrize("identity_field", ("repo_root", "worktree_path"))
+def test_locator_and_manifest_identity_paths_reject_symlink_aliases(workflow, monkeypatch, identity_field):
+    """Resolved aliases may not become authoritative repository/worktree identity."""
+    plugin = load_plugin("hermes-coding-workflow")
+    repo, worktree, state = workflow
+    canonical = repo if identity_field == "repo_root" else worktree
+    alias = canonical.parent / f"aliased-{canonical.name}"
+    alias.symlink_to(canonical, target_is_directory=True)
+    locator_path = worktree / ".hermes" / "hcw-run.json"
+    locator = json.loads(locator_path.read_text())
+    locator[identity_field] = str(alias)
+    locator_path.write_text(json.dumps(locator))
+    state[identity_field] = str(alias)
+    state["stage_statuses"]["red"] = "active"
+    (repo / ".hermes" / "workflows" / "run-test" / "run.json").write_text(json.dumps(state))
+    monkeypatch.delenv("HCW_RUN_ID")
+    launcher = Path(plugin.__file__).resolve().parent / "runtime" / "bin" / "hcw"
+
+    bootstrap = plugin._build_bootstrap()
+    decision = plugin._pre_tool_call(
+        tool_name="terminal",
+        args={"command": f"{launcher} check {repo} run-test red -- pytest"},
+    )
+
+    assert bootstrap == (
+        f"{plugin.BOOTSTRAP_MARKER}: registered HCW workflow identity is invalid; "
+        "do not run lifecycle commands."
+    )
+    assert "create-run" not in bootstrap
+    assert "check" not in bootstrap
+    assert decision and decision["action"] == "block"
+
+
 def test_locator_derived_stage_identity_rejects_a_symlinked_locator(workflow, monkeypatch):
     """Following a symlinked locator would let an alternate worktree borrow the active stage binding."""
     plugin = load_plugin("hermes-coding-workflow")
