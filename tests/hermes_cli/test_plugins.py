@@ -1020,6 +1020,40 @@ class TestPluginManualReload:
     reports success when disposal or reload actually failed.
     """
 
+    def test_reload_resolves_unique_manifest_name_before_unloading(self, tmp_path, monkeypatch):
+        mgr = PluginManager()
+        manifest = PluginManifest(name="Friendly Name", key="registry-key", source="user")
+        monkeypatch.setattr(mgr, "_collect_directory_manifests", lambda: [manifest])
+        monkeypatch.setattr(mgr, "_scan_entry_points", lambda: [])
+        captured = []
+        monkeypatch.setattr(mgr, "_reload_plugin_locked", lambda key: captured.append(key) or MagicMock(ok=True, plugin_id=key))
+
+        receipt = mgr.reload_plugin("Friendly Name")
+
+        assert receipt.ok is True
+        assert receipt.plugin_id == "registry-key"
+        assert captured == ["registry-key"]
+
+    def test_ambiguous_manifest_name_does_not_unload_any_registry(self, tmp_path, monkeypatch):
+        mgr = PluginManager()
+        manifests = [PluginManifest(name="Duplicated", key=key, source="user") for key in ("first-key", "second-key")]
+        monkeypatch.setattr(mgr, "_collect_directory_manifests", lambda: manifests)
+        monkeypatch.setattr(mgr, "_scan_entry_points", lambda: [])
+        mgr._ownership_ledger["first-key"] = [MagicMock()]
+        mgr._ownership_ledger["second-key"] = [MagicMock()]
+        hooks_before = list(mgr._hooks.get("pre_tool_call", []))
+        ledger_before = {key: list(value) for key, value in mgr._ownership_ledger.items()}
+        reload_locked = MagicMock()
+        monkeypatch.setattr(mgr, "_reload_plugin_locked", reload_locked)
+
+        receipt = mgr.reload_plugin("Duplicated")
+
+        assert receipt.ok is False
+        assert "ambiguous" in (receipt.error or "")
+        assert mgr._hooks.get("pre_tool_call", []) == hooks_before
+        assert {key: list(value) for key, value in mgr._ownership_ledger.items()} == ledger_before
+        reload_locked.assert_not_called()
+
     def test_reload_reregisters_without_duplicate_hooks(self, tmp_path, monkeypatch):
         plugins_dir = tmp_path / "hermes_test" / "plugins"
         _make_plugin_dir(
