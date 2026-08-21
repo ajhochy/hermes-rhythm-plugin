@@ -30,6 +30,13 @@ Build the complete standalone Hermes coding workflow package, including the cont
 
 ## Recent coding-agent runs
 
+### 2026-08-21 — Bootstrap binding error correction
+- Files modified: `plugins/hermes-coding-workflow/__init__.py` propagates an invalid active-stage binding into the existing registered-locator fail-closed bootstrap path; `tests/plugin/test_native_plugins.py` adds wrong-task, wrong-profile, inactive-stage, malformed-locator, and symlink-locator bootstrap-message coverage.
+- Checks run: RED: three parametrized binding tests failed by emitting initial `create-run` guidance. GREEN: focused native-plugin suite passed; isolated temporary-`HERMES_HOME` full Python suite: 176 passed in 255.91s; Node tests/build: 3 passed each; Python compilation, diff check, and strict added-line secret scan passed. The generic root `ai-workflow checks --level issue` remains blocked because the root package has no `typecheck` script; this is present at clean head and outside this correction.
+- Decisions made: reuse the existing locator-present invalid-identity response by assigning the authoritative active-stage binding error before the branch, preserving root bootstrap and stage authorization behavior.
+- Deviations from spec: no push, merge, live-profile mutation, or Kanban mutation.
+- Concerns: root workflow automation needs a separate configuration fix before its generic issue-level check can run.
+
 ### 2026-08-21 — Stage bootstrap locator identity repair
 - Files modified: `plugins/hermes-coding-workflow/__init__.py` derives stage identity only from a non-symlinked registered locator and authoritative manifest, gates bootstrap guidance by active task/profile/stage binding, and binds lifecycle commands to the canonical repository; `tests/plugin/test_native_plugins.py` adds nine-stage bootstrap coverage and a symlink-locator rejection; `README.md` documents root versus stage bootstrap behavior.
 - Checks run: RED: nine stage-worker assertions failed because bootstrap emitted `create-run`; security RED: a symlinked locator was accepted. GREEN: 10 focused assertions passed; full isolated-home Python suite: 171 passed (one existing FastAPI/TestClient deprecation warning); Node tests/build: 3 passed; Python compile, diff check, and strict added-line secret scan passed.

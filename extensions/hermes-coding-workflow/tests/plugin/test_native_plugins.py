@@ -152,6 +152,39 @@ def test_stage_worker_bootstrap_derives_registered_run_and_guides_only_its_activ
     ) is None
 
 
+@pytest.mark.parametrize(
+    ("task", "profile", "active_stage"),
+    (
+        ("wrong-task", "dev-contract", "red"),
+        ("task-red", "wrong-profile", "red"),
+        ("task-red", "dev-contract", "green"),
+    ),
+    ids=("wrong-task", "wrong-profile", "inactive-stage"),
+)
+def test_registered_locator_with_invalid_stage_binding_never_emits_bootstrap_lifecycle_guidance(
+    workflow, monkeypatch, task, profile, active_stage
+):
+    plugin = load_plugin("hermes-coding-workflow")
+    repo, _, state = workflow
+    state["stage_statuses"] = {
+        name: ("active" if name == active_stage else "pending")
+        for name in state["stage_statuses"]
+    }
+    (repo / ".hermes" / "workflows" / "run-test" / "run.json").write_text(json.dumps(state))
+    monkeypatch.delenv("HCW_RUN_ID")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task)
+    monkeypatch.setenv("HERMES_PROFILE", profile)
+
+    bootstrap = plugin._build_bootstrap()
+
+    assert bootstrap == (
+        f"{plugin.BOOTSTRAP_MARKER}: registered HCW workflow identity is invalid; "
+        "do not run lifecycle commands."
+    )
+    for command in ("create-run", "approve-design", "approve-plan", "check", "commit", "review", "verify", "complete"):
+        assert command not in bootstrap
+
+
 def test_locator_derived_stage_identity_rejects_a_symlinked_locator(workflow, monkeypatch):
     """Following a symlinked locator would let an alternate worktree borrow the active stage binding."""
     plugin = load_plugin("hermes-coding-workflow")
@@ -170,6 +203,29 @@ def test_locator_derived_stage_identity_rejects_a_symlinked_locator(workflow, mo
     )
 
     assert decision and decision["action"] == "block"
+
+
+@pytest.mark.parametrize("locator_kind", ("malformed", "symlink"))
+def test_untrusted_locator_bootstrap_emits_only_invalid_identity_message(workflow, monkeypatch, locator_kind):
+    plugin = load_plugin("hermes-coding-workflow")
+    _, worktree, _ = workflow
+    monkeypatch.delenv("HCW_RUN_ID")
+    locator = worktree / ".hermes" / "hcw-run.json"
+    if locator_kind == "malformed":
+        locator.write_text("{")
+    else:
+        alternate = worktree.parent / "alternate-locator.json"
+        alternate.write_text(locator.read_text())
+        locator.unlink()
+        locator.symlink_to(alternate)
+
+    bootstrap = plugin._build_bootstrap()
+
+    assert bootstrap == (
+        f"{plugin.BOOTSTRAP_MARKER}: registered HCW workflow identity is invalid; "
+        "do not run lifecycle commands."
+    )
+    assert "create-run" not in bootstrap
 
 
 def test_guard_fails_closed_without_identity_and_enforces_exact_lifecycle_commands(workflow, monkeypatch):

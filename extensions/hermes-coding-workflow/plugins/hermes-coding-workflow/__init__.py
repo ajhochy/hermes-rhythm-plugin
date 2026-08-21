@@ -46,6 +46,7 @@ def _build_bootstrap() -> str:
                 f"Use only this active-stage command guidance; do not prefix environment assignments: {commands}. "
                 "Apply hcw orchestration and pinned superpowers:brainstorming principles."
             )
+        error = binding_error
     if error is not None and os.path.lexists(Path.cwd() / ".hermes" / "hcw-run.json"):
         return f"{BOOTSTRAP_MARKER}: registered HCW workflow identity is invalid; do not run lifecycle commands."
     commands = "; ".join(f"{launcher} {command}" for command in ("create-run", "approve-design", "approve-plan", "check", "commit", "review", "verify", "complete"))
