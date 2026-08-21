@@ -18,7 +18,7 @@
       "task_completion",
       "task_rescheduling"
     ],
-    "satisfied": false,
-    "notes": "Gate is unsatisfied until M4b lands; M4a and earlier are read-only."
+    "satisfied": true,
+    "notes": "M4b permits only confirmed completion/rescheduling through the server-held bearer authority; every other task write remains forbidden."
   }
 }

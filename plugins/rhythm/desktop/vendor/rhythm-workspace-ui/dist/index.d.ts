@@ -6,7 +6,7 @@ import { LucideProps } from 'lucide-react';
 /** A gateway rejects with this — never a raw HTTP status or a transport-specific error class —
  * so a screen can drive its loading/empty/error/forbidden/readonly state machine without
  * knowing anything about REST, GraphQL, or IPC. */
-type RhythmGatewayErrorKind = 'forbidden' | 'not_found' | 'unavailable' | 'server_error';
+type RhythmGatewayErrorKind = 'forbidden' | 'not_found' | 'unavailable' | 'server_error' | 'conflict' | 'uncertain';
 declare class RhythmGatewayError extends Error {
     readonly kind: RhythmGatewayErrorKind;
     constructor(kind: RhythmGatewayErrorKind, message: string);

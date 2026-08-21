@@ -310,6 +310,34 @@ def test_task_mutation_never_replays_ambiguous_patch_and_only_accepts_matching_r
     assert calls == ["PATCH", "GET"]
 
 
+def test_task_mutation_marks_desired_readback_uncertain_after_ambiguous_patch():
+    """An ambiguous PATCH is never success, even if a later GET looks desired."""
+    from plugins.rhythm.backend.client import RhythmClient, RhythmRemoteError
+
+    calls = []
+    def transport(method, url, headers, body, timeout):
+        calls.append(method)
+        if method == "PATCH":
+            raise RhythmRemoteError("timeout")
+        return 200, {}, {"id": "task-1", "status": "done"}
+
+    with pytest.raises(RhythmRemoteError, match="uncertain"):
+        RhythmClient(TOKEN, transport=transport).mutate_task("task-1", "complete")
+    assert calls == ["PATCH", "GET"]
+
+
+def test_task_mutation_returns_conflict_for_successful_patch_with_stale_readback():
+    """A canonical mismatch after HTTP success is conflict, never UnboundLocalError."""
+    from plugins.rhythm.backend.client import RhythmClient, RhythmRemoteError
+
+    def transport(method, url, headers, body, timeout):
+        return (200, {}, {}) if method == "PATCH" else (200, {}, {"id": "task-1", "status": "open"})
+
+    with pytest.raises(RhythmRemoteError, match="conflict") as exc:
+        RhythmClient(TOKEN, transport=transport).mutate_task("task-1", "complete")
+    assert exc.value.status_code == 409
+
+
 def test_task_mutation_409_is_not_misreported_as_success_or_replayed():
     from plugins.rhythm.backend.client import RhythmClient, RhythmRemoteError
 
@@ -357,11 +385,12 @@ def test_task_confirmation_is_owner_profile_payload_bound_one_time_and_never_tra
     changed = client.post("/api/plugins/rhythm/tasks/task-1/operations", json={**payload, "confirmation": token, "generation": "generation-456"})
     assert changed.status_code == 409
     assert not any(method == "PATCH" for method, _, _ in calls)
-    issued = client.post("/api/plugins/rhythm/tasks/task-1/confirmation", json=payload).json()["confirmation"]
-    success = client.post("/api/plugins/rhythm/tasks/task-1/operations", json={**payload, "confirmation": issued})
+    duplicate = client.post("/api/plugins/rhythm/tasks/task-1/confirmation", json=payload)
+    assert duplicate.status_code == 409
+    success = client.post("/api/plugins/rhythm/tasks/task-1/operations", json={**payload, "confirmation": token})
     assert success.status_code == 200
     assert [method for method, _, _ in calls].count("PATCH") == 1
-    assert client.post("/api/plugins/rhythm/tasks/task-1/operations", json={**payload, "confirmation": issued}).status_code == 409
+    assert client.post("/api/plugins/rhythm/tasks/task-1/operations", json={**payload, "confirmation": token}).status_code == 409
     other = tmp_path / "other-profile"; other.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(other))
     rehomed = client.post("/api/plugins/rhythm/tasks/task-1/confirmation", json=payload)
@@ -382,9 +411,79 @@ def test_task_confirmation_rejects_nonowner_invalid_date_expiry_and_bounds(api, 
     assert denied.status_code == 403, denied.text
     assert client.post("/api/plugins/rhythm/tasks/task-1/confirmation", json={"operation": "reschedule", "generation": "generation-123", "scheduledDate": "2026-02-30"}).status_code == 422
     # Expiry pruning and bounded pending state are lock-protected, matching OAuth state handling.
-    mod._task_confirmations["expired"] = mod._TaskConfirmation("task-1", "complete", None, "generation-123", mod._canonical_home(), time.monotonic() - 1)
+    mod._task_confirmations["expired"] = mod._TaskConfirmation("task-1", "complete", None, "generation-123", mod._canonical_home(), "user-1", "ws-1", "digest", time.monotonic() - 1)
     mod._prune_task_confirmations_locked()
     assert "expired" not in mod._task_confirmations
+
+
+def test_task_confirmation_pending_cap_preserves_its_exact_429(api, monkeypatch):
+    client, mod = api
+    task = {"id": "task-1", "title": "Review", "notes": "Read.", "status": "open", "bucket": "today", "priority": 1, "tags": [], "createdAt": "2026-08-21", "createdBy": "Me", "ownerId": "user-1", "isShared": False, "sourceType": "manual", "preferredAgent": "", "energy": "", "collaborators": []}
+    def transport(method, url, headers, body, timeout):
+        if url.endswith("/auth/me"): return 200, {}, {"id": "user-1"}
+        if url.endswith("/workspaces/me"): return 200, {}, {"id": "ws-1"}
+        if url.endswith("/tasks/task-1"): return 200, {}, task
+        raise AssertionError(url)
+    monkeypatch.setattr(mod, "request", transport)
+    assert client.put("/api/plugins/rhythm/connection", json={"access_token": TOKEN}).status_code == 200
+    for index in range(mod.MAX_PENDING_TASK_CONFIRMATIONS):
+        response = client.post("/api/plugins/rhythm/tasks/task-1/confirmation", json={"operation": "complete", "generation": f"generation-{index:03d}"})
+        assert response.status_code == 200, response.text
+    capped = client.post("/api/plugins/rhythm/tasks/task-1/confirmation", json={"operation": "complete", "generation": "generation-overflow"})
+    assert capped.status_code == 429
+    assert capped.json()["detail"]["error"] == "confirmation_pending_limit"
+
+
+def test_task_confirmation_collaborator_identity_revalidation_and_duplicate_request_barrier(api, monkeypatch):
+    client, mod = api
+    patch_started = threading.Event()
+    release_patch = threading.Event()
+    patch_calls: list[str] = []
+    current = {"identity": "user-1", "workspace": "ws-1"}
+    task = {"id": "task-1", "title": "Review", "notes": "Read.", "status": "open", "bucket": "today", "priority": 1, "tags": [], "createdAt": "2026-08-21", "createdBy": "Other", "ownerId": "other-user", "isShared": True, "sourceType": "manual", "preferredAgent": "", "energy": "", "collaborators": [{"id": "user-1", "name": "Canonical collaborator", "initials": "CC"}]}
+    def transport(method, url, headers, body, timeout):
+        if url.endswith("/auth/me"): return 200, {}, {"id": current["identity"]}
+        if url.endswith("/workspaces/me"): return 200, {}, {"id": current["workspace"]}
+        if url.endswith("/tasks/task-1") and method == "GET": return 200, {}, task
+        if url.endswith("/tasks/task-1") and method == "PATCH":
+            patch_calls.append("PATCH")
+            patch_started.set()
+            assert release_patch.wait(2)
+            task["status"] = "done"
+            return 200, {}, {}
+        raise AssertionError((method, url))
+    monkeypatch.setattr(mod, "request", transport)
+    assert client.put("/api/plugins/rhythm/connection", json={"access_token": TOKEN}).status_code == 200
+    payload = {"operation": "complete", "generation": "generation-123"}
+    issued = client.post("/api/plugins/rhythm/tasks/task-1/confirmation", json=payload)
+    assert issued.status_code == 200
+    token = issued.json()["confirmation"]
+    # A second confirmation for the same exact intent is rejected before it can
+    # create another receipt.  The injected historical duplicate below exercises
+    # the operation-side lease as well.
+    assert client.post("/api/plugins/rhythm/tasks/task-1/confirmation", json=payload).status_code == 409
+    with mod._oauth_lock:
+        mod._task_confirmations["duplicate-confirmation-token-000000000"] = mod._task_confirmations[token]
+    responses: list[int] = []
+    def invoke(receipt: str):
+        responses.append(client.post("/api/plugins/rhythm/tasks/task-1/operations", json={**payload, "confirmation": receipt}).status_code)
+    first = threading.Thread(target=invoke, args=(token,))
+    first.start()
+    assert patch_started.wait(2)
+    second = threading.Thread(target=invoke, args=("duplicate-confirmation-token-000000000",))
+    second.start()
+    second.join(2)
+    release_patch.set()
+    first.join(2)
+    assert sorted(responses) == [200, 409]
+    assert patch_calls == ["PATCH"]
+
+    fresh = client.post("/api/plugins/rhythm/tasks/task-1/confirmation", json={**payload, "generation": "generation-456"})
+    assert fresh.status_code == 200
+    current["workspace"] = "ws-2"
+    rejected = client.post("/api/plugins/rhythm/tasks/task-1/operations", json={**payload, "generation": "generation-456", "confirmation": fresh.json()["confirmation"]})
+    assert rejected.status_code == 409
+    assert patch_calls == ["PATCH"]
 
 
 @pytest.mark.parametrize(

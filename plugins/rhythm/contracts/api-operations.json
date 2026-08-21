@@ -33,6 +33,22 @@
       ],
       "read_only": true,
       "notes": "First hosted slice is read-only per the locked architecture; task completion/rescheduling requires the separate write-readiness gate (M4b)."
+    },
+    "M4b": {
+      "allowed_operations": [
+        {
+          "method": "PATCH",
+          "path": "/tasks/{task_id}",
+          "bodies": [{"status": "done"}, {"scheduledDate": "YYYY-MM-DD"}],
+          "authority": "server_bearer_only",
+          "confirmation": "identity_workspace_bound_single_use",
+          "idempotency": "actor_workspace_task_operation_date_generation_intent_digest",
+          "readback": "200_matching_canonical_or_conflict",
+          "ambiguous": "uncertain_never_success"
+        }
+      ],
+      "read_only": false,
+      "notes": "Readiness is local-runtime verified only; live-upstream evidence is unavailable without an explicit credential. Owner or canonical collaborator authorization is re-read immediately before the sole PATCH."
     }
   },
   "forbidden": [

@@ -113,6 +113,20 @@ class TestApiOperationsContract:
         contract = load_contract("api-operations")
         assert "arbitrary_proxying" in contract["forbidden"]
 
+    def test_m4b_write_readiness_is_exactly_one_confirmed_task_patch(self):
+        """Issue #8 must not silently broaden the frozen M4a read surface."""
+        from plugins.rhythm.contracts.validate import load_contract
+
+        contract = load_contract("api-operations")
+        write = contract["milestones"]["M4b"]["allowed_operations"]
+        assert write == [{
+            "method": "PATCH", "path": "/tasks/{task_id}",
+            "bodies": [{"status": "done"}, {"scheduledDate": "YYYY-MM-DD"}],
+            "authority": "server_bearer_only", "confirmation": "identity_workspace_bound_single_use",
+            "idempotency": "actor_workspace_task_operation_date_generation_intent_digest",
+            "readback": "200_matching_canonical_or_conflict", "ambiguous": "uncertain_never_success",
+        }]
+
 
 # ── Architecture contract: structural ───────────────────────────────────
 

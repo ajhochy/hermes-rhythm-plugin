@@ -1,7 +1,7 @@
 /**
  * Read-only host integration for the accepted @ajhochy/rhythm-workspace-ui
  * artifact, built from accepted source revision
- * 94f952dd93907c729beafb9e137bf0cd38368f9e (see vendor provenance).
+ * f3ee7f346edbcb840838a786d2e2543e5c952eea (see vendor provenance).
  * The package remains the owner of Dashboard/Tasks JSX and styles; this file
  * owns only the Hermes transport, lifecycle and bounded chat handoff.
  */
@@ -24,7 +24,7 @@ import '../vendor/rhythm-workspace-ui/dist/styles/rhythm.css'
 import { rhythmRouteTarget } from './route-state'
 
 type Rest = PluginContext['rest']
-type RestFailure = { statusCode?: unknown; status?: unknown; response?: { status?: unknown; statusCode?: unknown } }
+type RestFailure = { statusCode?: unknown; status?: unknown; detail?: unknown; body?: unknown; response?: { status?: unknown; statusCode?: unknown; detail?: unknown; body?: unknown; data?: unknown } }
 
 const unavailable = () => Promise.reject(new RhythmGatewayError('unavailable', 'Rhythm is read-only in this Hermes release.'))
 const unavailablePort = new Proxy({}, { get: () => unavailable })
@@ -38,10 +38,30 @@ function statusOf(error: unknown): number | undefined {
   return undefined
 }
 
+function knownOperationOutcome(error: unknown): 'conflict' | 'uncertain' | undefined {
+  const parse = (value: unknown): unknown => {
+    if (typeof value !== 'string' || value.length > 512) return value
+    try { return JSON.parse(value) } catch { return undefined }
+  }
+  const queue: unknown[] = [error]
+  for (let index = 0; index < queue.length && index < 12; index += 1) {
+    const value = parse(queue[index])
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+    const record = value as Record<string, unknown>
+    if (record.error === 'conflict' || record.error === 'uncertain') return record.error
+    queue.push(record.detail, record.body, record.data, record.response)
+  }
+  return undefined
+}
+
 function gatewayError(error: unknown): RhythmGatewayError {
   if (error instanceof RhythmGatewayError) return error
+  const outcome = knownOperationOutcome(error)
+  if (outcome === 'conflict') return new RhythmGatewayError('conflict', 'Rhythm changed elsewhere. Reload and retry the task operation.')
+  if (outcome === 'uncertain') return new RhythmGatewayError('uncertain', 'Rhythm could not verify the task operation. Reload before retrying.')
   const status = statusOf(error)
   if (status === 401 || status === 403) return new RhythmGatewayError('forbidden', 'Rhythm access is restricted.')
+  if (status === 409) return new RhythmGatewayError('conflict', 'Rhythm changed elsewhere. Reload and retry the task operation.')
   if (status === 404 || status === 502 || status === 503 || status === 504) return new RhythmGatewayError('unavailable', 'Rhythm is unavailable.')
   return new RhythmGatewayError('server_error', 'Rhythm could not load safely.')
 }

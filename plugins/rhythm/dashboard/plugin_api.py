@@ -52,12 +52,23 @@ class _TaskConfirmation:
     scheduled_date: str | None
     generation: str
     home: str
+    actor_id: str
+    workspace_id: str
+    intent_digest: str
     expires_at: float
 
 
+@dataclass
+class _TaskIntent:
+    expires_at: float
+    claimed: bool = False
+
+
 _task_confirmations: dict[str, _TaskConfirmation] = {}
+_task_intents: dict[str, _TaskIntent] = {}
 _TASK_CONFIRMATION_TTL_SECONDS = 60
 MAX_PENDING_TASK_CONFIRMATIONS = 32
+MAX_TASK_OPERATION_INTENTS = 64
 
 
 class ConnectionInput(BaseModel):
@@ -138,6 +149,19 @@ def _prune_task_confirmations_locked() -> None:
     for key, value in list(_task_confirmations.items()):
         if value.expires_at <= now:
             _task_confirmations.pop(key, None)
+    for key, value in list(_task_intents.items()):
+        if value.expires_at <= now:
+            _task_intents.pop(key, None)
+
+
+def _task_authorized(task: dict[str, Any], actor_id: str) -> bool:
+    """Authorization is by bounded canonical ids only; names/initials are display data."""
+    return task["ownerId"] == actor_id or any(row["id"] == actor_id for row in task["collaborators"])
+
+
+def _operation_intent_digest(actor_id: str, workspace_id: str, task_id: str, operation: str, scheduled_date: str | None, generation: str) -> str:
+    material = "\n".join((actor_id, workspace_id, task_id, operation, scheduled_date or "", generation))
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
 def _safe_identity(payload: dict[str, Any]) -> dict[str, str]:
@@ -224,10 +248,15 @@ def _dashboard_summary(payload: dict[str, Any], identity: dict[str, str], worksp
 
 
 def _error(exc: Exception) -> HTTPException:
+    # Route handlers deliberately raise public, bounded HTTP errors for stale
+    # receipts and capacity limits.  Translating them again would turn a 409/429
+    # into a misleading 502 and erase the client-visible outcome code.
+    if isinstance(exc, HTTPException):
+        return exc
     if isinstance(exc, ValueError):
         return HTTPException(400, detail={"error": "invalid_profile", "recoverable": True})
     if isinstance(exc, RhythmRemoteError):
-        status = {"unauthorized": 401, "forbidden": 403, "not_found": 404, "conflict": 409, "rate_limited": 429, "timeout": 504, "dns": 502, "tls": 502}.get(exc.kind, 502)
+        status = {"unauthorized": 401, "forbidden": 403, "not_found": 404, "conflict": 409, "uncertain": 409, "rate_limited": 429, "timeout": 504, "dns": 502, "tls": 502}.get(exc.kind, 502)
         return HTTPException(status, detail={"error": exc.kind, "recoverable": True})
     return HTTPException(502, detail={"error": "schema_drift" if isinstance(exc, RhythmProtocolError) else "connection_error", "recoverable": True})
 
@@ -347,16 +376,23 @@ async def task_operation_confirmation(task_id: str, incoming_request: Request):
         except ValueError:
             raise _invalid_request() from None
     try:
-        client, identity, _ = _connected_client()
+        client, identity, workspace = _connected_client()
         detail = _task(client.call("GET", f"/tasks/{task_id}"))
-        if detail["id"] != task_id or detail["ownerId"] != identity["id"]:
+        if detail["id"] != task_id or not _task_authorized(detail, identity["id"]):
             raise RhythmRemoteError("forbidden")
+        intent_digest = _operation_intent_digest(identity["id"], workspace["id"], task_id, payload.operation, payload.scheduledDate, payload.generation)
         nonce = secrets.token_urlsafe(32)
         with _oauth_lock:
             _prune_task_confirmations_locked()
+            if intent_digest in _task_intents:
+                raise HTTPException(409, detail={"error": "confirmation_already_issued", "recoverable": True})
             if len(_task_confirmations) >= MAX_PENDING_TASK_CONFIRMATIONS:
                 raise HTTPException(429, detail={"error": "confirmation_pending_limit", "recoverable": True})
-            _task_confirmations[nonce] = _TaskConfirmation(task_id, payload.operation, payload.scheduledDate, payload.generation, _canonical_home(), time.monotonic() + _TASK_CONFIRMATION_TTL_SECONDS)
+            if len(_task_intents) >= MAX_TASK_OPERATION_INTENTS:
+                raise HTTPException(429, detail={"error": "confirmation_pending_limit", "recoverable": True})
+            expires_at = time.monotonic() + _TASK_CONFIRMATION_TTL_SECONDS
+            _task_intents[intent_digest] = _TaskIntent(expires_at)
+            _task_confirmations[nonce] = _TaskConfirmation(task_id, payload.operation, payload.scheduledDate, payload.generation, _canonical_home(), identity["id"], workspace["id"], intent_digest, expires_at)
         return {"confirmation": nonce, "task": detail}
     except Exception as exc:
         raise _error(exc) from None
@@ -369,12 +405,34 @@ async def task_operation(task_id: str, incoming_request: Request):
         raise HTTPException(409, detail={"error": "confirmation_required", "recoverable": True})
     with _oauth_lock:
         _prune_task_confirmations_locked()
-        bound = _task_confirmations.pop(payload.confirmation, None)
+        bound = _task_confirmations.get(payload.confirmation)
     if bound is None or bound.home != _canonical_home() or (bound.task_id, bound.operation, bound.scheduled_date, bound.generation) != (task_id, payload.operation, payload.scheduledDate, payload.generation):
         raise HTTPException(409, detail={"error": "stale_confirmation", "recoverable": True})
     try:
         client, _, _ = _connected_client()
-        return _task(client.mutate_task(task_id, payload.operation, payload.scheduledDate))
+        # Reconnect/read immediately before the one mutation; stored metadata is
+        # not authority and a connection/profile switch must fail closed.
+        identity = _safe_identity(client.call("GET", "/auth/me"))
+        workspace = _safe_workspace(client.call("GET", "/workspaces/me"))
+        detail = _task(client.call("GET", f"/tasks/{task_id}"))
+        if identity["id"] != bound.actor_id or workspace["id"] != bound.workspace_id:
+            raise HTTPException(409, detail={"error": "stale_confirmation", "recoverable": True})
+        if detail["id"] != task_id or not _task_authorized(detail, identity["id"]):
+            raise RhythmRemoteError("forbidden")
+        with _oauth_lock:
+            # Do not consume a usable receipt on an attacker/mismatch request;
+            # only the exact, revalidated intent gets the single-flight lease.
+            if _task_confirmations.get(payload.confirmation) is not bound:
+                raise HTTPException(409, detail={"error": "stale_confirmation", "recoverable": True})
+            intent = _task_intents.get(bound.intent_digest)
+            if intent is None or intent.expires_at <= time.monotonic() or intent.claimed:
+                raise HTTPException(409, detail={"error": "stale_confirmation", "recoverable": True})
+            # This in-memory lease remains through success, conflict, and
+            # ambiguity.  A process restart has no receipt/lease and therefore
+            # rejects the old nonce rather than issuing a repeat PATCH.
+            intent.claimed = True
+            _task_confirmations.pop(payload.confirmation, None)
+        return _task(client.mutate_task(task_id, payload.operation, payload.scheduledDate, idempotency_key=bound.intent_digest))
     except Exception as exc:
         raise _error(exc) from None
 
