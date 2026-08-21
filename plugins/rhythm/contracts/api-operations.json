@@ -49,6 +49,26 @@
       ],
       "read_only": false,
       "notes": "Readiness is local-runtime verified only; live-upstream evidence is unavailable without an explicit credential. Owner or canonical collaborator authorization is re-read immediately before the sole PATCH."
+    },
+    "M5": {
+      "transport": "bounded_local_rest_to_pinned_upstream_v1",
+      "readiness_contract": "m5-local-contract-v1",
+      "allowed_operations": [
+        {"method": "GET", "path": "/planner/weeks/{week_start}", "upstream_path": "/planner/weeks/{week_start}", "dto": "planner-week-v1", "bounds": "monday_yyyy_mm_dd"},
+        {"method": "GET", "path": "/rhythm-rules", "upstream_path": "/recurring-rules", "dto": "rhythm-rule-list-v1"},
+        {"method": "GET", "path": "/rhythm-rules/{rule_id}", "upstream_path": "/recurring-rules/{rule_id}", "dto": "rhythm-rule-v1"},
+        {"method": "GET", "path": "/project-templates", "upstream_path": "/project-templates", "dto": "project-template-list-v1"},
+        {"method": "GET", "path": "/project-instances", "upstream_path": "/project-instances", "dto": "project-instance-list-v1"},
+        {"method": "GET", "path": "/project-instances/{instance_id}", "upstream_path": "/project-instances/{instance_id}", "dto": "project-instance-v1"}
+      ],
+      "approved_write_operations": [
+        "planner.schedule-task", "planner.update-task", "planner.update-project-step", "planner.schedule-project-step",
+        "rhythms.create-rule", "rhythms.update-rule", "rhythms.delete-rule", "rhythms.create-step", "rhythms.update-step",
+        "projects.create-template", "projects.update-template", "projects.delete-template", "projects.create-instance", "projects.update-step", "projects.create-step", "projects.delete-step", "projects.create-milestone"
+      ],
+      "write_gate": "server_bearer_profile_workspace_actor_generation_payload_digest_one_use_ttl_intent_lease",
+      "fail_closed": true,
+      "notes": "Hermes exposes only canonical local DTOs and the two local workspace-operation endpoints. The server maps a receipt-bound semantic operation to one exact upstream method/path/body; collaborator and member routes are not represented. Local fixture verification is available; live credential evidence remains unavailable."
     }
   },
   "forbidden": [

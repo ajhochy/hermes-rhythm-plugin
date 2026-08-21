@@ -21,6 +21,10 @@ ALLOWED_OPERATIONS = {
     ("GET", "/workspaces/me"),
     ("GET", "/dashboard/summary"),
     ("GET", "/tasks"),
+    ("GET", "/planner/weeks"),
+    ("GET", "/recurring-rules"),
+    ("GET", "/project-templates"),
+    ("GET", "/project-instances"),
 }
 MAX_RESPONSE_BYTES = 32_768
 REQUEST_TIMEOUT_SECONDS = 10.0
@@ -110,13 +114,19 @@ class RhythmClient:
     transport: Transport = _httpx_transport
     sleep: Callable[[float], None] = time.sleep
 
-    def call(self, method: str, path: str, *, body: dict[str, Any] | None = None, idempotency_key: str | None = None) -> dict[str, Any]:
+    def call(self, method: str, path: str, *, body: dict[str, Any] | None = None, idempotency_key: str | None = None, m5: bool = False) -> dict[str, Any]:
         method = method.upper()
         is_task_detail = method == "GET" and path.startswith("/tasks/") and _safe_task_id(path.removeprefix("/tasks/"))
+        is_m5_read = method == "GET" and (
+            (path.startswith("/planner/weeks/") and _safe_date(path.removeprefix("/planner/weeks/")))
+            or (path.startswith("/recurring-rules/") and _safe_task_id(path.removeprefix("/recurring-rules/")))
+            or (path.startswith("/project-instances/") and _safe_task_id(path.removeprefix("/project-instances/")))
+        )
+        is_m5_mutation = m5 and method in {"POST", "PATCH", "DELETE"} and _m5_mutation_path(method, path) and (method == "DELETE" or body is not None)
         is_task_mutation = method == "PATCH" and path.startswith("/tasks/") and _safe_task_id(path.removeprefix("/tasks/")) and body is not None
-        if (method, path) not in ALLOWED_OPERATIONS and not is_task_detail and not is_task_mutation:
+        if (method, path) not in ALLOWED_OPERATIONS and not is_task_detail and not is_task_mutation and not is_m5_read and not is_m5_mutation:
             raise RhythmProtocolError("operation_not_allowed")
-        if is_task_mutation and set(body) not in ({"status"}, {"scheduledDate"}):
+        if is_task_mutation and not is_m5_mutation and set(body) not in ({"status"}, {"scheduledDate"}):
             raise RhythmProtocolError("operation_not_allowed")
         if body and body.get("status") != "done" and "status" in body:
             raise RhythmProtocolError("operation_not_allowed")
@@ -222,3 +232,27 @@ class RhythmClient:
 
 def _safe_task_id(value: str) -> bool:
     return bool(value) and len(value) <= 128 and all(char.isalnum() or char in "_-" for char in value)
+
+
+def _safe_date(value: str) -> bool:
+    try:
+        return date.fromisoformat(value).isoformat() == value
+    except (TypeError, ValueError):
+        return False
+
+
+def _m5_mutation_path(method: str, path: str) -> bool:
+    """The M5 upstream allowlist.  This intentionally excludes all member and
+    collaborator routes and every arbitrary URL/body proxy."""
+    parts = path.split("/")[1:]
+    if not parts or any(not part or not _safe_task_id(part) for part in parts if part not in {"project-templates", "project-instances", "recurring-rules", "steps", "milestones", "generate"}):
+        return False
+    if parts[0] == "recurring-rules":
+        return (method == "POST" and len(parts) in {1, 3} and (len(parts) == 1 or parts[2] == "steps")) or (method in {"PATCH", "DELETE"} and len(parts) == 2)
+    if parts[0] == "project-templates":
+        return (method == "POST" and (len(parts) == 1 or (len(parts) == 3 and parts[2] in {"steps", "generate"}))) or (method in {"PATCH", "DELETE"} and len(parts) in {2, 4} and (len(parts) == 2 or parts[2] == "steps"))
+    if parts[0] == "project-instances":
+        return (method == "PATCH" and len(parts) == 3 and parts[1] == "steps") or (method == "POST" and len(parts) == 3 and parts[2] == "milestones")
+    if parts[0] == "tasks":
+        return method == "PATCH" and len(parts) == 2
+    return False

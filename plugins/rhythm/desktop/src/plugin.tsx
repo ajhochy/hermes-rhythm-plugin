@@ -1,7 +1,7 @@
 /**
  * Read-only host integration for the accepted @ajhochy/rhythm-workspace-ui
  * artifact, built from accepted source revision
- * 03d831fec7d78d380c7fffebe82edabdf3ab77c3 (see vendor provenance).
+ * f59bfa6215a846a3ef62579b478088489770f77f (see vendor provenance).
  * The package remains the owner of Dashboard/Tasks JSX and styles; this file
  * owns only the Hermes transport, lifecycle and bounded chat handoff.
  */
@@ -13,11 +13,15 @@ import {
   RhythmGatewayError,
   RhythmWorkspaceProvider,
   TasksScreen,
+  PlannerScreen,
+  RhythmsScreen,
+  ProjectsScreen,
   type RhythmDomainGateway,
   type RhythmHostAdapter,
   type RhythmScreenId,
   type RhythmTask,
   type RhythmTaskOperationConfirmation,
+  type RhythmWorkspaceOperationConfirmation,
 } from '../vendor/rhythm-workspace-ui/dist/index.js'
 import '../vendor/rhythm-workspace-ui/dist/styles/rhythm.css'
 
@@ -77,11 +81,23 @@ function write<T>(rest: Rest, path: string, body: unknown): Promise<T> {
   return (rest as unknown as (path: string, init: { method: string; body: unknown }) => Promise<T>)(path, { method: 'POST', body }).catch(error => Promise.reject(gatewayError(error)))
 }
 
-function confirmationKey(confirmation: RhythmTaskOperationConfirmation): string {
-  return JSON.stringify([confirmation.taskId, confirmation.operation, confirmation.scheduledDate ?? null, confirmation.generation])
+function confirmationKey(confirmation: RhythmTaskOperationConfirmation | RhythmWorkspaceOperationConfirmation): string {
+  if ('taskId' in confirmation) return JSON.stringify([confirmation.taskId, confirmation.operation, confirmation.scheduledDate ?? null, confirmation.generation])
+  return JSON.stringify([confirmation.entityId, confirmation.operation, confirmation.payload, confirmation.generation])
+}
+
+function workspaceKey(operation: string, entityId: string, payload: Record<string, unknown>): string {
+  return JSON.stringify([operation, entityId, payload])
 }
 
 function createGateway(rest: Rest, confirmations = new Map<string, string>()): RhythmDomainGateway {
+  async function workspaceOperation<T>(operation: string, entityId: string, payload: Record<string, unknown>): Promise<T> {
+    const key = workspaceKey(operation, entityId, payload)
+    const confirmation = confirmations.get(key)
+    if (!confirmation) return unavailable()
+    confirmations.delete(key)
+    return write<T>(rest, '/workspace-operations', { operation, entityId, payload, confirmation })
+  }
   return {
     dashboard: {
       summary: () => read(rest, '/dashboard-summary'),
@@ -113,9 +129,38 @@ function createGateway(rest: Rest, confirmations = new Map<string, string>()): R
         return write<RhythmTask>(rest, `/tasks/${id}/operations`, { operation: 'reschedule', scheduledDate, generation: request.generation, confirmation })
       },
     },
-    planner: unavailablePort,
-    projects: unavailablePort,
-    rhythms: unavailablePort,
+    planner: {
+      week: (weekStart: string) => read(rest, `/planner/weeks/${encodeURIComponent(weekStart)}`), members: () => Promise.resolve([]),
+      scheduleTask: (id: string, input: Record<string, unknown>) => workspaceOperation('planner.schedule-task', id, input),
+      update: (id: string, input: Record<string, unknown>) => workspaceOperation('planner.update-task', id, input),
+      updateProjectStep: (id: string, input: Record<string, unknown>) => workspaceOperation('planner.update-project-step', id, input),
+      scheduleProjectStep: (id: string, input: Record<string, unknown>) => workspaceOperation('planner.schedule-project-step', id, input),
+      create: unavailable, addCollaborator: unavailable, removeCollaborator: unavailable,
+    },
+    rhythms: {
+      list: () => read(rest, '/rhythm-rules'), members: () => Promise.resolve([]),
+      create: (input: Record<string, unknown>) => workspaceOperation('rhythms.create-rule', 'new-rule', input),
+      update: (id: string, input: Record<string, unknown>) => workspaceOperation('rhythms.update-rule', id, input),
+      delete: (id: string) => workspaceOperation('rhythms.delete-rule', id, {}),
+      addStep: (id: string, input: Record<string, unknown>) => workspaceOperation('rhythms.create-step', id, input),
+      replaceSteps: (id: string, steps: unknown[]) => workspaceOperation('rhythms.update-step', id, { steps }),
+      addCollaborator: unavailable, removeCollaborator: unavailable,
+    },
+    projects: {
+      templates: () => read(rest, '/project-templates'), list: () => read(rest, '/project-instances'), members: () => Promise.resolve([]),
+      generate: (id: string, input: Record<string, unknown>) => workspaceOperation('projects.create-instance', id, input),
+      createTemplate: (input: Record<string, unknown>) => workspaceOperation('projects.create-template', 'new-template', input),
+      updateTemplate: (id: string, input: Record<string, unknown>) => workspaceOperation('projects.update-template', id, input),
+      deleteTemplate: (id: string) => workspaceOperation('projects.delete-template', id, {}),
+      addTemplateStep: (id: string, input: Record<string, unknown>) => workspaceOperation('projects.create-step', id, input),
+      updateTemplateStep: (templateId: string, stepId: string, input: Record<string, unknown>) => workspaceOperation('projects.update-step', stepId, { templateId, ...input }),
+      deleteTemplateStep: (templateId: string, stepId: string) => workspaceOperation('projects.delete-step', stepId, { templateId }),
+      // Instance deletion has no M5 semantic grant or server operation.
+      delete: unavailable,
+      updateStep: (instanceId: string, stepId: string, input: Record<string, unknown>) => workspaceOperation('projects.update-step', stepId, { instanceId, ...input }),
+      addMilestone: (id: string, input: Record<string, unknown>) => workspaceOperation('projects.create-milestone', id, input),
+      addCollaborator: unavailable, removeCollaborator: unavailable,
+    },
     messages: unavailablePort,
     facilities: unavailablePort,
     integrations: unavailablePort,
@@ -137,7 +182,7 @@ function RhythmWorkspace({ rest }: { rest: Rest }) {
   const connectionId = useValue(host.state.connectionId) ?? 'local'
   const gatewayState = useValue(host.state.gateway)
   const target = rhythmRouteTarget(window.location.hash.split('?')[1] ? `?${window.location.hash.split('?')[1]}` : '')
-  const tab = target.includes('tab=tasks') ? 'tasks' : 'overview'
+  const tab = (['tasks', 'planner', 'rhythms', 'projects'] as const).find(candidate => target.includes(`tab=${candidate}`)) ?? 'overview'
   // A changed identity is a synchronous re-home: React unmounts old screen
   // state before the replacement gateway can publish, invalidating stale work.
   const generation = `${connectionId}:${profile}:${gatewayState}`
@@ -146,21 +191,28 @@ function RhythmWorkspace({ rest }: { rest: Rest }) {
   const adapter = useMemo<RhythmHostAdapter>(() => ({
     tokens: defaultRhythmTokens,
     viewport: 'expanded',
-    currentUser: { displayName: 'Hermes', initials: 'H', collaborationCapability: 'read', capabilities: ['tasks.complete', 'tasks.reschedule'] },
+    // M5 grants are semantic and receipt-bound.  The renderer never receives a
+    // bearer token, URL, workspace, or user identity.
+    currentUser: { displayName: 'Hermes', initials: 'H', collaborationCapability: 'read', capabilities: ['planner.schedule-task', 'planner.update-task', 'planner.update-project-step', 'planner.schedule-project-step', 'rhythms.create-rule', 'rhythms.update-rule', 'rhythms.delete-rule', 'rhythms.create-step', 'rhythms.update-step', 'projects.create-template', 'projects.update-template', 'projects.delete-template', 'projects.create-instance', 'projects.update-step', 'projects.create-step', 'projects.delete-step', 'projects.create-milestone'] },
     confirmTaskOperation: async (confirmation: RhythmTaskOperationConfirmation) => {
       const payload = await write<{ confirmation: string }>(rest, `/tasks/${confirmation.taskId}/confirmation`, { ...confirmation })
       confirmations.set(confirmationKey(confirmation), payload.confirmation)
       return true
     },
+    confirmWorkspaceOperation: async (confirmation: RhythmWorkspaceOperationConfirmation) => {
+      const payload = await write<{ confirmation: string }>(rest, '/workspace-operations/confirmation', confirmation)
+      confirmations.set(workspaceKey(confirmation.operation, confirmation.entityId, confirmation.payload), payload.confirmation)
+      return true
+    },
     onNavigateToScreen: (screen: RhythmScreenId) => {
-      if (screen === 'tasks') window.location.hash = rhythmRouteTarget('?tab=tasks')
+      if (['tasks', 'planner', 'rhythms', 'projects'].includes(screen)) window.location.hash = rhythmRouteTarget(`?tab=${screen}`)
     },
     onRequestFollowUp: askHermes,
   }), [confirmations, rest])
 
   return <main className="rhythm-workspace-root" aria-label="Rhythm workspace" data-testid="rhythm-workspace-readonly" data-readonly="false">
     <RhythmWorkspaceProvider gateway={gateway} host={adapter} key={generation}>
-      {tab === 'tasks' ? <TasksScreen /> : <DashboardScreen />}
+      {tab === 'tasks' ? <TasksScreen /> : tab === 'planner' ? <PlannerScreen /> : tab === 'rhythms' ? <RhythmsScreen /> : tab === 'projects' ? <ProjectsScreen /> : <DashboardScreen />}
     </RhythmWorkspaceProvider>
   </main>
 }
