@@ -103,8 +103,17 @@ export function validatePluginApiRouteRequest(
   request: { connectionId?: null | string; path?: unknown; pluginRoute?: unknown; profile?: null | string } | null | undefined
 ): void {
   const connectionId = String(request?.connectionId ?? '').trim()
+  const hasPluginRoute = Boolean(request && Object.hasOwn(request, 'pluginRoute'))
 
-  if (!connectionId || !isPluginApiPath(request?.path)) {
+  if (!isPluginApiPath(request?.path)) {
+    return
+  }
+
+  // The v1 path was unpinned: both fields were absent. Every other shape is
+  // a pinned request and must prove its Electron-issued capability before
+  // backend resolution. In particular, a valid route cannot be downgraded to
+  // a local/profile request by omitting its connection ID.
+  if (!hasPluginRoute && !connectionId) {
     return
   }
 
