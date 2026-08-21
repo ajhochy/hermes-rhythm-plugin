@@ -143,15 +143,19 @@ _CREDENTIAL = re.compile(
     re.I,
 )
 _CREDENTIAL_FIELD = re.compile(
-    r"(?:^|[_-])(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password)(?:[_-]|$)",
+    r"(?:^|[_-])(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|token|secret|password)(?:[_-]|$)",
     re.I,
 )
+
+
+def _credential_field_name(key: object) -> str:
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", str(key)).lower()
 
 
 def _has_credential_field(value: Any) -> bool:
     if isinstance(value, dict):
         return any(
-            (_CREDENTIAL_FIELD.search(str(key)) and isinstance(item, str) and bool(item.strip()))
+            (_CREDENTIAL_FIELD.search(_credential_field_name(key)) and isinstance(item, str) and bool(item.strip()))
             or _has_credential_field(item)
             for key, item in value.items()
         )

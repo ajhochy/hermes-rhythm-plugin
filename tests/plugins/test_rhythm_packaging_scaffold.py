@@ -229,7 +229,7 @@ def test_install_and_doctor_fixture_gate_rejects_credential_shaped_values(leak):
         validate_install_doctor_fixture(fixtures, _manifest())
 
 
-@pytest.mark.parametrize("field", ["token", "secret", "access_token", "refresh_token", "db_password"])
+@pytest.mark.parametrize("field", ["token", "secret", "access_token", "refresh_token", "db_password", "apiKey", "accessToken", "clientSecret", "authorization"])
 def test_install_and_doctor_fixture_gate_rejects_credential_fields(field):
     """Regression: structured diagnostics serialize a credential outside the message text."""
     fixtures = {"records": [{"kind": "doctor-error", "operation": "validate", "message": "safe", field: "abcdefghijklmno"}]}
