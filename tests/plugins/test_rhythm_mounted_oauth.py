@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import sys
 import json
+import sys
+from unittest.mock import patch
 from urllib.parse import parse_qsl
 
 from fastapi.testclient import TestClient
@@ -58,6 +59,41 @@ def test_mounted_oauth_callback_uses_request_origin_and_is_only_public_plugin_ap
     assert exchanges[0]["redirect_uri"] == query["redirect_uri"]
     assert client.get("/api/plugins/rhythm/connection").status_code == 401
     assert client.post("/api/plugins/rhythm/oauth/callback").status_code == 401
+
+
+def test_mounted_public_callback_is_gated_when_rhythm_is_disabled_at_runtime(monkeypatch, tmp_path):
+    client, web_server, exchanges = _mounted_client(monkeypatch, tmp_path)
+    auth = {web_server._SESSION_HEADER_NAME: web_server._SESSION_TOKEN}
+
+    with patch("hermes_cli.plugins_cmd._get_enabled_set", return_value={"rhythm"}), patch(
+        "hermes_cli.plugins_cmd._get_disabled_set", return_value=set()
+    ):
+        start = client.post("/api/plugins/rhythm/oauth/start", headers=auth)
+        assert start.status_code == 200
+        state = start.json()["state"]
+
+    with patch("hermes_cli.plugins_cmd._get_enabled_set", return_value={"rhythm"}), patch(
+        "hermes_cli.plugins_cmd._get_disabled_set", return_value={"rhythm"}
+    ):
+        disabled = client.get(
+            "/api/plugins/rhythm/oauth/callback",
+            params={"state": state, "code": "disabled-code"},
+        )
+        unknown = client.get("/api/plugins/not-installed/oauth/callback")
+
+    assert disabled.status_code == unknown.status_code == 401
+    assert exchanges == []
+
+    with patch("hermes_cli.plugins_cmd._get_enabled_set", return_value={"rhythm"}), patch(
+        "hermes_cli.plugins_cmd._get_disabled_set", return_value=set()
+    ):
+        enabled = client.get(
+            "/api/plugins/rhythm/oauth/callback",
+            params={"state": state, "code": "enabled-code"},
+        )
+
+    assert enabled.status_code == 200
+    assert len(exchanges) == 1
 
 
 def test_mounted_oauth_callback_rejects_hostile_or_invalid_state_without_echoing_values(monkeypatch, tmp_path, caplog):
