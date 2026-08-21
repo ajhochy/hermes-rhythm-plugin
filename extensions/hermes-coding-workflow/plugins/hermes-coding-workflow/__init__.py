@@ -235,10 +235,11 @@ def _git_worktree_is_registered(repo: Path, worktree: Path) -> bool:
         if worktree_common is None:
             return False
         common_path = _trusted_git_common_dir(repo)
-        if common_path is None or common_path != repo / ".git" or worktree_common != common_path:
+        if common_path is None or worktree_common != common_path:
             return False
         listing = subprocess.run(["git", "-C", str(repo), "worktree", "list", "--porcelain"], text=True, capture_output=True, check=True).stdout.splitlines()
-        return any(line == f"worktree {worktree}" for line in listing)
+        registered = {line.removeprefix("worktree ") for line in listing if line.startswith("worktree ")}
+        return str(repo) in registered and str(worktree) in registered
     except (OSError, subprocess.CalledProcessError):
         return False
 
@@ -257,9 +258,26 @@ def _canonical_repository_for_worktree(worktree: Path) -> Path | None:
 
 def _missing_locator_error(worktree: Path) -> str | None:
     """Recognize controlled linked worktrees without inferring any stage identity."""
-    repo = _canonical_repository_for_worktree(worktree)
-    if repo is None or repo == worktree:
+    if worktree.parent.name != ".worktrees":
         return None
+    if not worktree.name.startswith("hcw-"):
+        task = os.getenv("HERMES_KANBAN_TASK")
+        if not task or worktree.name != task:
+            return "untrusted workflow worktree"
+        try:
+            branch = subprocess.run(
+                ["git", "-C", str(worktree), "branch", "--show-current"],
+                text=True, capture_output=True, check=True,
+            ).stdout.strip()
+        except (OSError, subprocess.CalledProcessError):
+            return "untrusted workflow worktree"
+        primary = _canonical_repository_for_worktree(worktree)
+        if branch != f"wt/{task}" or primary is None or not _git_worktree_is_registered(primary, worktree):
+            return "untrusted workflow worktree"
+        return None
+    repo = worktree.parent.parent
+    if not _git_worktree_is_registered(repo, worktree):
+        return "untrusted workflow worktree"
     workflows = repo / ".hermes" / "workflows"
     if not _has_no_symlink_components(workflows, repo):
         return "untrusted authoritative workflow state"

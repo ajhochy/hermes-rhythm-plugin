@@ -73,6 +73,24 @@ def workflow(tmp_path, monkeypatch):
     return repo, worktree, state
 
 
+@pytest.fixture
+def nested_workflow(tmp_path, monkeypatch):
+    """Model the live topology: task worktree controls a nested HCW worktree."""
+    primary = tmp_path / "primary"; subprocess.run(["git", "init", str(primary)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(primary), "config", "user.email", "test@example.invalid"], check=True)
+    subprocess.run(["git", "-C", str(primary), "config", "user.name", "Test"], check=True)
+    (primary / "app.py").write_text("value = 1\n"); subprocess.run(["git", "-C", str(primary), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(primary), "commit", "-m", "base"], check=True, capture_output=True)
+    controller = primary / ".worktrees" / "t_root"
+    subprocess.run(["git", "-C", str(primary), "worktree", "add", "-b", "wt/t_root", str(controller)], check=True, capture_output=True)
+    stage = controller / ".worktrees" / "hcw-root-1"
+    subprocess.run(["git", "-C", str(controller), "worktree", "add", "-b", "hcw/root/attempt-1", str(stage)], check=True, capture_output=True)
+    state = run(controller, "run-nested", stage)
+    monkeypatch.chdir(stage); monkeypatch.setenv("HCW_RUN_ID", "run-nested")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-red"); monkeypatch.setenv("HERMES_PROFILE", "dev-contract")
+    return primary, controller, stage, state
+
+
 def test_native_packages_register_bare_role_skills_hooks_and_bootstrap():
     hcw, powers = load_plugin("hermes-coding-workflow"), load_plugin("superpowers-pinned")
     host, companion = Host(), Host(); hcw.register(host); powers.register(companion)
@@ -99,6 +117,49 @@ def test_bootstrap_context_gives_dispatcher_a_complete_matching_create_run_shape
     assert "--scope <task-approved-path-or-glob>" in bootstrap
     assert "--board default --goal <quoted-task-goal>" in bootstrap
     assert "do not omit arguments or prefix environment assignments" in bootstrap
+
+
+def test_linked_task_worktree_remains_a_valid_root_bootstrap_repository(tmp_path, monkeypatch):
+    plugin = load_plugin("hermes-coding-workflow")
+    primary = tmp_path / "primary"; subprocess.run(["git", "init", str(primary)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(primary), "config", "user.email", "test@example.invalid"], check=True)
+    subprocess.run(["git", "-C", str(primary), "config", "user.name", "Test"], check=True)
+    (primary / "app.py").write_text("value = 1\n"); subprocess.run(["git", "-C", str(primary), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(primary), "commit", "-m", "base"], check=True, capture_output=True)
+    controller = primary / ".worktrees" / "t_root"
+    subprocess.run(["git", "-C", str(primary), "worktree", "add", "-b", "wt/t_root", str(controller)], check=True, capture_output=True)
+    monkeypatch.chdir(controller); monkeypatch.setenv("HERMES_KANBAN_TASK", "t_root")
+    monkeypatch.delenv("HCW_RUN_ID", raising=False); monkeypatch.delenv("HERMES_PROFILE", raising=False)
+
+    bootstrap = plugin._build_bootstrap()
+
+    assert "create-run" in bootstrap
+    assert str(controller) in bootstrap
+
+
+def test_linked_task_worktree_can_control_nested_hcw_stage(nested_workflow):
+    plugin = load_plugin("hermes-coding-workflow")
+    _, controller, stage, _ = nested_workflow
+
+    assert plugin._git_worktree_is_registered(controller, stage)
+    bootstrap = plugin._build_bootstrap()
+    assert "registered HCW stage red" in bootstrap
+    assert "create-run" not in bootstrap
+
+
+def test_nested_hcw_stage_missing_locator_still_fails_closed(nested_workflow, monkeypatch):
+    plugin = load_plugin("hermes-coding-workflow")
+    _, _, stage, _ = nested_workflow
+    (stage / ".hermes" / "hcw-run.json").unlink()
+    monkeypatch.delenv("HCW_RUN_ID", raising=False)
+
+    bootstrap = plugin._build_bootstrap()
+
+    assert bootstrap == (
+        f"{plugin.BOOTSTRAP_MARKER}: registered HCW workflow identity is invalid; "
+        "do not run lifecycle commands."
+    )
+    assert "create-run" not in bootstrap
 
 
 @pytest.mark.parametrize(

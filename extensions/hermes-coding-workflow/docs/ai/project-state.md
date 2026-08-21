@@ -25,10 +25,17 @@ Build the complete standalone Hermes coding workflow package, including the cont
 ## Test status
 
 - Control plane, native plugins, role profiles, installer, read-only API, Desktop UI, public installed lifecycle, and the async Claude Code CLI worker dispatch/runner are implemented.
-- Branch gates: `195 passed` (Python) with zero skipped/xfailed/xpassed; security-focused `42 passed`; Node `3/3`, production ESM build, 36-file source compilation, diff check, added-line secret scan, installed-runner importability, source/profile rollback, OpenAI runtime/API-mode allowlists, account-auth parsing, credential-minimal worker/probe environments, descriptor-bound atomic writes, registered-worktree identity, authoritative brief binding, stale-process reconciliation, and authoritative worker-repository binding all pass.
+- Branch gates: `198 passed` (Python) with zero skipped/xfailed/xpassed; security/live-topology-focused `45 passed`; Node `3/3`, production ESM build, 36-file source compilation, diff check, added-line secret scan, installed-runner importability, source/profile rollback, OpenAI runtime/API-mode allowlists, account-auth parsing, credential-minimal worker/probe environments, descriptor-bound atomic writes, registered-worktree identity, authoritative brief binding, stale-process reconciliation, and authoritative worker-repository binding all pass.
 - The older `live-tracer-1787210374` proof validates the pre-pivot workflow only. A fresh real Team-account asynchronous dispatch smoke is still required for this adapter; the first matcher probe reached the account's normal session cap and reported a 17:30 PDT reset.
 
 ## Recent coding-agent runs
+
+### 2026-08-21 — Nested linked-worktree topology repair
+- Files modified: `plugins/hermes-coding-workflow/__init__.py` validates a linked Kanban task worktree and its nested HCW worktree through shared trusted Git authority plus exact worktree-list membership; missing-locator root bootstrap is limited to registered `wt/<task>` workspaces whose basename equals `HERMES_KANBAN_TASK`. `tests/plugin/test_native_plugins.py` models the real nested topology and covers root bootstrap, active stage derivation, missing nested locator, and unrelated linked-worktree rejection.
+- Checks run: RED: linked root bootstrap was rejected and nested HCW stage registration returned false. GREEN: security/live-topology-focused 45 passed; serialized isolated-home full Python suite 198 passed with one dependency deprecation warning; Node tests/build 3 passed each; 36-file source compilation, diff check, and added-line secret scan passed.
+- Decisions made: controller and stage may both be linked worktrees when they share the same fully validated common Git directory and both exact paths appear in Git's worktree list; root create-run remains narrower than generic linked-worktree membership.
+- Deviations from spec: no push, merge, live-profile mutation, or additional Kanban retry.
+- Concerns: fresh immutable rereview, targeted hook redeployment, and stage-only live recovery remain required.
 
 ### 2026-08-21 — Canonical locator/manifest identity repair
 - Files modified: `plugins/hermes-coding-workflow/__init__.py` requires repository and worktree identity fields to be exact canonical absolute existing non-symlink directory spellings before comparison; `tests/plugin/test_native_plugins.py` replays symlink aliases in both locator and authoritative manifest identity fields.
