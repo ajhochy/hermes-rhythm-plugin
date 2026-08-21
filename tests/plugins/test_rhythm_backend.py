@@ -272,6 +272,121 @@ def test_task_detail_rejects_unsafe_or_write_receipts():
             client.call(method, path)
 
 
+def test_task_mutation_is_one_exact_patch_with_stable_idempotency_and_canonical_readback():
+    from plugins.rhythm.backend.client import RhythmClient
+
+    seen = []
+    def transport(method, url, headers, body, timeout):
+        seen.append((method, url, headers.copy(), body))
+        if method == "PATCH":
+            assert url.endswith("/tasks/task-1")
+            return 200, {}, {"ignored": True}
+        return 200, {}, {"id": "task-1", "status": "done"}
+
+    client = RhythmClient(TOKEN, transport=transport)
+    assert client.mutate_task("task-1", "complete") == {"id": "task-1", "status": "done"}
+    assert [(method, body) for method, _, _, body in seen] == [("PATCH", b'{"status":"done"}'), ("GET", None)]
+    key = seen[0][2]["Idempotency-Key"]
+    assert TOKEN not in key
+    # The key is deterministic for a particular semantic mutation, never a replay loop.
+    keys = []
+    RhythmClient(TOKEN, transport=lambda method, url, headers, body, timeout: (keys.append(headers.get("Idempotency-Key")) or (200, {}, {"id": "task-1", "status": "done"}))).mutate_task("task-1", "complete")
+    assert keys[0] == key and len(keys) == 2
+
+
+@pytest.mark.parametrize("failure", ["timeout", "network", "upstream_unavailable"])
+def test_task_mutation_never_replays_ambiguous_patch_and_only_accepts_matching_readback(failure):
+    from plugins.rhythm.backend.client import RhythmClient, RhythmRemoteError
+
+    calls = []
+    def transport(method, url, headers, body, timeout):
+        calls.append(method)
+        if method == "PATCH":
+            raise RhythmRemoteError(failure)
+        return 200, {}, {"id": "task-1", "status": "open"}
+
+    with pytest.raises(RhythmRemoteError, match="uncertain"):
+        RhythmClient(TOKEN, transport=transport).mutate_task("task-1", "complete")
+    assert calls == ["PATCH", "GET"]
+
+
+def test_task_mutation_409_is_not_misreported_as_success_or_replayed():
+    from plugins.rhythm.backend.client import RhythmClient, RhythmRemoteError
+
+    calls = []
+    def transport(method, url, headers, body, timeout):
+        calls.append(method)
+        return (409, {}, {}) if method == "PATCH" else (200, {}, {"id": "task-1", "status": "done"})
+
+    with pytest.raises(RhythmRemoteError, match="conflict"):
+        RhythmClient(TOKEN, transport=transport).mutate_task("task-1", "complete")
+    assert calls == ["PATCH"]
+
+
+def test_task_mutation_rejects_unsafe_ids_dates_and_unallowlisted_bodies():
+    from plugins.rhythm.backend.client import RhythmClient, RhythmProtocolError
+
+    client = RhythmClient(TOKEN, transport=_ok_transport)
+    for path, body in (("/tasks/../../auth/me", {"status": "done"}), ("/tasks/task-1", {"scheduledDate": "2026-02-30"}), ("/tasks/task-1", {"status": "open"}), ("/tasks/task-1", {"status": "done", "scheduledDate": "2026-02-28"})):
+        with pytest.raises(RhythmProtocolError):
+            client.call("PATCH", path, body=body)
+
+
+def test_task_confirmation_is_owner_profile_payload_bound_one_time_and_never_transports_before_issue(api, monkeypatch, rhythm_home, tmp_path):
+    client, mod = api
+    calls = []
+    task = {"id": "task-1", "title": "Review", "notes": "Read.", "status": "open", "bucket": "today", "priority": 1, "tags": [], "createdAt": "2026-08-21", "createdBy": "Me", "ownerId": "user-1", "isShared": False, "sourceType": "manual", "preferredAgent": "", "energy": "", "collaborators": []}
+    def transport(method, url, headers, body, timeout):
+        calls.append((method, url, body))
+        if url.endswith("/auth/me"): return 200, {}, {"id": "user-1"}
+        if url.endswith("/workspaces/me"): return 200, {}, {"id": "ws-1"}
+        if url.endswith("/tasks/task-1") and method == "GET": return 200, {}, task
+        if url.endswith("/tasks/task-1") and method == "PATCH":
+            task["status"] = "done"
+            return 200, {}, {}
+        raise AssertionError((method, url))
+    monkeypatch.setattr(mod, "request", transport)
+    assert client.put("/api/plugins/rhythm/connection", json={"access_token": TOKEN}).status_code == 200
+    payload = {"operation": "complete", "generation": "generation-123"}
+    assert client.post("/api/plugins/rhythm/tasks/task-1/operations", json=payload).status_code == 409
+    assert not any(method == "PATCH" for method, _, _ in calls)
+    issued = client.post("/api/plugins/rhythm/tasks/task-1/confirmation", json=payload)
+    assert issued.status_code == 200, issued.text
+    token = issued.json()["confirmation"]
+    assert TOKEN not in issued.text and TOKEN not in token
+    changed = client.post("/api/plugins/rhythm/tasks/task-1/operations", json={**payload, "confirmation": token, "generation": "generation-456"})
+    assert changed.status_code == 409
+    assert not any(method == "PATCH" for method, _, _ in calls)
+    issued = client.post("/api/plugins/rhythm/tasks/task-1/confirmation", json=payload).json()["confirmation"]
+    success = client.post("/api/plugins/rhythm/tasks/task-1/operations", json={**payload, "confirmation": issued})
+    assert success.status_code == 200
+    assert [method for method, _, _ in calls].count("PATCH") == 1
+    assert client.post("/api/plugins/rhythm/tasks/task-1/operations", json={**payload, "confirmation": issued}).status_code == 409
+    other = tmp_path / "other-profile"; other.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(other))
+    rehomed = client.post("/api/plugins/rhythm/tasks/task-1/confirmation", json=payload)
+    assert rehomed.status_code == 401
+
+
+def test_task_confirmation_rejects_nonowner_invalid_date_expiry_and_bounds(api, monkeypatch):
+    client, mod = api
+    task = {"id": "task-1", "title": "Review", "notes": "Read.", "status": "open", "bucket": "today", "priority": 1, "tags": [], "createdAt": "2026-08-21", "createdBy": "Other", "ownerId": "other-user", "isShared": True, "sourceType": "manual", "preferredAgent": "", "energy": "", "collaborators": []}
+    def transport(method, url, headers, body, timeout):
+        if url.endswith("/auth/me"): return 200, {}, {"id": "user-1"}
+        if url.endswith("/workspaces/me"): return 200, {}, {"id": "ws-1"}
+        if url.endswith("/tasks/task-1"): return 200, {}, task
+        raise AssertionError(url)
+    monkeypatch.setattr(mod, "request", transport)
+    assert client.put("/api/plugins/rhythm/connection", json={"access_token": TOKEN}).status_code == 200
+    denied = client.post("/api/plugins/rhythm/tasks/task-1/confirmation", json={"operation": "complete", "generation": "generation-123"})
+    assert denied.status_code == 403, denied.text
+    assert client.post("/api/plugins/rhythm/tasks/task-1/confirmation", json={"operation": "reschedule", "generation": "generation-123", "scheduledDate": "2026-02-30"}).status_code == 422
+    # Expiry pruning and bounded pending state are lock-protected, matching OAuth state handling.
+    mod._task_confirmations["expired"] = mod._TaskConfirmation("task-1", "complete", None, "generation-123", mod._canonical_home(), time.monotonic() - 1)
+    mod._prune_task_confirmations_locked()
+    assert "expired" not in mod._task_confirmations
+
+
 @pytest.mark.parametrize(
     ("method", "path"),
     [("post", "/dashboard-summary"), ("patch", "/tasks/task-1"), ("delete", "/tasks/task-1")],

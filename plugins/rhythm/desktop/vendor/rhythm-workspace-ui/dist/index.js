@@ -4258,6 +4258,8 @@ function TasksScreen() {
   const { tasks: gateway } = useRhythmDomainGateway();
   const host = useRhythmHost();
   const canWrite = host.currentUser.capabilities?.includes("tasks.write") ?? false;
+  const canComplete = canWrite || (host.currentUser.capabilities?.includes("tasks.complete") ?? false);
+  const canReschedule = canWrite || (host.currentUser.capabilities?.includes("tasks.reschedule") ?? false);
   const [surfaceState, setSurfaceState] = useState("loading");
   const [tasks, setTasks] = useState([]);
   const [members, setMembers] = useState([]);
@@ -4274,7 +4276,9 @@ function TasksScreen() {
   const [createOpen, setCreateOpen] = useState(false);
   const [draggedId, setDraggedId] = useState(null);
   const [mutationPending, setMutationPending] = useState(false);
+  const [operationTarget, setOperationTarget] = useState(null);
   const createTitleRef = useRef(null);
+  const operationGeneration = useRef(0);
   const currentUserId = host.currentUser.initials;
   const handleError = (error) => {
     const kind = error instanceof RhythmGatewayError ? error.kind : "server_error";
@@ -4332,6 +4336,32 @@ function TasksScreen() {
     try {
       const updated = await gateway.update(task.id, { status: nextStatus });
       setTasks((current) => current.map((item) => item.id === task.id ? updated : item));
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setMutationPending(false);
+    }
+  };
+  const requestTaskOperation = (task, operation) => {
+    if (operation === "complete" && !canComplete || operation === "reschedule" && !canReschedule || mutationPending) return;
+    operationGeneration.current += 1;
+    setOperationTarget({ task, operation, scheduledDate: operation === "reschedule" ? task.scheduledDate ?? (/* @__PURE__ */ new Date()).toISOString().slice(0, 10) : void 0, generation: `${task.id}:${operation}:${operationGeneration.current}:${Date.now()}` });
+  };
+  const isIsoCalendarDate = (value) => Boolean(value && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) && (/* @__PURE__ */ new Date(`${value}T00:00:00Z`)).toISOString().slice(0, 10) === value);
+  const confirmTaskOperation = async () => {
+    if (!operationTarget || mutationPending) return;
+    if (operationTarget.operation === "reschedule" && !isIsoCalendarDate(operationTarget.scheduledDate)) {
+      handleError(new RhythmGatewayError("server_error", "Choose a real calendar date."));
+      return;
+    }
+    const confirmation = { taskId: operationTarget.task.id, generation: operationTarget.generation, operation: operationTarget.operation, scheduledDate: operationTarget.scheduledDate };
+    setMutationPending(true);
+    try {
+      if (host.confirmTaskOperation && !await host.confirmTaskOperation(confirmation)) return;
+      const updated = operationTarget.operation === "complete" ? gateway.complete ? await gateway.complete(operationTarget.task.id, operationTarget.generation) : canWrite ? await gateway.update(operationTarget.task.id, { status: "done" }) : null : gateway.reschedule && operationTarget.scheduledDate ? await gateway.reschedule(operationTarget.task.id, operationTarget.scheduledDate, operationTarget.generation) : canWrite && operationTarget.scheduledDate ? await gateway.update(operationTarget.task.id, { scheduledDate: operationTarget.scheduledDate }) : null;
+      if (!updated) throw new RhythmGatewayError("forbidden", "This host does not expose the requested task operation.");
+      setTasks((current) => current.map((task) => task.id === updated.id ? updated : task));
+      setOperationTarget(null);
     } catch (error) {
       handleError(error);
     } finally {
@@ -4459,12 +4489,13 @@ function TasksScreen() {
           {
             type: "checkbox",
             checked: task.status === "done",
-            disabled: readonly,
-            "aria-describedby": readonly ? readonlyReasonId : void 0,
-            onChange: (event) => void changeStatus(task, event.target.checked ? "done" : "open"),
+            disabled: !canComplete || isSourceReadonly(task) || mutationPending,
+            "aria-describedby": !canComplete || isSourceReadonly(task) ? readonlyReasonId : void 0,
+            onChange: () => requestTaskOperation(task, "complete"),
             "data-testid": `task-complete-${task.id}`
           }
-        )
+        ),
+        canReschedule && !isSourceReadonly(task) && /* @__PURE__ */ jsx("button", { className: "text-button", type: "button", onClick: () => requestTaskOperation(task, "reschedule"), "data-testid": `task-reschedule-${task.id}`, children: "Reschedule" })
       ] }) }),
       /* @__PURE__ */ jsx("span", { className: "task-cell main-cell", role: "gridcell", children: /* @__PURE__ */ jsxs("button", { className: "task-row-main", type: "button", onClick: () => openInspector(task), "data-testid": `task-select-${task.id}`, children: [
         /* @__PURE__ */ jsxs("span", { className: "task-row-copy", children: [
@@ -4749,6 +4780,17 @@ function TasksScreen() {
       /* @__PURE__ */ jsxs("div", { className: "dialog-actions", children: [
         /* @__PURE__ */ jsx("button", { className: "secondary-button", type: "button", onClick: () => setDeleteTarget(null), "data-testid": "task-delete-cancel", children: "Cancel" }),
         /* @__PURE__ */ jsx("button", { className: "danger-button", type: "button", disabled: !canWrite || mutationPending, onClick: () => void confirmDelete(), "data-testid": "task-delete-confirm", children: "Delete task" })
+      ] })
+    ] }),
+    /* @__PURE__ */ jsxs(FocusDialog, { open: Boolean(operationTarget), onClose: () => setOperationTarget(null), title: operationTarget?.operation === "complete" ? `Complete \u201C${operationTarget.task.title}\u201D?` : `Reschedule \u201C${operationTarget?.task.title ?? ""}\u201D?`, description: "This action is sent only after you confirm it.", testId: "task-operation-confirmation", children: [
+      operationTarget?.operation === "reschedule" && /* @__PURE__ */ jsxs("label", { children: [
+        "Scheduled date",
+        /* @__PURE__ */ jsx("input", { type: "date", value: operationTarget.scheduledDate ?? "", onChange: (event) => setOperationTarget((current) => current ? { ...current, scheduledDate: event.target.value } : current), "data-testid": "task-operation-date" })
+      ] }),
+      /* @__PURE__ */ jsx("p", { role: "status", children: operationTarget?.operation === "complete" ? "Mark this task complete." : `Set the scheduled date to ${operationTarget?.scheduledDate ?? ""}.` }),
+      /* @__PURE__ */ jsxs("div", { className: "dialog-actions", children: [
+        /* @__PURE__ */ jsx("button", { className: "secondary-button", type: "button", onClick: () => setOperationTarget(null), children: "Cancel" }),
+        /* @__PURE__ */ jsx("button", { className: "primary-button", type: "button", disabled: mutationPending || operationTarget?.operation === "reschedule" && !isIsoCalendarDate(operationTarget.scheduledDate), onClick: () => void confirmTaskOperation(), "data-autofocus": true, "data-testid": "task-operation-confirm", children: "Confirm" })
       ] })
     ] })
   ] }) });

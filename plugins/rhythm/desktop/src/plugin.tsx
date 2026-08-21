@@ -1,7 +1,7 @@
 /**
  * Read-only host integration for the accepted @ajhochy/rhythm-workspace-ui
  * artifact, built from accepted source revision
- * 8187ed025f678779cd9c8a779074d8e54f4c8ddc (see vendor provenance).
+ * 94f952dd93907c729beafb9e137bf0cd38368f9e (see vendor provenance).
  * The package remains the owner of Dashboard/Tasks JSX and styles; this file
  * owns only the Hermes transport, lifecycle and bounded chat handoff.
  */
@@ -17,6 +17,7 @@ import {
   type RhythmHostAdapter,
   type RhythmScreenId,
   type RhythmTask,
+  type RhythmTaskOperationConfirmation,
 } from '../vendor/rhythm-workspace-ui/dist/index.js'
 import '../vendor/rhythm-workspace-ui/dist/styles/rhythm.css'
 
@@ -52,7 +53,15 @@ function read<T>(rest: Rest, path: string): Promise<T> {
 /** The only live port methods are pinned, namespaced GETs. Every write-shaped
  * accepted-package port rejects locally, so a future screen interaction cannot
  * silently turn this M4a slice into a mutation channel. */
-function createGateway(rest: Rest): RhythmDomainGateway {
+function write<T>(rest: Rest, path: string, body: unknown): Promise<T> {
+  return (rest as unknown as (path: string, init: { method: string; body: unknown }) => Promise<T>)(path, { method: 'POST', body }).catch(error => Promise.reject(gatewayError(error)))
+}
+
+function confirmationKey(confirmation: RhythmTaskOperationConfirmation): string {
+  return JSON.stringify([confirmation.taskId, confirmation.operation, confirmation.scheduledDate ?? null, confirmation.generation])
+}
+
+function createGateway(rest: Rest, confirmations = new Map<string, string>()): RhythmDomainGateway {
   return {
     dashboard: {
       summary: () => read(rest, '/dashboard-summary'),
@@ -69,6 +78,20 @@ function createGateway(rest: Rest): RhythmDomainGateway {
       delete: unavailable,
       addCollaborator: unavailable,
       removeCollaborator: unavailable,
+      complete: async (id: string, generation?: string) => {
+        const request = { taskId: id, operation: 'complete' as const, generation: generation ?? '' }
+        const confirmation = confirmations.get(confirmationKey(request))
+        if (!confirmation) return unavailable()
+        confirmations.delete(confirmationKey(request))
+        return write<RhythmTask>(rest, `/tasks/${id}/operations`, { operation: 'complete', generation: request.generation, confirmation })
+      },
+      reschedule: async (id: string, scheduledDate: string, generation?: string) => {
+        const request = { taskId: id, operation: 'reschedule' as const, scheduledDate, generation: generation ?? '' }
+        const confirmation = confirmations.get(confirmationKey(request))
+        if (!confirmation) return unavailable()
+        confirmations.delete(confirmationKey(request))
+        return write<RhythmTask>(rest, `/tasks/${id}/operations`, { operation: 'reschedule', scheduledDate, generation: request.generation, confirmation })
+      },
     },
     planner: unavailablePort,
     projects: unavailablePort,
@@ -98,18 +121,24 @@ function RhythmWorkspace({ rest }: { rest: Rest }) {
   // A changed identity is a synchronous re-home: React unmounts old screen
   // state before the replacement gateway can publish, invalidating stale work.
   const generation = `${connectionId}:${profile}:${gatewayState}`
-  const gateway = useMemo(() => createGateway(rest), [rest, generation])
+  const confirmations = useMemo(() => new Map<string, string>(), [generation])
+  const gateway = useMemo(() => createGateway(rest, confirmations), [rest, confirmations])
   const adapter = useMemo<RhythmHostAdapter>(() => ({
     tokens: defaultRhythmTokens,
     viewport: 'expanded',
-    currentUser: { displayName: 'Hermes', initials: 'H', collaborationCapability: 'read' },
+    currentUser: { displayName: 'Hermes', initials: 'H', collaborationCapability: 'read', capabilities: ['tasks.complete', 'tasks.reschedule'] },
+    confirmTaskOperation: async (confirmation: RhythmTaskOperationConfirmation) => {
+      const payload = await write<{ confirmation: string }>(rest, `/tasks/${confirmation.taskId}/confirmation`, { ...confirmation })
+      confirmations.set(confirmationKey(confirmation), payload.confirmation)
+      return true
+    },
     onNavigateToScreen: (screen: RhythmScreenId) => {
       if (screen === 'tasks') window.location.hash = rhythmRouteTarget('?tab=tasks')
     },
     onRequestFollowUp: askHermes,
-  }), [])
+  }), [confirmations, rest])
 
-  return <main className="rhythm-workspace-root" aria-label="Rhythm workspace" data-testid="rhythm-workspace-readonly" data-readonly="true">
+  return <main className="rhythm-workspace-root" aria-label="Rhythm workspace" data-testid="rhythm-workspace-readonly" data-readonly="false">
     <RhythmWorkspaceProvider gateway={gateway} host={adapter} key={generation}>
       {tab === 'tasks' ? <TasksScreen /> : <DashboardScreen />}
     </RhythmWorkspaceProvider>
@@ -127,5 +156,5 @@ const plugin: HermesPlugin = {
   },
 }
 
-export { askHermes, createGateway, gatewayError }
+export { askHermes, confirmationKey, createGateway, gatewayError }
 export default plugin
