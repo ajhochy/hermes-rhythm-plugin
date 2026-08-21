@@ -28,6 +28,15 @@ logger = logging.getLogger(__name__)
 # floor independent of the user's ``security.redact_secrets`` preference.
 _RAW_IO_MAX_CHARS = 4000
 
+# Hard cap on any single polished ``content`` text/diff block. Per-formatter
+# truncation (see the various ``_format_*_result`` limits above, all <=8000)
+# already keeps well-behaved output compact; this is the final safety-net
+# bound for branches with no formatter-level cap (e.g. a tool-start preview
+# built directly from unbounded model/tool arguments), enforced at the same
+# choke point that force-redacts every text/diff block below.
+_CONTENT_TEXT_MAX_CHARS = 10000
+_DIFF_TEXT_MAX_CHARS = 20000
+
 
 def _redact_display(text: str, *, code: bool = False) -> str:
     """Redact secrets from text that will be echoed as ACP content/raw I/O."""
@@ -247,8 +256,48 @@ def build_tool_title(tool_name: str, args: Dict[str, Any]) -> str:
     return tool_name
 
 
-def _text(content: str) -> Any:
-    return acp.tool_content(acp.text_block(content))
+def _text(content: str, *, redact: bool = True) -> Any:
+    """Build a text ``ContentToolCallContent`` block.
+
+    This is the single choke point every polished/generic tool-call text
+    block passes through, so it force-redacts and hard-bounds by default —
+    a formatter that forgets to sanitize its own output (the actual gap in
+    issue #3 finding 3: read_file/process/search_files results reached this
+    function pre-redacted-only-by-accident, i.e. not at all) still can't
+    leak a secret onto the ACP wire. Pass ``redact=False`` only when the
+    caller already ran ``_redact_display`` itself with a mode this default
+    can't reproduce (e.g. ``code=True`` for source snippets) — re-running
+    redaction with different code-file semantics on top of that would risk
+    over-redacting preserved code fixtures, a double-redaction artifact.
+    Bounding always applies regardless of ``redact``.
+    """
+    text = content or ""
+    if redact:
+        text = _redact_display(text)
+    return acp.tool_content(acp.text_block(_truncate_text(text, limit=_CONTENT_TEXT_MAX_CHARS)))
+
+
+def _diff_content(
+    path: str,
+    new_text: str,
+    old_text: Optional[str] = None,
+    *,
+    redact: bool = True,
+) -> Any:
+    """Build an ACP diff content block with the same redact/bound guarantee as ``_text``.
+
+    Diff content (patch/write_file/skill_manage previews, and diffs parsed
+    from a unified-diff tool result) never passed through ``_text``, so it
+    needs its own copy of the same choke point rather than duplicating the
+    redact-then-bound logic at every call site.
+    """
+    if redact:
+        new_text = _redact_display(new_text or "", code=True)
+        old_text = _redact_display(old_text, code=True) if old_text else old_text
+    new_text = _truncate_text(new_text or "", limit=_DIFF_TEXT_MAX_CHARS)
+    if old_text:
+        old_text = _truncate_text(old_text, limit=_DIFF_TEXT_MAX_CHARS)
+    return acp.tool_diff_content(path=path, old_text=old_text or None, new_text=new_text)
 
 
 def _json_loads_maybe(value: Optional[str]) -> Any:
@@ -1022,7 +1071,7 @@ def _parse_unified_diff_content(diff_text: str) -> List[Any]:
             new_lines = []
             return
         content.append(
-            acp.tool_diff_content(
+            _diff_content(
                 path=_strip_diff_prefix(path),
                 old_text="\n".join(old_lines) if old_lines else None,
                 new_text="\n".join(new_lines),
@@ -1261,7 +1310,7 @@ def _build_tool_start(
     if tool_name == "execute_code":
         code = _redact_display(str(arguments.get("code") or "").strip(), code=True)
         preview = code[:1200] + (f"\n... ({len(code)} chars total, truncated)" if len(code) > 1200 else "")
-        content = [_text(f"Running Python helper script:\n\n```python\n{preview}\n```" if preview else "Running Python helper script")]
+        content = [_text(f"Running Python helper script:\n\n```python\n{preview}\n```" if preview else "Running Python helper script", redact=False)]
         return acp.start_tool_call(
             tool_call_id, title, kind=kind, content=content, locations=locations,
         )

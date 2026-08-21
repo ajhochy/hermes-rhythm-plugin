@@ -242,6 +242,120 @@ class TestBuildToolStart:
 # ---------------------------------------------------------------------------
 
 
+class TestPolishedContentRedaction:
+    """A polished ``content`` block (read_file, process, search_files, ...)
+    is built from formatted tool-result text, not the raw ``result`` string
+    that ``raw_output`` bounds/redacts. Every one of these formatters must
+    force-redact and bound its own output — a secret embedded in a file
+    read, a process log, a search match, or a generic JSON field must never
+    reach the ACP wire verbatim, and no formatted block may be unbounded."""
+
+    AWS_SECRET = "AKIAIOSFODNN7EXAMPLE"
+    GITHUB_SECRET = "ghp_1234567890abcdefghijklmnopqrstuvwx"
+    BEARER_SECRET = "sk-abcdefghijklmnopqrstuvwx1234567890"
+
+    def test_read_file_content_redacts_secret(self):
+        result = json.dumps({"content": f"line1\nAWS_KEY={self.AWS_SECRET}\nline3", "total_lines": 3})
+        r = build_tool_complete("tc-read-secret", "read_file", result, function_args={"path": "/tmp/x.env"})
+        text = r.content[0].content.text
+        assert self.AWS_SECRET not in text
+        assert "/tmp/x.env" in text  # non-secret metadata preserved
+
+    def test_read_file_error_message_redacts_secret(self):
+        """formatter error/message path: a read failure surfaces the
+        upstream error text verbatim today, which can itself carry a
+        credential (e.g. an auth failure echoing the token it rejected)."""
+        result = json.dumps({"error": f"permission denied for token {self.GITHUB_SECRET}"})
+        r = build_tool_complete("tc-read-err", "read_file", result, function_args={"path": "/tmp/x"})
+        text = r.content[0].content.text
+        assert self.GITHUB_SECRET not in text
+        assert "Read failed" in text
+
+    def test_process_output_redacts_secret(self):
+        result = json.dumps({"status": "completed", "output": f"token: {self.GITHUB_SECRET}"})
+        r = build_tool_complete(
+            "tc-process-secret", "process", result, function_args={"action": "status", "session_id": "s1"}
+        )
+        text = r.content[0].content.text
+        assert self.GITHUB_SECRET not in text
+        assert "s1" in text  # non-secret metadata preserved
+
+    def test_search_files_match_content_redacts_secret(self):
+        result = json.dumps(
+            {"total_count": 1, "matches": [{"path": "a.py", "line": 1, "content": f"KEY={self.AWS_SECRET}"}]}
+        )
+        r = build_tool_complete("tc-search-secret", "search_files", result)
+        text = r.content[0].content.text
+        assert self.AWS_SECRET not in text
+        assert "a.py:1" in text  # non-secret metadata preserved
+
+    def test_browser_navigate_result_redacts_secret(self):
+        """browser/media formatted result path."""
+        result = json.dumps(
+            {"title": "Login", "url": "https://x.com", "text": f"session token {self.BEARER_SECRET} set"}
+        )
+        r = build_tool_complete("tc-browser-secret", "browser_navigate", result)
+        text = r.content[0].content.text
+        assert self.BEARER_SECRET not in text
+        assert "Login" in text  # non-secret metadata preserved
+
+    def test_generic_structured_dict_result_redacts_secret(self):
+        """structured JSON path for a tool with no dedicated formatter."""
+        result = json.dumps({"success": True, "message": f"issued key {self.AWS_SECRET}", "id": "x1"})
+        r = build_tool_complete("tc-generic-secret", "some_plugin_tool", result)
+        text = r.content[0].content.text
+        assert self.AWS_SECRET not in text
+        assert "x1" in text  # non-secret metadata preserved
+
+    def test_generic_top_level_list_result_redacts_secret(self):
+        """non-string content: a top-level JSON list (not a dict, not a
+        plain string) routed through the generic structured formatter."""
+        result = json.dumps([{"note": f"leaked {self.AWS_SECRET}"}])
+        r = build_tool_complete("tc-list-secret", "some_other_tool", result)
+        text = r.content[0].content.text
+        assert self.AWS_SECRET not in text
+
+    def test_todo_start_preview_redacts_secret_in_item_content(self):
+        """tool-start args: a todo item's own content can carry a secret
+        a user pasted (e.g. 'rotate this key: ...')."""
+        args = {"todos": [{"status": "pending", "content": f"rotate {self.AWS_SECRET}"}]}
+        result = build_tool_start("tc-todo-secret", "todo", args)
+        text = result.content[0].content.text
+        assert self.AWS_SECRET not in text
+
+    def test_todo_start_preview_is_bounded(self):
+        """A single oversized todo item content must not ship unbounded —
+        there is no per-item or total-length cap on this preview today."""
+        huge = "z" * 50000
+        args = {"todos": [{"status": "pending", "content": huge}]}
+        result = build_tool_start("tc-todo-huge", "todo", args)
+        text = result.content[0].content.text
+        assert len(text) < 20000
+
+    def test_terminal_start_command_is_bounded(self):
+        huge_cmd = "echo " + "a" * 50000
+        result = build_tool_start("tc-term-huge", "terminal", {"command": huge_cmd})
+        text = result.content[0].content.text
+        assert len(text) < 20000
+
+    def test_skill_manage_diff_content_redacts_secret(self):
+        """Diff content built from a parsed unified diff (e.g. skill_manage
+        completion) bypasses the text-content formatters entirely and must
+        get the same redaction/bound guarantee."""
+        from acp_adapter.tools import _parse_unified_diff_content
+
+        diff_text = (
+            "--- a/skill.md\n"
+            "+++ b/skill.md\n"
+            "@@ -1 +1 @@\n"
+            "-old\n"
+            f"+API_KEY={self.AWS_SECRET}\n"
+        )
+        blocks = _parse_unified_diff_content(diff_text)
+        assert blocks, "expected at least one diff content block"
+        assert self.AWS_SECRET not in (blocks[0].new_text or "")
+
+
 class TestBuildToolComplete:
     def test_build_tool_complete_for_terminal(self):
         """Completed terminal call should include output text."""
