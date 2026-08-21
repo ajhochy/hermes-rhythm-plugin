@@ -6,13 +6,14 @@ Build the complete standalone Hermes coding workflow package, including the cont
 
 ## Repository
 
-- Path: `/Users/ajhochhalter/Documents/hermes-coding-workflow`
-- Candidate branch: `integration/complete-workflow` (manual merge gate; `main` remains foundation-only)
+- Path: `/Users/ajhochhalter/.hermes/worktrees/hermes-rhythm-plugin/oauth-tier-routing/extensions/hermes-coding-workflow`
+- Candidate branch: `fix/oauth-tier-routing` (manual merge gate)
 - Dashboard tracker: `hermesCodingWorkflow`
 
 ## Current activity
 
-- OAuth-tier candidate `fix/oauth-tier-routing` is installed in the live Hermes home. `hcw-dev` is the GPT-5.6-Sol orchestrator through OpenAI account OAuth; dispatched roles are tiered across OpenAI account OAuth and Anthropic account OAuth, with no API-key fallback chain. Exact-route doctor and OpenAI Sol live smoke pass. A real Sol `write_file` probe was rejected by the HCW `pre_tool_call` boundary with `workflow identity required for mutation`, and the target file was not created. Anthropic OAuth authentication succeeds, but Anthropic currently rejects third-party inference until account extra usage is enabled/funded; mixed-pool live completion remains pending that external entitlement.
+- The predecessor OAuth-tier route is installed in the live Hermes home. `hcw-dev` is the GPT-5.6-Sol orchestrator through OpenAI account OAuth, and every Hermes profile stays on OpenAI OAuth with no API-key fallback chain or provider `anthropic`. Exact-route doctor, OpenAI Sol smoke, and the Hermes hook probe pass. The new external Claude CLI adapter on `fix/oauth-tier-routing` is not yet live-installed.
+- The architecture pivoted: `red`, `green`, `quality-review`, and `complete` are external, Hermes-dispatched asynchronous Claude Code CLI subprocesses (`hcw dispatch-worker`/`hcw worker-status`), authenticated by Claude Team/Pro/Max account login and never an API key. Claude internal tools do not pass through Hermes hooks. Safety comes from registered-worktree confinement, authoritative stage/task/attempt/brief binding, exact variadic tool matchers, credential-minimal environments, descriptor-bound atomic artifacts, process-identity reconciliation, and controller-owned review/verification transitions.
 
 ## Safety
 
@@ -23,11 +24,19 @@ Build the complete standalone Hermes coding workflow package, including the cont
 
 ## Test status
 
-- Control plane, native plugins, role profiles, installer, read-only API, Desktop UI, and public installed lifecycle are implemented.
-- OAuth-tier branch gates: `55 passed` with zero skips/xfails; Node `3/3`, production ESM build, Python compilation, diff check, exact tier-routing lifecycle, source/profile rollback injection, both app-server config spellings across both OpenAI provider names, runtime allowlist tests, active OAuth credential-type checks, and fallback-removal verification passed.
-- Live proof: run `live-tracer-1787210374`, board `hcw-live-tracer-1787210374`, nine tasks all `done`, base `4e269dee0ded1b4c4080f02f9fdc3be536979323`, candidate `0123bcdac2e9b3faaca17b58af8d72e37afb5b93`, and default branch unchanged.
+- Control plane, native plugins, role profiles, installer, read-only API, Desktop UI, public installed lifecycle, and the async Claude Code CLI worker dispatch/runner are implemented.
+- Branch gates: `126 passed` (Python) with zero skipped/xfailed/xpassed; Node `3/3`, production ESM build, Python compilation, diff check, installed-runner importability, source/profile rollback, OpenAI runtime/API-mode allowlists, account-auth parsing, credential-minimal worker/probe environments, descriptor-bound atomic writes, registered-worktree identity, authoritative brief binding, and stale-process reconciliation all pass.
+- The older `live-tracer-1787210374` proof validates the pre-pivot workflow only. A fresh real Team-account asynchronous dispatch smoke is still required for this adapter; the first matcher probe reached the account's normal session cap and reported a 17:30 PDT reset.
 
 ## Recent coding-agent runs
+
+### 2026-08-20 — Claude Code CLI async worker dispatch and Anthropic-routing removal
+- Files modified: `scripts/{install,doctor}.py`, `src/hermes_coding_workflow/{cli,contracts,safety,service,store}.py`, `tests/integration/test_lifecycle_install.py`, `README.md`, `docs/ai/architecture.md`, `docs/ai/project-state.md`.
+- Files added: `src/hermes_coding_workflow/{claude_worker,process,worker_runner}.py`, `tests/core/test_{atomic_writes,claude_worker,dispatch_worker,dispatch_cli,worktree_identity}.py`, and `tests/integration/test_installed_runner_importability.py`.
+- Decisions made: Hermes stays entirely OpenAI account-OAuth (GPT-5.6-Sol); four bounded stages run as detached Claude CLI account-subscription workers. Workers receive only operational/account context plus actor identity, never the parent control-plane environment. The Hermes controller alone performs workflow transitions.
+- Checks run: full Python suite (126 passed, zero skip/xfail markers); Node/Desktop (3 passed) and production build; Python compilation; `git diff --check`; focused direct parent-swap, symlink, process-identity, worktree, installed-layout, auth-method, and brief-forgery reproductions.
+- Deviations from spec: no commit, push, or live adapter install yet; manual merge gate remains.
+- Concerns: independent rereview and fresh real Team-account dispatch smoke remain open gates.
 
 ### 2026-08-20 — live installation and Kanban reconciliation
 - Installed dashboard-only payload in the base Hermes home and enforcement/runtime payloads in `hcw-dev` plus seven safe native-provider role profiles; existing `dev` remained unchanged.

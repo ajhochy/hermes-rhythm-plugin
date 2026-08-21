@@ -15,11 +15,14 @@ Hermes Desktop
                       ├─ Hermes Kanban CLI/modules — durable cards, dependencies, runs, review
                       ├─ git/worktree adapter — exact base/candidate identity
                       ├─ repository manifests — contracts and bounded evidence
-                      ├─ profile dispatcher — planner/builder/reviewer/verifier roles
+                      ├─ profile dispatcher — design/plan/spec-review/verify/live roles (Hermes/OpenAI-native)
+                      ├─ Claude worker dispatcher — async external `claude` CLI subprocess for red/green/quality-review/complete
                       └─ GitHub adapter — draft PR only
 ```
 
 Hermes Kanban is the task-state authority. The package stores only immutable contracts, evidence manifests, review reports, and mappings to Kanban IDs.
+
+Hermes itself never routes to Anthropic: every Hermes profile (including the orchestrator) is OpenAI account OAuth, GPT-5.6-Sol. The `red`, `green`, `quality-review`, and `complete` stages are instead executed by an external, Hermes-dispatched Claude Code CLI subprocess authenticated by its own Claude Team/account login. `hcw dispatch-worker` spawns that subprocess (via a detached `worker_runner` process) and returns immediately; `hcw worker-status` polls the durable worker record. Claude's internal tool calls never pass through Hermes `pre_tool_call` hooks — that boundary only wraps Hermes's own agent loop — so safety for these four stages instead comes from controlled-worktree confinement, exact durable stage/task/brief identity checked before dispatch, least-privilege `--allowedTools` per stage, hashed process artifacts, and the same independent review/verification gates every other stage must pass.
 
 ## Installation boundary
 
@@ -46,18 +49,18 @@ Payload replacement is transactional. Before any mutation, both the source/orche
 
 ## Role model
 
-| Role | Purpose | Write authority |
-|---|---|---|
-| Orchestrator | Intake, graph creation, gate transitions | Workflow metadata only |
-| Planner | Design interview, alternatives, approved spec and plan | Design/plan artifacts |
-| Contract writer | Executable acceptance tests and RED evidence | Tests/contracts |
-| Builder | Minimal implementation in isolated worktree | Assigned source/test scope |
-| Spec reviewer | Compare immutable candidate to approved spec | Read-only |
-| Quality reviewer | Correctness, simplicity, maintainability, security | Read-only |
-| Verifier | Fresh deterministic and live behavior gates | Evidence only |
-| Recorder | Draft PR, docs/ai and Dashboard projection | Metadata/docs only |
+| Role | Purpose | Write authority | Backend |
+|---|---|---|---|
+| Orchestrator | Intake, graph creation, gate transitions | Workflow metadata only | Hermes/OpenAI OAuth |
+| Planner | Design interview, alternatives, approved spec and plan | Design/plan artifacts | Hermes/OpenAI OAuth |
+| Contract writer | Executable acceptance tests and RED evidence | Tests/contracts | External Claude Code CLI |
+| Builder | Minimal implementation in isolated worktree | Assigned source/test scope | External Claude Code CLI |
+| Spec reviewer | Compare immutable candidate to approved spec | Read-only | Hermes/OpenAI OAuth |
+| Quality reviewer | Correctness, simplicity, maintainability, security | Read-only | External Claude Code CLI |
+| Verifier | Fresh deterministic and live behavior gates | Evidence only | Hermes/OpenAI OAuth |
+| Recorder | Draft PR, docs/ai and Dashboard projection | Metadata/docs only | External Claude Code CLI |
 
-A profile/session cannot approve its own implementation.
+A profile/session cannot approve its own implementation. The four external-Claude-CLI roles (contract writer, builder, quality reviewer, recorder) still map to a Hermes profile and Kanban task for identity/authority purposes (see `contracts.PROFILES`/`CLAUDE_STAGES`), but their actual work executes in a dispatched `claude` subprocess, not inside the Hermes profile's own agent loop.
 
 ## Run graph
 

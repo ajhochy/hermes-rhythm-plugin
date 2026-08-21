@@ -31,14 +31,20 @@ ROLE_DESCRIPTIONS = {
     "dev-verifier": "Runs fresh deterministic, security, and live behavior verification and records bounded evidence.",
     "dev-recorder": "Records draft-PR/manual-merge handoff and durable project-state evidence without changing implementation.",
 }
+# red/green, quality-review, and complete are no longer Hermes-native Anthropic
+# profiles: they are executed by an external, Hermes-dispatched Claude Code CLI
+# subprocess authenticated by its own account/Team login (see
+# hermes_coding_workflow.contracts.CLAUDE_TIER_MODELS). Every Hermes profile,
+# including these four, stays on the OpenAI account-OAuth tier; no profile is
+# ever configured with provider "anthropic".
 ACCOUNT_OAUTH_TIERS = {
     "dev-planner": ("openai-codex", "gpt-5.6-sol", "codex_responses"),
-    "dev-contract": ("anthropic", "claude-sonnet-4-6", "anthropic_messages"),
-    "dev-builder": ("anthropic", "claude-sonnet-4-6", "anthropic_messages"),
+    "dev-contract": ("openai-codex", "gpt-5.6-sol", "codex_responses"),
+    "dev-builder": ("openai-codex", "gpt-5.6-sol", "codex_responses"),
     "dev-spec-reviewer": ("openai-codex", "gpt-5.6-sol", "codex_responses"),
-    "dev-quality-reviewer": ("anthropic", "claude-opus-4-6", "anthropic_messages"),
+    "dev-quality-reviewer": ("openai-codex", "gpt-5.6-sol", "codex_responses"),
     "dev-verifier": ("openai-codex", "gpt-5.6-terra", "codex_responses"),
-    "dev-recorder": ("anthropic", "claude-haiku-4-5", "anthropic_messages"),
+    "dev-recorder": ("openai-codex", "gpt-5.6-sol", "codex_responses"),
 }
 OWNERSHIP_FILE = ".hcw-lifecycle.json"
 
@@ -46,9 +52,12 @@ OWNERSHIP_FILE = ".hcw-lifecycle.json"
 # own agent loop. Codex app-server and ACP hand execution to another coding
 # runtime, so a plugin hook cannot police their direct file/shell tools. OpenAI
 # account OAuth defaults to Hermes-owned codex_responses and is safe unless the
-# profile explicitly opts into codex_app_server.
+# profile explicitly opts into codex_app_server. Anthropic is deliberately not
+# in this allowlist: no Hermes profile may hold Anthropic provider credentials;
+# the four Claude-tier stages run as an external Claude Code CLI subprocess
+# authenticated by its own account/Team login instead.
 SAFE_HERMES_TOOL_DISPATCH_PROVIDERS = frozenset({
-    "openai", "anthropic", "gemini", "google", "openrouter", "nous",
+    "openai", "gemini", "google", "openrouter", "nous",
 })
 DIRECT_CODE_TOOL_PROVIDERS = frozenset({"copilot-acp", "codex", "claude-acp", "opencode-acp"})
 PROVIDER_BOUNDARY_ERROR = "HCW_PROVIDER_BOUNDARY_UNSAFE"
@@ -367,7 +376,7 @@ def main() -> int:
     parser.add_argument("--hermes-home", required=True, help="explicit Hermes home; never defaults to a user home")
     parser.add_argument("--source-profile", required=True, help="existing profile cloned into each workflow role")
     parser.add_argument("--worker-source-profile", help="safe Hermes-tool-dispatch profile cloned into role workers; defaults to --source-profile")
-    parser.add_argument("--account-oauth-tiers", action="store_true", help="route orchestrator and roles across OpenAI and Anthropic account OAuth tiers")
+    parser.add_argument("--account-oauth-tiers", action="store_true", help="route the orchestrator and every role to OpenAI account OAuth tiers; no profile is ever configured with provider anthropic")
     args = parser.parse_args()
     return install(
         Path(args.hermes_home),

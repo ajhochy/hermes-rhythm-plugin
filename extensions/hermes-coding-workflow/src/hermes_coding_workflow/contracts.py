@@ -11,6 +11,16 @@ SHA = re.compile(r"[0-9a-f]{40}\Z")
 STAGES = ("design", "plan", "red", "green", "spec-review", "quality-review", "verify", "live", "complete")
 PROFILES = {"design": "dev-planner", "plan": "dev-planner", "red": "dev-contract", "green": "dev-builder", "spec-review": "dev-spec-reviewer", "quality-review": "dev-quality-reviewer", "verify": "dev-verifier", "live": "dev-verifier", "complete": "dev-recorder"}
 
+# Deterministic external-backend tier map. design/plan/spec-review/verify/live stay on the
+# Hermes/OpenAI-native orchestrator; these four stages are executed by an external, Hermes-
+# dispatched Claude Code CLI subprocess authenticated by its own account/Team login (never an
+# API key inside Hermes).
+CLAUDE_BACKEND = "claude-code-cli"
+CLAUDE_STAGES = ("red", "green", "quality-review", "complete")
+CLAUDE_TIER_MODELS = {"red": "claude-sonnet-4-6", "green": "claude-sonnet-4-6", "quality-review": "claude-opus-4-6", "complete": "claude-haiku-4-5"}
+WORKER_STATES = {"queued", "running", "succeeded", "failed"}
+WORKER_FIELDS = {"schema_version", "kind", "id", "created_at", "updated_at", "run_id", "stage", "task_id", "profile", "backend", "model", "attempt", "worker_attempt", "brief_hash", "worktree_path", "pid", "state", "stdout_path", "stderr_path", "stdout_sha256", "stderr_sha256", "exit_code", "note", "design_sha256", "plan_sha256", "dispatch_sha256", "process_identity"}
+
 def full_sha(value: object) -> bool: return isinstance(value, str) and bool(SHA.fullmatch(value))
 def valid_run_id(value: object) -> bool: return isinstance(value, str) and bool(RUN_ID.fullmatch(value))
 def _text(value: object, maximum: int = 4096) -> bool: return isinstance(value, str) and bool(value) and len(value) <= maximum
@@ -40,6 +50,26 @@ def validate_plan(value: object, requirement_ids: set[str] | None = None) -> boo
         covered |= ids
     return commands["red"]["argv"] == commands["green"]["argv"] and (requirement_ids is None or covered == requirement_ids)
 
+def validate_worker(value: object) -> bool:
+    if not isinstance(value, Mapping) or set(value) != WORKER_FIELDS or value.get("schema_version") != SCHEMA_VERSION or value.get("kind") != "worker": return False
+    if not valid_run_id(value.get("run_id")) or value.get("stage") not in CLAUDE_STAGES or not _text(value.get("task_id"), 160) or not _text(value.get("profile"), 160): return False
+    if value.get("backend") != CLAUDE_BACKEND or not _text(value.get("model"), 160): return False
+    if not isinstance(value.get("attempt"), int) or value["attempt"] < 1 or not isinstance(value.get("worker_attempt"), int) or value["worker_attempt"] < 1: return False
+    if not isinstance(value.get("brief_hash"), str) or not re.fullmatch(r"[0-9a-f]{64}", value["brief_hash"]) or not _text(value.get("worktree_path"), 4096): return False
+    pid = value.get("pid")
+    if pid is not None and not (isinstance(pid, int) and pid > 0): return False
+    if value.get("state") not in WORKER_STATES: return False
+    for key in ("stdout_path", "stderr_path", "note"):
+        v = value.get(key)
+        if v is not None and not _text(v, 512): return False
+    for key in ("stdout_sha256", "stderr_sha256", "design_sha256", "plan_sha256", "dispatch_sha256"):
+        v = value.get(key)
+        if v is not None and not (isinstance(v, str) and bool(re.fullmatch(r"[0-9a-f]{64}", v))): return False
+    identity = value.get("process_identity")
+    if identity is not None and not (isinstance(identity, Mapping) and set(identity) == {"args_suffix", "start"} and _text(identity.get("args_suffix"), 4096) and _text(identity.get("start"), 160)): return False
+    exit_code = value.get("exit_code")
+    return exit_code is None or isinstance(exit_code, int)
+
 def validate_review(value: object) -> bool:
     if not isinstance(value, Mapping) or set(value) != {"reviewed_sha", "decision", "findings", "dispositions"} or not full_sha(value.get("reviewed_sha")) or value.get("decision") not in {"approved", "changes_requested"} or not isinstance(value.get("findings"), list) or not isinstance(value.get("dispositions"), list): return False
     ids = set()
@@ -50,7 +80,7 @@ def validate_review(value: object) -> bool:
 
 def validate_record(record: Mapping[str, Any]) -> str | None:
     kind = record.get("kind")
-    required = {"run": {"schema_version","kind","id","revision","created_at","updated_at","package_id","base_sha","head_sha","branch","repo_root","worktree_path","status","scope","attempt","attempt_history","kanban_board","kanban_task_ids","stage_profiles","stage_statuses","setup","goal","dispatches"}, "evidence": {"schema_version","kind","id","created_at","run_id","type","actor","commit_sha","command","exit_code","artifact_path","artifact_sha256","previous_evidence_hash","evidence_hash"}, "review": {"schema_version","kind","id","created_at","run_id","reviewer","reviewed_sha","decision","findings","dispositions"}, "verification": {"schema_version","kind","id","created_at","run_id","candidate_sha","evidence_ids","status"}, "handoff": {"schema_version","kind","id","created_at","run_id","candidate_sha","action"}}
+    required = {"run": {"schema_version","kind","id","revision","created_at","updated_at","package_id","base_sha","head_sha","branch","repo_root","worktree_path","status","scope","attempt","attempt_history","kanban_board","kanban_task_ids","stage_profiles","stage_statuses","setup","goal","dispatches"}, "evidence": {"schema_version","kind","id","created_at","run_id","type","actor","commit_sha","command","exit_code","artifact_path","artifact_sha256","previous_evidence_hash","evidence_hash"}, "review": {"schema_version","kind","id","created_at","run_id","reviewer","reviewed_sha","decision","findings","dispositions"}, "verification": {"schema_version","kind","id","created_at","run_id","candidate_sha","evidence_ids","status"}, "handoff": {"schema_version","kind","id","created_at","run_id","candidate_sha","action"}, "worker": WORKER_FIELDS}
     if kind not in required or set(record) != required[kind] or record.get("schema_version") != SCHEMA_VERSION: return "malformed_schema"
     if kind == "run":
         statuses=record.get("stage_statuses")
@@ -59,4 +89,5 @@ def validate_record(record: Mapping[str, Any]) -> str | None:
     if kind == "evidence": return None if valid_run_id(record.get("run_id")) and record.get("type") in {"red","green","full","security","live"} and _actor(record.get("actor")) and full_sha(record.get("commit_sha")) and _argv(record.get("command")) and isinstance(record.get("exit_code"), int) and _text(record.get("artifact_path"),512) and isinstance(record.get("artifact_sha256"),str) and bool(re.fullmatch(r"[0-9a-f]{64}",record["artifact_sha256"])) else "malformed_schema"
     if kind == "review": return None if valid_run_id(record.get("run_id")) and _actor(record.get("reviewer")) and validate_review({k: record[k] for k in ("reviewed_sha","decision","findings","dispositions")}) else "malformed_schema"
     if kind == "verification": return None if valid_run_id(record.get("run_id")) and full_sha(record.get("candidate_sha")) and record.get("status") in {"passed","deterministic_passed"} and isinstance(record.get("evidence_ids"),list) else "malformed_schema"
+    if kind == "worker": return None if validate_worker(record) else "malformed_schema"
     return None if valid_run_id(record.get("run_id")) and full_sha(record.get("candidate_sha")) and record.get("action") == "draft_pr_manual_merge" else "malformed_schema"

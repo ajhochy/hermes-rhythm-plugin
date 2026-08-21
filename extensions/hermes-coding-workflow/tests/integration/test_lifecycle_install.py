@@ -194,11 +194,8 @@ def test_doctor_rejects_oauth_route_or_fallback_drift(tmp_path: Path, config: st
         doctor._check_account_oauth_route(tmp_path, "openai-codex", "gpt-5.6-sol", "codex_responses")
 
 
-def test_doctor_requires_active_oauth_credentials_for_both_accounts(tmp_path: Path, monkeypatch) -> None:
-    outputs = {
-        "openai-codex": "openai-codex (1 credential):\n  #1 chatgpt oauth browser ←\n",
-        "anthropic": "anthropic (1 credential):\n  #1 anthropic-oauth-1 oauth hermes_pkce ←\n",
-    }
+def test_doctor_requires_active_openai_oauth_credential(tmp_path: Path, monkeypatch) -> None:
+    outputs = {"openai-codex": "openai-codex (1 credential):\n  #1 chatgpt oauth browser ←\n"}
     monkeypatch.setattr(
         doctor,
         "_run",
@@ -206,9 +203,127 @@ def test_doctor_requires_active_oauth_credentials_for_both_accounts(tmp_path: Pa
     )
     doctor._check_account_oauth_credentials(tmp_path)
 
-    outputs["anthropic"] = "anthropic (1 credential):\n  #1 team oauth api_key env ←\n"
+    outputs["openai-codex"] = "openai-codex (1 credential):\n  #1 chatgpt api_key env ←\n"
     with pytest.raises(RuntimeError, match="account OAuth credential"):
         doctor._check_account_oauth_credentials(tmp_path)
+
+
+def test_doctor_never_checks_an_anthropic_account_credential(tmp_path: Path, monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(
+        doctor,
+        "_run",
+        lambda home, args: (calls.append(args) or subprocess.CompletedProcess(args, 0, stdout="openai-codex (1 credential):\n  #1 chatgpt oauth browser ←\n", stderr="")),
+    )
+    doctor._check_account_oauth_credentials(tmp_path)
+    assert not any("anthropic" in call for call in calls)
+
+
+def test_no_installed_role_or_source_tier_ever_uses_provider_anthropic() -> None:
+    for profile, (provider, _model, _api_mode) in doctor.ACCOUNT_OAUTH_TIERS.items():
+        assert provider != "anthropic", f"{profile} must not route through the anthropic provider"
+    assert "anthropic" not in doctor.SAFE_HERMES_TOOL_DISPATCH_PROVIDERS
+    assert "anthropic" not in installer.SAFE_HERMES_TOOL_DISPATCH_PROVIDERS
+    for profile, (provider, _model, _api_mode) in installer.ACCOUNT_OAUTH_TIERS.items():
+        assert provider != "anthropic", f"{profile} must not route through the anthropic provider"
+
+
+def test_claude_cli_readiness_probe_uses_an_injected_executable_and_never_touches_a_live_account(tmp_path: Path, monkeypatch) -> None:
+    fake = tmp_path / "fake-claude"
+    fake.write_text(
+        "#!/usr/bin/env python3\nimport sys\n"
+        "print('Login method: Claude Team account' if sys.argv[1:3] == ['auth', 'status'] else '{\"result\":\"ok\"}')\n"
+        "raise SystemExit(0)\n"
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("HCW_CLAUDE_CLI", str(fake))
+    doctor._check_claude_cli_ready()
+
+
+def test_claude_cli_readiness_probe_fails_closed_when_the_probe_exits_nonzero(tmp_path: Path, monkeypatch) -> None:
+    fake = tmp_path / "fake-claude"
+    fake.write_text("#!/usr/bin/env python3\nraise SystemExit(1)\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("HCW_CLAUDE_CLI", str(fake))
+    with pytest.raises(RuntimeError, match="claude CLI"):
+        doctor._check_claude_cli_ready()
+
+
+def test_claude_cli_readiness_rejects_api_key_auth_even_when_print_mode_succeeds(tmp_path: Path, monkeypatch) -> None:
+    fake = tmp_path / "fake-claude"
+    fake.write_text(
+        "#!/usr/bin/env python3\nimport sys\n"
+        "print('Login method: Anthropic API key' if sys.argv[1:3] == ['auth', 'status'] else '{\"result\":\"ok\"}')\n"
+        "raise SystemExit(0)\n"
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("HCW_CLAUDE_CLI", str(fake))
+    with pytest.raises(RuntimeError, match="account subscription"):
+        doctor._check_claude_cli_ready()
+
+
+def test_claude_cli_readiness_rejects_unknown_login_even_if_organization_label_mentions_team_account(tmp_path: Path, monkeypatch) -> None:
+    fake = tmp_path / "fake-claude"
+    fake.write_text(
+        "#!/usr/bin/env python3\nimport sys\n"
+        "print('Organization: Team account\\nLogin method: Unknown' if sys.argv[1:3] == ['auth', 'status'] else '{\"result\":\"ok\"}')\n"
+        "raise SystemExit(0)\n"
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("HCW_CLAUDE_CLI", str(fake))
+    with pytest.raises(RuntimeError, match="account subscription"):
+        doctor._check_claude_cli_ready()
+
+
+def test_claude_cli_readiness_probe_does_not_inherit_control_plane_credentials(tmp_path: Path, monkeypatch) -> None:
+    fake = tmp_path / "fake-claude"
+    fake.write_text(
+        "#!/usr/bin/env python3\nimport os, sys\n"
+        "if os.getenv('GITHUB_TOKEN') or os.getenv('AWS_SECRET_ACCESS_KEY'): raise SystemExit(9)\n"
+        "print('Login method: Claude Team account' if sys.argv[1:3] == ['auth', 'status'] else '{\"result\":\"ok\"}')\n"
+        "raise SystemExit(0)\n"
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("HCW_CLAUDE_CLI", str(fake))
+    monkeypatch.setenv("GITHUB_TOKEN", "must-not-leak")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "must-not-leak")
+    doctor._check_claude_cli_ready()
+
+
+def test_claude_cli_readiness_probe_fails_closed_without_an_installed_executable(monkeypatch) -> None:
+    monkeypatch.delenv("HCW_CLAUDE_CLI", raising=False)
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: None)
+    with pytest.raises(RuntimeError, match="claude CLI"):
+        doctor._check_claude_cli_ready()
+
+
+def _fake_claude_reporting_login_method(tmp_path: Path, login_method: str) -> Path:
+    fake = tmp_path / "fake-claude"
+    fake.write_text(
+        "#!/usr/bin/env python3\nimport sys\n"
+        "print('Login method: " + login_method + "' if sys.argv[1:3] == ['auth', 'status'] else '{\"result\":\"ok\"}')\n"
+        "raise SystemExit(0)\n"
+    )
+    fake.chmod(0o755)
+    return fake
+
+
+@pytest.mark.parametrize("login_method", ["Claude Team account", "Claude Pro account", "Claude Max account"])
+def test_claude_cli_readiness_accepts_exactly_the_documented_team_pro_max_login_methods(tmp_path: Path, monkeypatch, login_method: str) -> None:
+    fake = _fake_claude_reporting_login_method(tmp_path, login_method)
+    monkeypatch.setenv("HCW_CLAUDE_CLI", str(fake))
+    doctor._check_claude_cli_ready()
+
+
+@pytest.mark.parametrize(
+    "login_method",
+    ["Console", "Unknown Team account", "Claude.ai account", "Acme Corp Organization"],
+)
+def test_claude_cli_readiness_rejects_unknown_or_non_exact_login_methods(tmp_path: Path, monkeypatch, login_method: str) -> None:
+    fake = _fake_claude_reporting_login_method(tmp_path, login_method)
+    monkeypatch.setenv("HCW_CLAUDE_CLI", str(fake))
+    with pytest.raises(RuntimeError, match="account subscription"):
+        doctor._check_claude_cli_ready()
 
 
 @pytest.mark.parametrize("failure_point", ("after-enable", "after-doctor", "ownership-write"))

@@ -23,7 +23,24 @@ _HCW_COMMANDS = {"create-run", "show", "approve-design", "approve-plan", "check"
 def _build_bootstrap() -> str:
     launcher = (Path(__file__).resolve().parent / "runtime" / "bin" / "hcw").resolve()
     commands = "; ".join(f"{launcher} {command}" for command in ("create-run", "approve-design", "approve-plan", "check", "commit", "review", "verify", "complete"))
-    return f"{BOOTSTRAP_MARKER}: installed lifecycle launcher is {launcher}. Use only: {commands}. Apply hcw orchestration and pinned superpowers:brainstorming principles."
+    task = os.getenv("HERMES_KANBAN_TASK", "")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", task):
+        task = "<kanban-task-id>"
+    board = os.getenv("HERMES_KANBAN_BOARD", "")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", board):
+        board = "<board-slug>"
+    create = (
+        f"{shlex.quote(str(launcher))} create-run {shlex.quote(str(Path.cwd().resolve()))} "
+        f"--run-id {shlex.quote(task)} --package {shlex.quote(task)} "
+        f"--scope <task-approved-path-or-glob> --board {shlex.quote(board)} --goal <quoted-task-goal>"
+    )
+    return (
+        f"{BOOTSTRAP_MARKER}: installed lifecycle launcher is {launcher}. "
+        f"For initial Kanban bootstrap, replace the angle-bracket scope/goal fields in this complete command; "
+        f"do not omit arguments or prefix environment assignments: {create}. "
+        f"The run id must equal HERMES_KANBAN_TASK. Use only: {commands}. "
+        "Apply hcw orchestration and pinned superpowers:brainstorming principles."
+    )
 
 
 def _skills_root() -> Path:
@@ -122,6 +139,51 @@ def _verified_red(run: dict[str, Any]) -> bool:
     return False
 
 
+def _bootstrap_create_run_allowed(args: dict[str, Any] | None) -> bool:
+    values = args or {}
+    command = values.get("command", values.get("cmd", ""))
+    if not isinstance(command, str) or not command.strip() or any(token in command for token in (";", "&&", "||", "|", ">", "<", "\n", "\r")):
+        return False
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return False
+    if len(argv) < 5 or argv[1] != "create-run":
+        return False
+    expected_hcw = (Path(__file__).resolve().parent / "runtime" / "bin" / "hcw").resolve()
+    try:
+        executable = Path(argv[0]).resolve()
+        repo = Path(argv[2]).resolve()
+    except OSError:
+        return False
+    if executable != expected_hcw or repo != Path.cwd().resolve():
+        return False
+
+    run_ids: list[str] = []
+    for index, token in enumerate(argv[3:], start=3):
+        if token == "--run-id":
+            if index + 1 >= len(argv):
+                return False
+            run_ids.append(argv[index + 1])
+        elif token.startswith("--run-id="):
+            run_ids.append(token.split("=", 1)[1])
+    if len(run_ids) != 1:
+        return False
+    requested_run_id = run_ids[0]
+    task_id = os.getenv("HERMES_KANBAN_TASK")
+    inherited_run_id = os.getenv("HCW_RUN_ID")
+    if not task_id or requested_run_id != task_id:
+        return False
+    if inherited_run_id and inherited_run_id != task_id:
+        return False
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", requested_run_id):
+        return False
+
+    locator = repo / ".hermes" / "hcw-run.json"
+    manifest = repo / ".hermes" / "workflows" / requested_run_id / "run.json"
+    return not os.path.lexists(locator) and not os.path.lexists(manifest)
+
+
 def _terminal_allowed(run: dict[str, Any] | None, stage: str | None, args: dict[str, Any] | None) -> bool:
     values = args or {}
     command = values.get("command", values.get("cmd", ""))
@@ -141,7 +203,7 @@ def _terminal_allowed(run: dict[str, Any] | None, stage: str | None, args: dict[
     if executable == expected_hcw and len(argv) >= 2 and argv[1] in _HCW_COMMANDS:
         subcommand = argv[1]
         if run is None:
-            return subcommand in {"create-run", "show"}
+            return subcommand == "show"
         if len(argv) < 4 or argv[3] != run.get("id"):
             return False
         expected = {"design":{"approve-design"}, "plan":{"approve-plan"}, "red":{"check"}, "green":{"check","commit"}, "spec-review":{"review"}, "quality-review":{"review"}, "verify":{"check","verify"}, "live":{"check"}, "complete":{"complete"}}
@@ -159,6 +221,8 @@ def _terminal_allowed(run: dict[str, Any] | None, stage: str | None, args: dict[
 
 def _guard_decision(tool_name: str | None = None, args: dict[str, Any] | None = None) -> dict[str, str] | None:
     if tool_name not in _WRITE_TOOLS | _TERMINAL_TOOLS:
+        return None
+    if tool_name in _TERMINAL_TOOLS and _bootstrap_create_run_allowed(args):
         return None
     run, error = _load_matching_run()
     if run is None:

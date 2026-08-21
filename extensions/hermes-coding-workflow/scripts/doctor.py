@@ -21,16 +21,51 @@ DESCRIPTIONS = {
     "dev-verifier": "Runs fresh deterministic, security, and live behavior verification and records bounded evidence.",
     "dev-recorder": "Records draft-PR/manual-merge handoff and durable project-state evidence without changing implementation.",
 }
+# red/green, quality-review, and complete are no longer Hermes-native Anthropic
+# profiles: they are executed by an external, Hermes-dispatched Claude Code CLI
+# subprocess authenticated by its own account/Team login (see
+# hermes_coding_workflow.contracts.CLAUDE_TIER_MODELS). Every Hermes profile,
+# including these four, stays on the OpenAI account-OAuth tier; no profile is
+# ever configured with provider "anthropic".
 ACCOUNT_OAUTH_TIERS = {
     "dev-planner": ("openai-codex", "gpt-5.6-sol", "codex_responses"),
-    "dev-contract": ("anthropic", "claude-sonnet-4-6", "anthropic_messages"),
-    "dev-builder": ("anthropic", "claude-sonnet-4-6", "anthropic_messages"),
+    "dev-contract": ("openai-codex", "gpt-5.6-sol", "codex_responses"),
+    "dev-builder": ("openai-codex", "gpt-5.6-sol", "codex_responses"),
     "dev-spec-reviewer": ("openai-codex", "gpt-5.6-sol", "codex_responses"),
-    "dev-quality-reviewer": ("anthropic", "claude-opus-4-6", "anthropic_messages"),
+    "dev-quality-reviewer": ("openai-codex", "gpt-5.6-sol", "codex_responses"),
     "dev-verifier": ("openai-codex", "gpt-5.6-terra", "codex_responses"),
-    "dev-recorder": ("anthropic", "claude-haiku-4-5", "anthropic_messages"),
+    "dev-recorder": ("openai-codex", "gpt-5.6-sol", "codex_responses"),
 }
-SAFE_HERMES_TOOL_DISPATCH_PROVIDERS = frozenset({"openai", "anthropic", "gemini", "google", "openrouter", "nous"})
+SAFE_HERMES_TOOL_DISPATCH_PROVIDERS = frozenset({"openai", "gemini", "google", "openrouter", "nous"})
+CLAUDE_CLI_ENV = "HCW_CLAUDE_CLI"
+CLAUDE_OPERATIONAL_ENV_KEYS = frozenset({
+    "HOME", "PATH", "TMPDIR", "TMP", "TEMP", "LANG", "SHELL", "USER", "LOGNAME", "TERM", "COLORTERM",
+    "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
+})
+CLAUDE_SUBPROCESS_SCRUB_KEYS = (
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "GITHUB_TOKEN",
+    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+)
+# The exact, documented `claude auth status --text` "Login method:" values
+# (lowercased) for a personal Claude Team/Pro/Max account-subscription
+# login. Deliberately a closed set matched by equality, not by substring:
+# unknown/organization-only labels such as "Unknown Team account" or a
+# generic "Claude.ai account" must fail closed rather than pass because
+# they happen to contain one of these words.
+CLAUDE_ACCOUNT_LOGIN_METHODS = frozenset({
+    "claude team account", "claude pro account", "claude max account",
+})
+
+
+def _claude_probe_env(source: dict[str, str]) -> dict[str, str]:
+    env = {
+        key: value for key, value in source.items()
+        if key in CLAUDE_OPERATIONAL_ENV_KEYS or key.startswith("LC_")
+    }
+    if source.get(CLAUDE_CLI_ENV):
+        env[CLAUDE_CLI_ENV] = source[CLAUDE_CLI_ENV]
+    env["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"] = ",".join(CLAUDE_SUBPROCESS_SCRUB_KEYS)
+    return env
 
 
 def _provider_boundary(home: Path) -> str:
@@ -77,8 +112,14 @@ def _run(home: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 def _check_account_oauth_credentials(home: Path) -> None:
-    """Require each active account-provider credential to be OAuth."""
-    for provider in ("openai-codex", "anthropic"):
+    """Require the active OpenAI account-provider credential to be OAuth.
+
+    Only openai-codex is checked here: no Hermes profile is ever configured
+    with provider "anthropic" any more, so there is no Hermes-side Anthropic
+    OAuth credential to verify. Claude Code CLI readiness/account-login is
+    verified independently by `_check_claude_cli_ready`.
+    """
+    for provider in ("openai-codex",):
         output = _run(home, ["auth", "list", provider]).stdout
         active = next((line for line in output.splitlines() if "←" in line), "")
         # `auth list` ends every active row with `<auth_type> <source> ←`.
@@ -88,6 +129,27 @@ def _check_account_oauth_credentials(home: Path) -> None:
         auth_type = fields[-2].lower() if len(fields) >= 4 else ""
         if auth_type != "oauth":
             raise RuntimeError(f"account OAuth credential is not active for {provider}")
+
+
+def _check_claude_cli_ready() -> None:
+    """Verify account-subscription auth and print-mode readiness without logging identity details."""
+    executable = os.environ.get(CLAUDE_CLI_ENV) or shutil.which("claude")
+    if not executable:
+        raise RuntimeError("claude CLI is not installed or not on PATH; run `claude` account/Team login and retry")
+    probe_env = _claude_probe_env(dict(os.environ))
+    auth = subprocess.run(
+        [executable, "auth", "status", "--text"], text=True, capture_output=True, env=probe_env, timeout=30,
+    )
+    login_line = next((line for line in auth.stdout.splitlines() if line.strip().lower().startswith("login method:")), "")
+    method = login_line.split(":", 1)[1].strip().lower() if ":" in login_line else ""
+    if auth.returncode != 0 or method not in CLAUDE_ACCOUNT_LOGIN_METHODS:
+        raise RuntimeError("claude CLI account subscription is not active; use Claude Team/Pro/Max account login")
+    result = subprocess.run(
+        [executable, "-p", "--output-format", "json", "--model", "claude-haiku-4-5", "--max-turns", "1", "--safe-mode", "--no-session-persistence"],
+        input="ping", text=True, capture_output=True, env=probe_env, timeout=30,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"claude CLI print-mode readiness probe failed: exit {result.returncode}")
 
 
 def _check_home(home: Path, *, worker_home: bool = False, dashboard_only: bool = False) -> None:
@@ -132,7 +194,7 @@ def _check_home(home: Path, *, worker_home: bool = False, dashboard_only: bool =
         raise RuntimeError("remote branding present in pinned Superpowers payload")
 
 
-def doctor(home: Path, *, source_profile: str = "dev", account_oauth_tiers: bool = False, verify_account_oauth: bool = False) -> int:
+def doctor(home: Path, *, source_profile: str = "dev", account_oauth_tiers: bool = False, verify_account_oauth: bool = False, verify_claude_cli: bool = False) -> int:
     home = Path(home).resolve()
     if source_profile in DESCRIPTIONS:
         raise RuntimeError(
@@ -144,6 +206,8 @@ def doctor(home: Path, *, source_profile: str = "dev", account_oauth_tiers: bool
     _check_home(home, dashboard_only=True)
     if verify_account_oauth:
         _check_account_oauth_credentials(home)
+    if verify_claude_cli:
+        _check_claude_cli_ready()
     source = home / "profiles" / source_profile
     if not source.is_dir():
         raise RuntimeError(f"missing source profile {source_profile}")
@@ -167,8 +231,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--hermes-home", required=True)
     parser.add_argument("--source-profile", default="dev", help="installed workflow source profile; defaults to dev")
-    parser.add_argument("--account-oauth-tiers", action="store_true", help="verify exact OpenAI/Anthropic account OAuth tier routing")
-    parser.add_argument("--verify-account-oauth", action="store_true", help="verify active provider credentials are account OAuth, not API keys")
+    parser.add_argument("--account-oauth-tiers", action="store_true", help="verify exact OpenAI account OAuth tier routing for every Hermes profile")
+    parser.add_argument("--verify-account-oauth", action="store_true", help="verify the active OpenAI provider credential is account OAuth, not an API key")
+    parser.add_argument("--verify-claude-cli", action="store_true", help="verify the external Claude Code CLI is installed and print-mode ready (never required for isolated installs)")
     args = parser.parse_args()
     try:
         return doctor(
@@ -176,6 +241,7 @@ def main() -> int:
             source_profile=args.source_profile,
             account_oauth_tiers=args.account_oauth_tiers,
             verify_account_oauth=args.verify_account_oauth,
+            verify_claude_cli=args.verify_claude_cli,
         )
     except (RuntimeError, subprocess.CalledProcessError) as exc:
         print(f"hcw doctor: {exc}")

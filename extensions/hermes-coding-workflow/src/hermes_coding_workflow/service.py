@@ -1,16 +1,59 @@
 """State transitions; command results and actor authority are derived locally."""
 from __future__ import annotations
-import fnmatch,hashlib,json,os,shutil,subprocess,uuid
+import fnmatch,hashlib,json,os,shutil,subprocess,sys,uuid
 from dataclasses import dataclass
 from datetime import datetime,timezone
 from pathlib import Path
 from typing import Any
 from .adapters import GitAdapter,KanbanAdapter
-from .contracts import PROFILES,SCHEMA_VERSION,STAGES,full_sha,valid_run_id,validate_design,validate_plan,validate_review
-from .safety import redact
+from .contracts import CLAUDE_BACKEND,CLAUDE_STAGES,CLAUDE_TIER_MODELS,PROFILES,SCHEMA_VERSION,STAGES,full_sha,valid_run_id,validate_design,validate_plan,validate_record,validate_review
+from . import process
+from .safety import open_nofollow_write_fd,redact,validate_controlled_worktree
 from .store import RunStore
 def now()->str:return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00","Z")
 def full_sha_hash(value:object)->str:return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+def _runner_pythonpath(existing:str|None)->str:
+ """Build the `worker_runner` subprocess's PYTHONPATH from the authoritative
+ package site -- the directory containing this very `hermes_coding_workflow`
+ package, whether that is a source checkout's `src/` or an installed
+ `runtime/site/` (see `scripts/install.py`'s `_build_plugin`). The installed
+ `runtime/bin/hcw` launcher only mutates its own process's `sys.path`; a
+ freshly spawned `python -m hermes_coding_workflow.worker_runner` inherits no
+ such thing, so the site must be derived here, not assumed from the caller's
+ environment.
+ """
+ package_site=str(Path(__file__).resolve().parent.parent)
+ entries=[package_site]
+ if existing:
+  entries+=[p for p in existing.split(os.pathsep) if p and os.path.isdir(p)]
+ seen:list[str]=[]
+ for entry in entries:
+  absolute=os.path.abspath(entry)
+  if absolute not in seen:seen.append(absolute)
+ return os.pathsep.join(seen)
+def _open_runner_log_fd(path:Path)->int:
+ """Open the runner log relative to one verified parent directory handle."""
+ return open_nofollow_write_fd(path)
+def _authoritative_intent(internal:dict[str,Any],attempt:int)->dict[str,Any]:
+ """The authoritative source of task identity for `attempt`: `create_intent`
+ for attempt 1, or `repair_intent` when it matches the current attempt.
+ Dispatch never trusts `run.json`'s own `kanban_task_ids`/`dispatches`
+ fields against themselves -- both must agree with this durable, orchestrator-
+ written intent recorded before the graph was ever created.
+ """
+ if attempt==1:
+  intent=internal.get("create_intent")
+  return intent if isinstance(intent,dict) else {}
+ intent=internal.get("repair_intent")
+ return intent if isinstance(intent,dict) and intent.get("attempt")==attempt else {}
+def _worker_process_alive(record:dict[str,Any])->bool:
+ """A worker record is only "alive" when its recorded `process_identity`
+ matches a live process's current argv suffix and start time. A bare PID
+ proves nothing by itself: PIDs are reused, so an unverified match must
+ never block a new dispatch or be treated as evidence the original runner
+ is still running.
+ """
+ return process.matches_identity(record.get("pid"),record.get("process_identity"))
 class WorkflowError(RuntimeError):
  def __init__(self,code:str)->None:self.code=code;super().__init__(code)
 @dataclass(frozen=True)
@@ -107,6 +150,12 @@ class WorkflowService:
    kinds={"red":["red"],"green":["green"],"verify":["full","security"],"live":["live"]}.get(stage,[])
    body=json.dumps({"run_id":run["id"],"attempt":run["attempt"],"task_id":run["kanban_task_ids"][stage],"profile":PROFILES[stage],"launcher":launcher,"declared_commands":{kind:payload["commands"][kind]["argv"] for kind in kinds},"artifact_paths":[str(self.repo/".hermes"/"workflows"/run["id"] / "plan.json"),str(self.repo/".hermes"/"workflows"/run["id"] / "run.json")],"scope":run["scope"],"goal":run["goal"],"dependencies":[] if stage=="red" else [STAGES[STAGES.index(stage)-1]],"transition":"record authoritative HCW evidence","design_sha256":full_sha_hash(s.read("approved-design.json")),"plan_sha256":full_sha_hash(plan_record)},sort_keys=True,separators=(",",":"))
    run["dispatches"][stage]["brief_hash"]=k.comment(run["kanban_task_ids"][stage],body)
+ def _persist_authoritative_briefs(self,s:RunStore,run:dict[str,Any])->None:
+  internal=s.read("internal.json");intent=_authoritative_intent(internal,run["attempt"])
+  if not intent:raise WorkflowError("dispatch_identity_mismatch")
+  hashes=dict(intent.get("brief_hashes") or {})
+  hashes.update({stage:run["dispatches"][stage]["brief_hash"] for stage in STAGES[2:]})
+  intent["brief_hashes"]=hashes;RunStore._atomic(s._path("internal.json"),internal)
  def approve_plan(self,rid:str,actor:ActorContext,payload:dict[str,Any])->dict[str,Any]:
   s=self._store(rid)
   with s.locked():
@@ -115,7 +164,7 @@ class WorkflowService:
    if run["status"]!="awaiting_plan" or not validate_plan(payload,ids):raise WorkflowError("malformed_plan")
    record={"schema_version":SCHEMA_VERSION,"kind":"plan","id":"plan-"+uuid.uuid4().hex,"created_at":now(),"run_id":rid,"actor":actor.record(),"content":payload,"approved":True};RunStore._atomic(s._path("plan.json"),record)
    k=self._board_for(s,run)
-   self._attach_plan_briefs(s,run,k,record)
+   self._attach_plan_briefs(s,run,k,record);self._persist_authoritative_briefs(s,run)
    run["status"]="awaiting_red";self._advance(run,"plan","red");self._bump(s,run);self._reconcile(s,run);return record
  def check(self,rid:str,actor:ActorContext,typ:str,argv:list[str],timeout:int=60)->dict[str,Any]:
   if typ not in {"red","green","full","security","live"} or not argv:raise WorkflowError("invalid_check")
@@ -223,7 +272,7 @@ class WorkflowService:
      tasks=k.graph(rid,branch,worktree.resolve(),PROFILES,attempt=attempt,scope=run["scope"],goal=run["goal"],base_sha=run["base_sha"]);brief_hashes={stage:k.last_briefs[stage]["sha256"] for stage in STAGES}
      internal=s.read("internal.json");internal["repair_intent"].update({"status":"graph_created","task_ids":tasks,"brief_hashes":brief_hashes});RunStore._atomic(s._path("internal.json"),internal)
     draft=dict(run);draft.update({"attempt":attempt,"kanban_task_ids":tasks,"dispatches":{stage:{"stage":stage,"task_id":tasks[stage],"profile":PROFILES[stage],"attempt":attempt,"brief_hash":brief_hashes[stage],"session_id":"unavailable","model":"unavailable","provider":"unavailable"} for stage in STAGES}})
-    self._attach_plan_briefs(s,draft,k,s.read("plan.json"))
+    self._attach_plan_briefs(s,draft,k,s.read("plan.json"));self._persist_authoritative_briefs(s,draft)
    except WorkflowError:raise
    except Exception as exc:raise WorkflowError("repair_setup_failed") from exc
    archive=s.root/"attempts"/str(run["attempt"]);archive.mkdir(parents=True,exist_ok=True)
@@ -232,3 +281,76 @@ class WorkflowService:
     if source.exists():shutil.move(str(source),str(archive/name))
    run["attempt_history"].append({"attempt":run["attempt"],"worktree_path":str(old),"head_sha":run["head_sha"]});run.update({"attempt":attempt,"branch":branch,"worktree_path":str(worktree.resolve()),"head_sha":run["base_sha"],"kanban_task_ids":tasks,"dispatches":draft["dispatches"],"stage_statuses":{stage:("active" if stage=="red" else "pending") for stage in STAGES},"status":"awaiting_red"});self._bump(s,run)
    internal=s.read("internal.json");internal["repair_intent"]["status"]="completed";RunStore._atomic(s._path("internal.json"),internal);return run
+ def dispatch_worker(self,rid:str,stage:str)->dict[str,Any]:
+  """Launch the sole eligible Claude-backed stage as a detached, async worker.
+
+  This is a Hermes control-plane action (no worker actor identity is
+  required to invoke it -- the orchestrator itself calls this, the same way
+  it calls `show`). It never runs Claude synchronously: it reserves a
+  durable worker record, spawns a fully-detached `worker_runner` process,
+  records that process's real pid, and returns immediately. `worker_runner`
+  is the one that blocks on the real `claude` subprocess and atomically
+  records the terminal state.
+  """
+  if stage not in CLAUDE_STAGES:raise WorkflowError("unsupported_claude_stage")
+  s=self._store(rid)
+  with s.locked():
+   run=s.read()
+   if validate_record(run):raise WorkflowError("malformed_run_state")
+   if run["stage_statuses"].get(stage)!="active":raise WorkflowError("stage_not_active")
+   if run["stage_profiles"].get(stage)!=PROFILES[stage]:raise WorkflowError("task_profile_mismatch")
+   attempt=run["attempt"]
+   task_id=run["kanban_task_ids"].get(stage);dispatch=run["dispatches"].get(stage) or {};brief_hash=dispatch.get("brief_hash")
+   if not task_id or not brief_hash:raise WorkflowError("malformed_run_state")
+   if dispatch.get("task_id")!=task_id or dispatch.get("profile")!=PROFILES[stage] or dispatch.get("attempt")!=attempt:raise WorkflowError("dispatch_identity_mismatch")
+   internal=s.read("internal.json") if s._path("internal.json").exists() else {}
+   intent=_authoritative_intent(internal,attempt)
+   intent_tasks=intent.get("task_ids") if isinstance(intent,dict) else None;intent_hashes=intent.get("brief_hashes") if isinstance(intent,dict) else None
+   if not isinstance(intent_tasks,dict) or intent_tasks.get(stage)!=task_id or not isinstance(intent_hashes,dict) or intent_hashes.get(stage)!=brief_hash:raise WorkflowError("dispatch_identity_mismatch")
+   try:worktree=validate_controlled_worktree(self.repo,run["worktree_path"],run_id=rid,attempt=attempt,expected_branch=run["branch"])
+   except ValueError as exc:raise WorkflowError(str(exc)) from exc
+   latest=s.latest_worker_attempt(stage,attempt)
+   if latest:
+    previous=s.read_worker(stage,attempt,latest)
+    if previous and previous["state"] in {"queued","running"} and _worker_process_alive(previous):
+     raise WorkflowError("worker_dispatch_in_progress")
+    if previous and previous["state"] in {"queued","running"}:
+     stale=dict(previous);stale.update(state="failed",note="stale_process_lost",updated_at=now());s.write_worker(stage,attempt,latest,stale)
+   worker_attempt=latest+1;stamp=now()
+   design_sha256=full_sha_hash(s.read("approved-design.json"));plan_sha256=full_sha_hash(s.read("plan.json"))
+   dispatch_sha256=full_sha_hash({"run_id":rid,"stage":stage,"task_id":task_id,"profile":PROFILES[stage],"attempt":attempt,"brief_hash":brief_hash})
+   record={"schema_version":SCHEMA_VERSION,"kind":"worker","id":f"worker-{rid}-{stage}-{attempt}-{worker_attempt}","created_at":stamp,"updated_at":stamp,"run_id":rid,"stage":stage,"task_id":task_id,"profile":PROFILES[stage],"backend":CLAUDE_BACKEND,"model":CLAUDE_TIER_MODELS[stage],"attempt":attempt,"worker_attempt":worker_attempt,"brief_hash":brief_hash,"worktree_path":str(worktree),"pid":None,"state":"queued","stdout_path":None,"stderr_path":None,"stdout_sha256":None,"stderr_sha256":None,"exit_code":None,"note":None,"design_sha256":design_sha256,"plan_sha256":plan_sha256,"dispatch_sha256":dispatch_sha256,"process_identity":None}
+   s.write_worker(stage,attempt,worker_attempt,record)
+   runner_env=dict(os.environ);runner_env["PYTHONPATH"]=_runner_pythonpath(runner_env.get("PYTHONPATH"))
+   log=s.worker_dir()/f"{stage}-{attempt}-{worker_attempt}.runner-log"
+   try:
+    debug_fd=_open_runner_log_fd(log)
+   except (OSError,ValueError) as exc:
+    failed=dict(record);failed.update(state="failed",note="runner_log_symlink_rejected",updated_at=now());s.write_worker(stage,attempt,worker_attempt,failed)
+    raise WorkflowError("runner_log_symlink_rejected") from exc
+   runner_argv=[sys.executable,"-m","hermes_coding_workflow.worker_runner",str(self.repo),rid,stage,str(attempt),str(worker_attempt)]
+   try:
+    with os.fdopen(debug_fd,"wb") as debug:
+     proc=subprocess.Popen(runner_argv,cwd=str(self.repo),env=runner_env,stdin=subprocess.DEVNULL,stdout=debug,stderr=debug,start_new_session=True,close_fds=True)
+   except BaseException:
+    failed=dict(record);failed.update(state="failed",note="runner_launch_failed",updated_at=now());s.write_worker(stage,attempt,worker_attempt,failed)
+    raise
+   # The expected argv suffix is computed deterministically -- never taken
+   # from an observed `ps` snapshot -- because some Python distributions
+   # `execve` themselves into a different interpreter path moments after
+   # starting (see `process.matches_identity`); only the start time actually
+   # needs to be observed.
+   snapshot=process.capture_snapshot_with_retry(proc.pid)
+   identity={"args_suffix":" ".join(runner_argv[1:]),"start":snapshot.start} if snapshot else None
+   record=dict(record);record.update(pid=proc.pid,process_identity=identity,updated_at=now());s.write_worker(stage,attempt,worker_attempt,record)
+   return record
+ def worker_status(self,rid:str,stage:str)->dict[str,Any]:
+  s=self._store(rid)
+  with s.locked():
+   run=s.read();attempt=run["attempt"];latest=s.latest_worker_attempt(stage,attempt)
+   if not latest:raise WorkflowError("worker_not_dispatched")
+   record=s.read_worker(stage,attempt,latest)
+   if record is None:raise WorkflowError("worker_not_dispatched")
+   if record["state"] in {"queued","running"} and not _worker_process_alive(record):
+    record=dict(record);record.update(state="failed",note="stale_process_lost",updated_at=now());s.write_worker(stage,attempt,latest,record)
+   return record

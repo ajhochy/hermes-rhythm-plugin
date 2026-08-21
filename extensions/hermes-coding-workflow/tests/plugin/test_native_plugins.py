@@ -5,6 +5,7 @@ import importlib.util
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -83,6 +84,21 @@ def test_native_packages_register_bare_role_skills_hooks_and_bootstrap():
         assert f"hcw {command}" in bootstrap
 
 
+def test_bootstrap_context_gives_dispatcher_a_complete_matching_create_run_shape(tmp_path, monkeypatch):
+    hcw = load_plugin("hermes-coding-workflow")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_81f59d6c")
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+
+    bootstrap = hcw._build_bootstrap()
+    launcher = shlex.quote(str((ROOT / "plugins" / "hermes-coding-workflow" / "runtime" / "bin" / "hcw").resolve()))
+    assert f"{launcher} create-run {shlex.quote(str(tmp_path.resolve()))}" in bootstrap
+    assert "--run-id t_81f59d6c --package t_81f59d6c" in bootstrap
+    assert "--scope <task-approved-path-or-glob>" in bootstrap
+    assert "--board default --goal <quoted-task-goal>" in bootstrap
+    assert "do not omit arguments or prefix environment assignments" in bootstrap
+
+
 def test_guard_fails_closed_without_identity_and_enforces_exact_lifecycle_commands(workflow, monkeypatch):
     plugin = load_plugin("hermes-coding-workflow"); repo, worktree, state = workflow
     assert plugin._pre_tool_call(tool_name="write_file", args={"path":"app.py"})["action"] == "block"
@@ -108,10 +124,85 @@ def test_guard_fails_closed_without_identity_and_enforces_exact_lifecycle_comman
     monkeypatch.delenv("HCW_RUN_ID"); monkeypatch.delenv("HERMES_KANBAN_TASK"); monkeypatch.delenv("HERMES_PROFILE")
     assert plugin._pre_tool_call(tool_name="write_file", args={"path":"app.py"})["action"] == "block"
     assert plugin._pre_tool_call(tool_name="terminal", args={"command":"git status --short"}) is None
-    assert plugin._pre_tool_call(tool_name="terminal", args={"command":f"{(ROOT / 'plugins' / 'hermes-coding-workflow' / 'runtime' / 'bin' / 'hcw').resolve()} create-run repo --run-id bootstrap --package pkg --scope tests/** --board hcw"}) is None
+    assert plugin._pre_tool_call(tool_name="terminal", args={"command":f"{(ROOT / 'plugins' / 'hermes-coding-workflow' / 'runtime' / 'bin' / 'hcw').resolve()} create-run repo --run-id bootstrap --package pkg --scope tests/** --board hcw --goal bootstrap"})["action"] == "block"
     assert plugin._pre_tool_call(tool_name="terminal", args={"command":"hcw check repo bootstrap red -- false"})["action"] == "block"
     monkeypatch.setenv("HCW_RUN_ID", "run-test")
     assert plugin._pre_tool_call(tool_name="write_file", args={"path":"app.py"})["action"] == "block"
+
+
+def _bootstrap_command(plugin, repo: Path, run_id: str) -> str:
+    launcher = (Path(plugin.__file__).resolve().parent / "runtime" / "bin" / "hcw").resolve()
+    return (
+        f"{launcher} create-run {repo} --run-id {run_id} --package pkg "
+        "--scope tests/** --board hcw --goal bootstrap"
+    )
+
+
+def test_dispatcher_partial_identity_permits_only_matching_create_run(workflow, monkeypatch):
+    plugin = load_plugin("hermes-coding-workflow"); repo, _, _ = workflow
+    monkeypatch.chdir(repo)
+    monkeypatch.delenv("HCW_RUN_ID"); monkeypatch.delenv("HERMES_PROFILE")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_bootstrap")
+
+    assert plugin._pre_tool_call(
+        tool_name="terminal",
+        args={"command": _bootstrap_command(plugin, repo, "t_bootstrap")},
+    ) is None
+
+
+def test_full_identity_without_locator_permits_matching_create_run(workflow, monkeypatch):
+    plugin = load_plugin("hermes-coding-workflow"); repo, _, _ = workflow
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("HCW_RUN_ID", "t_bootstrap")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_bootstrap")
+    monkeypatch.setenv("HERMES_PROFILE", "hcw-dev")
+
+    assert plugin._pre_tool_call(
+        tool_name="terminal",
+        args={"command": _bootstrap_command(plugin, repo, "t_bootstrap")},
+    ) is None
+
+
+def test_bootstrap_rejects_mismatched_run_id(workflow, monkeypatch):
+    plugin = load_plugin("hermes-coding-workflow"); repo, _, _ = workflow
+    monkeypatch.chdir(repo)
+    monkeypatch.delenv("HCW_RUN_ID"); monkeypatch.delenv("HERMES_PROFILE")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_bootstrap")
+
+    decision = plugin._pre_tool_call(
+        tool_name="terminal",
+        args={"command": _bootstrap_command(plugin, repo, "different-run")},
+    )
+    assert decision and decision["action"] == "block"
+
+
+def test_bootstrap_rejects_non_hcw_terminal_command(workflow, monkeypatch):
+    plugin = load_plugin("hermes-coding-workflow"); repo, _, _ = workflow
+    monkeypatch.chdir(repo)
+    monkeypatch.delenv("HCW_RUN_ID"); monkeypatch.delenv("HERMES_PROFILE")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_bootstrap")
+
+    decision = plugin._pre_tool_call(
+        tool_name="terminal",
+        args={"command": "python -c 'open(\"app.py\", \"w\").write(\"bad\")'"},
+    )
+    assert decision and decision["action"] == "block"
+
+
+def test_post_bootstrap_source_mutation_requires_full_registered_lifecycle(workflow, monkeypatch):
+    plugin = load_plugin("hermes-coding-workflow"); _, worktree, _ = workflow
+    monkeypatch.chdir(worktree)
+    monkeypatch.delenv("HCW_RUN_ID"); monkeypatch.delenv("HERMES_PROFILE")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-red")
+
+    partial = plugin._pre_tool_call(tool_name="write_file", args={"path":"tests/test_app.py"})
+    assert partial and partial["action"] == "block"
+
+    monkeypatch.setenv("HCW_RUN_ID", "run-test")
+    monkeypatch.setenv("HERMES_PROFILE", "dev-contract")
+    assert plugin._pre_tool_call(tool_name="write_file", args={"path":"tests/test_app.py"}) is None
+    source = plugin._pre_tool_call(tool_name="write_file", args={"path":"app.py"})
+    assert source and source["action"] == "block"
 
 
 def test_installer_scans_real_packages_and_doctor_is_clean(tmp_path):

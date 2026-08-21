@@ -18,17 +18,20 @@ def _repo_and_run(repo:Path,run_id:str)->tuple[Path,str]:
 def main(argv:list[str]|None=None)->int:
  p=argparse.ArgumentParser(prog="hcw");s=p.add_subparsers(dest="command",required=True)
  create=s.add_parser("create-run");create.add_argument("repo");create.add_argument("--run-id",required=True);create.add_argument("--package",required=True);create.add_argument("--scope",action="append",required=True);create.add_argument("--board",required=True);create.add_argument("--goal",required=True)
- for name in ("approve-design","approve-plan","check","commit","review","verify","complete","repair","show"):
+ for name in ("approve-design","approve-plan","check","commit","review","verify","complete","repair","show","dispatch-worker","worker-status"):
   q=s.add_parser(name);q.add_argument("repo");q.add_argument("run_id")
   if name in {"approve-design","approve-plan","review"}:q.add_argument("--json",required=True)
   if name=="check":q.add_argument("type",choices=["red","green","full","security","live"]);q.add_argument("--timeout",type=int,default=60);q.add_argument("command_argv",nargs=argparse.REMAINDER)
   if name=="commit":q.add_argument("--message",required=True)
+  if name in {"dispatch-worker","worker-status"}:q.add_argument("stage")
  a=p.parse_args(argv)
  try:
   if a.command=="create-run":out=WorkflowService(Path(a.repo)).create_run(a.package,a.scope,a.run_id,a.board,goal=a.goal)
   else:
    repo,rid=_repo_and_run(Path(a.repo),a.run_id);svc=WorkflowService(repo)
    if a.command=="show":out=svc.show(rid)
+   elif a.command=="dispatch-worker":out=svc.dispatch_worker(rid,a.stage)
+   elif a.command=="worker-status":out=svc.worker_status(rid,a.stage)
    else:
     svc.reconcile(rid)
     actor=ActorContext.from_env()
