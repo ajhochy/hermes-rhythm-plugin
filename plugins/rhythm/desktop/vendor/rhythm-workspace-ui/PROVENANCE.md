@@ -2,7 +2,7 @@
 
 Source: `@ajhochy/rhythm-workspace-ui` 0.2.0
 
-Source revision: `73c647b4f8a8280f11ea43dd325d498df02c343e` (accepted shared package source; copied without local source edits).
+Source revision: `b20f5112de024fecffd199129cb9d297435fb36c` (accepted shared package source; copied without local source edits).
 
 Transformation: none. `dist/` and `package.json` are copied verbatim from the source build, including ESM/CJS source maps and every npm-published file.
 
