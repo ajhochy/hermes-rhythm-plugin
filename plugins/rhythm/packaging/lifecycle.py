@@ -21,7 +21,25 @@ _RESTART_SIGNAL = "hermes gateway restart"
 def _target(home: Path) -> Path:
     if not home.is_absolute():
         raise ValueError("feature-pack home must be an explicit absolute temporary home")
-    return home / "plugins" / "rhythm"
+    temporary_root = Path(tempfile.gettempdir()).resolve()
+    resolved_home = home.resolve(strict=False)
+    if resolved_home == temporary_root or temporary_root not in resolved_home.parents:
+        raise ValueError("feature-pack lifecycle is restricted to a dedicated temporary home")
+    current = home
+    while current != temporary_root:
+        if current.exists() and current.is_symlink():
+            raise PackagingGateError("feature-pack lifecycle path must not contain symlinks")
+        current = current.parent
+    target = home / "plugins" / "rhythm"
+    for candidate in (home / "plugins", target, target / _BACKUP):
+        if candidate.is_symlink():
+            raise PackagingGateError("feature-pack lifecycle path must not contain symlinks")
+    return target
+
+
+def _assert_tree_not_symlinked(root: Path) -> None:
+    if root.is_symlink() or any(path.is_symlink() for path in root.rglob("*")):
+        raise PackagingGateError("feature-pack source or install tree must not contain symlinks")
 
 
 def _fingerprint(package: Path) -> str:
@@ -45,9 +63,12 @@ def _write_state(target: Path, fingerprint: str) -> None:
 
 def install_feature_pack(package: Path, home: Path, *, upgrade: bool = False, force_reinstall: bool = False) -> dict:
     """Install only into ``<home>/plugins/rhythm`` and keep it disabled."""
+    _assert_tree_not_symlinked(package)
     manifest = load_packaging_manifest(package.parents[1]) if (package.parents[1] / "plugins/rhythm/packaging/package-manifest.json").exists() else json.loads((package / "packaging/package-manifest.json").read_text())
     validate_package_tree(package, manifest)
     target = _target(home)
+    if target.exists():
+        _assert_tree_not_symlinked(target)
     fingerprint = _fingerprint(package)
     if target.exists() and not upgrade and not force_reinstall and _state(target).get("fingerprint") == fingerprint:
         return {"status": "unchanged", "enabled": False, "restart_required": False}
@@ -67,6 +88,8 @@ def install_feature_pack(package: Path, home: Path, *, upgrade: bool = False, fo
 
 def rollback_feature_pack(home: Path) -> dict:
     target = _target(home)
+    if target.exists():
+        _assert_tree_not_symlinked(target)
     backup = target / _BACKUP
     if not backup.is_dir():
         raise PackagingGateError("no Rhythm feature-pack rollback is available")
@@ -81,6 +104,7 @@ def rollback_feature_pack(home: Path) -> dict:
 def uninstall_feature_pack(home: Path) -> dict:
     target = _target(home)
     if target.exists():
+        _assert_tree_not_symlinked(target)
         shutil.rmtree(target)
         return {"status": "uninstalled", "restart_required": True, "restart_signal": _RESTART_SIGNAL}
     return {"status": "absent", "restart_required": False}
@@ -95,20 +119,27 @@ def doctor_feature_pack(home: Path, *, connection_probe: Callable[[], object] | 
     """Return bounded, credential-safe compatibility/connection/tool status."""
     target = _target(home)
     compatible = False
+    installed_tools: list[str] = []
     if target.is_dir():
         try:
             manifest = json.loads((target / "packaging/package-manifest.json").read_text(encoding="utf-8"))
             validate_package_tree(target, manifest, allow_install_metadata=True)
+            tools = manifest.get("tools")
+            if tools != ["rhythm_complete_task", "rhythm_get_dashboard", "rhythm_list_tasks"]:
+                raise PackagingGateError("installed native tool declaration is not exact")
+            installed_tools = list(tools)
             compatible = True
         except (OSError, ValueError, PackagingGateError):
             compatible = False
     connection = {"status": "not_configured"}
     if connection_probe is not None:
-        result = connection_probe()
-        if isinstance(result, BaseException):
-            connection = {"status": "unavailable", "error": _redact(result)}
-        else:
-            connection = {"status": "ok"}
-    from plugins.rhythm.tools import _TOOLS
+        try:
+            result = connection_probe()
+            if isinstance(result, BaseException):
+                connection = {"status": "unavailable", "error": _redact(result)}
+            else:
+                connection = {"status": "ok"}
+        except Exception as exc:
+            connection = {"status": "unavailable", "error": _redact(exc)}
 
-    return {"compatible": compatible, "connection": connection, "tools": sorted(_TOOLS), "enabled": bool(_state(target).get("enabled", False)) if target.exists() else False}
+    return {"compatible": compatible, "connection": connection, "tools": installed_tools, "enabled": bool(_state(target).get("enabled", False)) if target.exists() else False}

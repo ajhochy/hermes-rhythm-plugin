@@ -76,6 +76,8 @@ def _ensure_no_bundle_drift(root: Path, manifest: dict[str, Any]) -> None:
 
 def validate_package_tree(root: Path, manifest: dict[str, Any], *, allow_install_metadata: bool = False) -> None:
     """Validate a fully materialized package tree against a fixed manifest."""
+    if root.is_symlink() or any(path.is_symlink() for path in root.rglob("*")):
+        raise PackagingGateError("package tree must not contain symlinks")
     install = manifest["install"]
     if install.get("root") != "<HERMES_HOME>/plugins/rhythm" or install.get("opt_in") is not True or install.get("operations") != ["install", "upgrade", "force-reinstall", "rollback", "uninstall"]:
         raise PackagingGateError("install plan must remain opt-in and non-destructive")
