@@ -2,11 +2,13 @@
 
 Source: Hermes Rhythm feature-pack source tree.
 
-Revision: deterministic packaging scaffold introduced from clean base `06fc9c03995189377447d09497b223afad0d005b`.
+Revision: fully integrated base `4a1578ae6dcb9f91f1912f464bd2a3608011cecf`.
 
-Transformation: none. This is a declarative packaging scaffold only; it does
-not build, install, sign, notarize, publish, or alter the product artifact.
+Transformation: deterministic local feature-pack build.  The package builder
+stages the declared source, emits one Desktop ESM artifact with React peers
+external and Lucide embedded, and never signs, notarizes, publishes, or
+touches a real Hermes home.
 
 Vendored workspace UI provenance remains in
 `desktop/vendor/rhythm-workspace-ui/PROVENANCE.md`. Final package provenance is
-pending integration of M6, M7, and M8.
+is included in the final closed package manifest.

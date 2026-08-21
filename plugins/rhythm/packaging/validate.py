@@ -74,13 +74,10 @@ def _ensure_no_bundle_drift(root: Path, manifest: dict[str, Any]) -> None:
     _ensure_single_desktop_artifact(artifacts, entry, lambda path: (root / path).read_text(encoding="utf-8"))
 
 
-def validate_package_tree(root: Path, manifest: dict[str, Any]) -> None:
+def validate_package_tree(root: Path, manifest: dict[str, Any], *, allow_install_metadata: bool = False) -> None:
     """Validate a fully materialized package tree against a fixed manifest."""
-    if manifest["install"] != {
-        "root": "<HERMES_HOME>/plugins/rhythm",
-        "opt_in": True,
-        "operations": [],
-    }:
+    install = manifest["install"]
+    if install.get("root") != "<HERMES_HOME>/plugins/rhythm" or install.get("opt_in") is not True or install.get("operations") != ["install", "upgrade", "force-reinstall", "rollback", "uninstall"]:
         raise PackagingGateError("install plan must remain opt-in and non-destructive")
     desktop = manifest["desktop"]
     if desktop["format"] != "esm" or desktop["artifact_count"] != 1 or not desktop["entry"].endswith(".mjs"):
@@ -102,8 +99,11 @@ def validate_package_tree(root: Path, manifest: dict[str, Any]) -> None:
     _ensure_no_bundle_drift(root, manifest)
     declared = set(_required_content(manifest)) | {desktop["entry"]}
     actual = {path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()}
-    if actual - declared:
-        raise PackagingGateError(f"undeclared package content: {sorted(actual - declared)!r}")
+    extra = actual - declared
+    if allow_install_metadata:
+        extra = {path for path in extra if not path.startswith(".rhythm-")}
+    if extra:
+        raise PackagingGateError(f"undeclared package content: {sorted(extra)!r}")
 
 
 def validate_macos_bundle(

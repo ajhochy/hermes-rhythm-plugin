@@ -1,10 +1,10 @@
 {
   "schema": 1,
-  "status": "scaffold-pending-m6-m8-integration",
+  "status": "final-automated-gates",
   "install": {
     "root": "<HERMES_HOME>/plugins/rhythm",
     "opt_in": true,
-    "operations": []
+    "operations": ["install", "upgrade", "force-reinstall", "rollback", "uninstall"]
   },
   "desktop": {
     "entry": "desktop/dist/rhythm.mjs",
@@ -22,7 +22,13 @@
       "contracts/__init__.py",
       "contracts/validate.py",
       "dashboard/__init__.py",
-      "dashboard/plugin_api.py"
+      "dashboard/artifact_host.py",
+      "dashboard/plugin_api.py",
+      "packaging/__init__.py",
+      "packaging/build.py",
+      "packaging/lifecycle.py",
+      "packaging/validate.py",
+      "tools.py"
     ],
     "assets": [
       "contracts/api-operations.json",
@@ -30,7 +36,10 @@
       "contracts/ownership.json",
       "contracts/permissions.json",
       "dashboard/manifest.json",
-      "dashboard/dist/index.js"
+      "dashboard/dist/index.js",
+      "packaging/package-manifest.json",
+      "packaging/RELEASE-GATE.md",
+      "plugin.yaml"
     ],
     "skills": [
       "skills/rhythm/SKILL.md"
@@ -39,6 +48,9 @@
       "contracts/*.json",
       "dashboard/manifest.json",
       "dashboard/dist/index.js",
+      "packaging/package-manifest.json",
+      "packaging/RELEASE-GATE.md",
+      "plugin.yaml",
       "skills/rhythm/SKILL.md"
     ]
   },
@@ -54,5 +66,8 @@
     "status": "pending",
     "requirements": ["codesign verification", "notarization verification", "staple verification"]
   },
-  "deferred": ["M6 integration", "M7 integration", "M8 integration", "signed/notarized release artifact"]
+  "platforms": {
+    "nix": "directory-plugin via services.hermes.extraPlugins"
+  },
+  "deferred": ["signed/notarized release artifact"]
 }

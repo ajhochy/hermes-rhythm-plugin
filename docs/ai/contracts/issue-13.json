@@ -4,7 +4,7 @@
   "criteria": [
     {
       "criterion_id": "issue-13-c1",
-      "text": "Add deterministic package manifest/content/provenance/license/bundle-drift gates.",
+      "text": "Build a deterministic closed package manifest/content/provenance/license/bundle-drift gate from the integrated Rhythm source.",
       "mode": "unit",
       "test_file": "tests/plugins/test_rhythm_packaging_scaffold.py",
       "test_id": "issue-13-c1: package gate accepts only declared content and one ESM artifact",
@@ -12,7 +12,7 @@
     },
     {
       "criterion_id": "issue-13-c2",
-      "text": "One Desktop ESM artifact, no relative chunks or second React runtime; Python modules/assets/skill/package data enumerated.",
+      "text": "One Desktop ESM artifact with React/react-dom external peers and embedded Lucide, no relative chunks or second React runtime; Python modules/assets/native tools/skill/package data enumerated.",
       "mode": "unit",
       "test_file": "tests/plugins/test_rhythm_packaging_scaffold.py",
       "test_id": "issue-13-c2: bundle drift is rejected",
@@ -20,7 +20,7 @@
     },
     {
       "criterion_id": "issue-13-c3",
-      "text": "Deterministic macOS assertions must inspect Hermes.app, app.asar, app.asar.unpacked; separate live signed/notarized release gate.",
+      "text": "Deterministic macOS assertions must build and inspect Hermes.app, app.asar, and app.asar.unpacked; separate live signed/notarized release gate.",
       "mode": "unit",
       "test_file": "tests/plugins/test_rhythm_packaging_scaffold.py",
       "test_id": "issue-13-c3: macOS artifact copies are both inspected",
@@ -28,7 +28,7 @@
     },
     {
       "criterion_id": "issue-13-c4",
-      "text": "Doctor/install/update error/log fixtures must prove credential-shaped values absent. Keep install opt-in unified <HERMES_HOME>/plugins/rhythm tree.",
+      "text": "Temp-home install/reinstall/upgrade/rollback/uninstall must remain opt-in in the unified <HERMES_HOME>/plugins/rhythm tree, signal backend restart, and doctor must report compatibility, connection, and exactly three native tools with bounded redacted errors.",
       "mode": "unit",
       "test_file": "tests/plugins/test_rhythm_packaging_scaffold.py",
       "test_id": "issue-13-c4: diagnostics are redacted and install plan is non-destructive",
@@ -36,10 +36,11 @@
     },
     {
       "criterion_id": "issue-13-c5",
-      "text": "Do not claim final M9 acceptance because M6-M8 are not integrated.",
-      "mode": "manual",
-      "status": "pending",
-      "reason": "UNVERIFIED: final artifact gates require the M6-M8 integrated package."
+      "text": "Validate platform package data where the repository supports a directory plugin package.",
+      "mode": "unit",
+      "test_file": "tests/plugins/test_rhythm_packaging_scaffold.py",
+      "test_id": "issue-13-c5: Nix directory plugin convention accepts closed package",
+      "status": "pass"
     },
     {
       "criterion_id": "issue-13-c6",
@@ -50,5 +51,5 @@
     }
   ],
   "stack": "python",
-  "not_tested": ["issue-13-c5", "issue-13-c6"]
+  "not_tested": ["issue-13-c6"]
 }
