@@ -745,21 +745,31 @@ async def _plugin_api_runtime_gate(request: Request, call_next):
     Registered BEFORE the auth middlewares (so it executes AFTER them): a
     request that hasn't cleared auth must get auth's 401 first, never this
     gate's 404 — otherwise an unauthenticated caller could fingerprint which
-    plugins are installed/enabled by reading the status code. We only reach
-    the enabled/disabled check for a request that auth already let through.
+    plugins are installed/enabled by reading the status code. Exact public
+    plugin callbacks are the exception: they bypass auth, so this gate must
+    classify them itself before they reach a router left mounted by a runtime
+    disable.
     """
     path = request.url.path
     if path.startswith("/api/plugins/"):
-        # Only gate authenticated requests. Unauthenticated ones fall
-        # through so auth_middleware / the OAuth gate return 401 first and
-        # this route can't be used as a plugin-name oracle.
+        # Only gate authenticated requests and exact manifest-declared public
+        # plugin routes. Other unauthenticated requests fall through so the
+        # auth middleware returns 401 first and this route cannot be used as
+        # a plugin-name oracle.
+        is_public_plugin_route = _is_public_api_route(request.method, path)
+        app_state = getattr(request.scope.get("app"), "state", None)
+        auth_required = bool(getattr(app_state, "auth_required", False))
         _authed = (
             getattr(request.state, "token_authenticated", False)
-            or getattr(request.app.state, "auth_required", False)
-            or _has_valid_session_token(request)
-            or _has_valid_query_token(request, path)
+            or getattr(request.state, "session", None) is not None
         )
-        if _authed:
+        if not auth_required:
+            _authed = (
+                _authed
+                or _has_valid_session_token(request)
+                or _has_valid_query_token(request, path)
+            )
+        if _authed or is_public_plugin_route:
             # Extract plugin name from /api/plugins/<name>/...
             parts = path.split("/")
             # parts: ['', 'api', 'plugins', '<name>', ...]
@@ -787,14 +797,14 @@ async def _plugin_api_runtime_gate(request: Request, call_next):
                     if source == "user":
                         if plugin_name in disabled_set or plugin_name not in enabled_set:
                             return JSONResponse(
-                                status_code=404,
-                                content={"detail": "Plugin not found"},
+                                status_code=404 if _authed else 401,
+                                content={"detail": "Plugin not found" if _authed else "Unauthorized"},
                             )
                     elif source == "bundled":
                         if plugin_name in disabled_set:
                             return JSONResponse(
-                                status_code=404,
-                                content={"detail": "Plugin not found"},
+                                status_code=404 if _authed else 401,
+                                content={"detail": "Plugin not found" if _authed else "Unauthorized"},
                             )
     return await call_next(request)
 
