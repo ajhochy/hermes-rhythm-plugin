@@ -7,7 +7,7 @@ from .contracts import valid_run_id, validate_record
 from .safety import atomic_write_bytes, digest_json, redact
 class RevisionConflict(RuntimeError): pass
 class RunStore:
- _NAMES={"run.json","evidence.jsonl","reviews.json","verification.json","handoff.json","approved-design.json","plan.json","internal.json"}
+ _NAMES={"run.json","evidence.jsonl","reviews.json","verification.json","handoff.json","approved-design.json","plan.json","internal.json","repair-context.json"}
  def __init__(self,repo:Path,run_id:str)->None:
   self.repo=repo.resolve()
   if not valid_run_id(run_id):raise ValueError("invalid_run_id")

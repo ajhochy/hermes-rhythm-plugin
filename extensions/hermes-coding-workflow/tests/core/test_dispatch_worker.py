@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from hermes_coding_workflow.contracts import PROFILES
-from hermes_coding_workflow.service import ActorContext, WorkflowError, WorkflowService
+from hermes_coding_workflow.service import ActorContext, WorkflowError, WorkflowService, _valid_repair_context, full_sha_hash
 from hermes_coding_workflow.store import RunStore
 
 
@@ -132,6 +132,14 @@ def activate_stage(repo: Path, stage: str, status: str) -> dict:
     }
     store.write_json("run.json", state)
     return state
+
+
+def test_legacy_completed_repair_attempt_without_context_remains_usable() -> None:
+    run = {"attempt": 2}
+    for status in ("completed", "graph_created"):
+        legacy = {"repair_intent": {"status": status, "from_attempt": 1, "attempt": 2}}
+        assert _valid_repair_context(None, run, legacy) is True
+        assert _valid_repair_context({"injected": True}, run, legacy) is False
 
 
 def test_red_check_cannot_transition_before_external_worker_succeeds(repo: Path) -> None:
@@ -329,6 +337,25 @@ def _forbid_claude_launch(monkeypatch) -> None:
     monkeypatch.setattr("hermes_coding_workflow.worker_runner.subprocess.run", guarded)
 
 
+def test_worker_runner_fails_terminally_when_repair_context_changes_after_dispatch(
+    repo: Path, fake_claude: Path, _inert_runner_process
+) -> None:
+    from hermes_coding_workflow import worker_runner
+
+    svc, _ = ready(repo)
+    svc.dispatch_worker("run-1", "red")
+    store = RunStore(repo, "run-1")
+    with store.locked():
+        pending = dict(store.read_worker("red", 1, 1))
+        pending.update(pid=os.getpid(), state="queued")
+        store.write_worker("red", 1, 1, pending)
+        RunStore._atomic(store._path("repair-context.json"), {"mutated": True})
+
+    assert worker_runner.main(["worker_runner", str(repo), "run-1", "red", "1", "1"]) == 1
+    final = store.read_worker("red", 1, 1)
+    assert final["state"] == "failed" and final["note"] == "artifact_mutated"
+
+
 def test_worker_runner_fails_terminally_when_stage_advances_after_dispatch_but_before_launch(
     repo: Path, fake_claude: Path, monkeypatch, _inert_runner_process
 ) -> None:
@@ -427,6 +454,7 @@ def test_dispatch_worker_launches_real_detached_subprocess_and_records_success(r
     assert record["state"] == "queued"
     assert record["backend"] == "claude-code-cli"
     assert record["model"] == "claude-sonnet-4-6"
+    assert record["repair_context_sha256"] == full_sha_hash(None)
     assert record["pid"] is not None
     final = wait_terminal(svc, "run-1", "red")
     assert final["state"] == "succeeded"

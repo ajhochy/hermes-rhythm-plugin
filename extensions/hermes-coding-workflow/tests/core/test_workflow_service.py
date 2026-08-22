@@ -243,12 +243,17 @@ def test_repair_reuses_original_kanban_home_and_reattaches_plan(monkeypatch,repo
  assert reconciled==[2]
  assert repaired["attempt"]==2 and captured["home"]==expected and repaired["stage_statuses"]["red"]=="active"
  assert repaired["stage_statuses"]["design"]=="completed" and repaired["stage_statuses"]["plan"]=="completed"
+ context=RunStore(repo,"run-1").read("repair-context.json")
+ assert context["from_attempt"]==1 and context["source_stage"]=="spec-review" and context["review"]["findings"]==[finding]
  completed={call[call.index("complete")+1] for call in calls if "complete" in call}
  assert {repaired["kanban_task_ids"]["design"],repaired["kanban_task_ids"]["plan"]}.issubset(completed)
  comments=[call for call in calls if "comment" in call]
  assert len(comments)==len(PROFILES)-2
  payload=json.loads(comments[0][comments[0].index("comment")+2])
  assert payload["attempt"]==2 and payload["declared_commands"]["red"]==plan["commands"]["red"]["argv"]
+ context["review"]["findings"][0]["description"]="tampered before dispatch"
+ RunStore._atomic(RunStore(repo,"run-1")._path("repair-context.json"),context)
+ with pytest.raises(WorkflowError,match="repair_context_invalid"):WorkflowService(repo).dispatch_worker("run-1","red")
 
 def test_repair_resumes_durable_intent_after_graph_failure(monkeypatch,repo:Path)->None:
  s,run,_=ready(repo);plan=payloads()[1];worktree=Path(run["worktree_path"])
@@ -264,6 +269,10 @@ def test_repair_resumes_durable_intent_after_graph_failure(monkeypatch,repo:Path
  store=RunStore(repo,"run-1");intent=store.read("internal.json")["repair_intent"]
  assert store.read()["attempt"]==1 and intent["status"]=="graph_created"
  assert Path(intent["worktree_path"]).is_dir()
+ context=store.read("repair-context.json")
+ assert intent["repair_context_sha256"]==full_sha_hash(context)
+ archive=store.root/"attempts"/"1";archive.mkdir(parents=True,exist_ok=True)
+ __import__("shutil").move(str(store._path("reviews.json")),str(archive/"reviews.json"))
  created_before=len([call for call in calls if "create" in call])
  monkeypatch.setattr(WorkflowService,"_attach_plan_briefs",original)
  repaired=s.repair("run-1",act("spec-review"),replacement)
@@ -271,17 +280,21 @@ def test_repair_resumes_durable_intent_after_graph_failure(monkeypatch,repo:Path
  assert store.read("internal.json")["repair_intent"]["status"]=="completed"
  assert len([call for call in calls if "create" in call])==created_before
 
+def seed_repair_review(repo:Path,store:RunStore,state:dict)->None:
+ reviewer=act("spec-review").record();stamp="2026-08-21T00:00:00Z"
+ RunStore._atomic(store._path("reviews.json"),{"reviews":[{"schema_version":"hcw/v1","kind":"review","id":"review-fixture","created_at":stamp,"run_id":"run-1","reviewer":reviewer,"reviewed_sha":git(repo,"rev-parse","HEAD"),"decision":"changes_requested","findings":[{"id":"F1","severity":"blocker","description":"repair fixture"}],"dispositions":[{"finding_id":"F1","disposition":"accepted"}]}]})
+
 def test_repair_rejects_symlinked_worktree_root(repo:Path,tmp_path:Path)->None:
- s,_,_=ready(repo);store=RunStore(repo,"run-1");state=store.read();state["status"]="repairing";state["stage_statuses"]["spec-review"]="blocked";store.write_json("run.json",state)
+ s,_,_=ready(repo);store=RunStore(repo,"run-1");state=store.read();state["status"]="repairing";state["stage_statuses"]["spec-review"]="blocked";store.write_json("run.json",state);seed_repair_review(repo,store,state)
  controlled=repo/".worktrees";outside=tmp_path/"outside-worktrees";controlled.rename(outside);controlled.symlink_to(outside,target_is_directory=True)
  with pytest.raises(WorkflowError,match="path_scope_violation"):s.repair("run-1",act("spec-review"),board(repo,[]))
 
 def test_repair_rejects_preexisting_attempt_branch_at_wrong_base(repo:Path)->None:
- s,_,_=ready(repo);store=RunStore(repo,"run-1");state=store.read();state["status"]="repairing";state["stage_statuses"]["spec-review"]="blocked";store.write_json("run.json",state)
+ s,_,_=ready(repo);store=RunStore(repo,"run-1");state=store.read();state["status"]="repairing";state["stage_statuses"]["spec-review"]="blocked";store.write_json("run.json",state);seed_repair_review(repo,store,state)
  (repo/"later.txt").write_text("later\n");git(repo,"add","later.txt");git(repo,"commit","-m","later");git(repo,"branch","hcw/run-1/attempt-2","HEAD")
  with pytest.raises(WorkflowError,match="repair_setup_failed"):s.repair("run-1",act("spec-review"),board(repo,[]))
 
 def test_repair_rejects_symlinked_attempt_path(repo:Path,tmp_path:Path)->None:
- s,_,_=ready(repo);store=RunStore(repo,"run-1");state=store.read();state["status"]="repairing";state["stage_statuses"]["spec-review"]="blocked";store.write_json("run.json",state)
+ s,_,_=ready(repo);store=RunStore(repo,"run-1");state=store.read();state["status"]="repairing";state["stage_statuses"]["spec-review"]="blocked";store.write_json("run.json",state);seed_repair_review(repo,store,state)
  (repo/".worktrees"/"hcw-run-1-2").symlink_to(tmp_path/"outside",target_is_directory=True)
  with pytest.raises(WorkflowError,match="path_scope_violation"):s.repair("run-1",act("spec-review"),board(repo,[]))

@@ -13,6 +13,19 @@ from .store import RunStore
 def now()->str:return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00","Z")
 def full_sha_hash(value:object)->str:return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(",",":")).encode()).hexdigest()
 MAX_WORKER_ATTEMPTS=3
+REPAIR_CONTEXT_FIELDS={"schema_version","kind","from_attempt","source_stage","review_sha256","review"}
+def _valid_repair_context(value:object,run:dict[str,Any],internal:dict[str,Any])->bool:
+ if run.get("attempt")==1:return value is None
+ intent=internal.get("repair_intent") if isinstance(internal,dict) else None
+ if value is None:
+  return isinstance(intent,dict) and "repair_context_sha256" not in intent and intent.get("status") in {"completed","graph_created"} and intent.get("from_attempt")==run.get("attempt",0)-1 and intent.get("attempt")==run.get("attempt")
+ if not isinstance(value,dict) or set(value)!=REPAIR_CONTEXT_FIELDS or value.get("schema_version")!=SCHEMA_VERSION or value.get("kind")!="repair_context" or value.get("from_attempt")!=run.get("attempt",0)-1 or value.get("source_stage") not in {"spec-review","quality-review"}:return False
+ review=value.get("review");stage=value["source_stage"]
+ if not isinstance(review,dict) or validate_record(review) or review.get("decision")!="changes_requested" or review.get("reviewer",{}).get("profile")!=PROFILES[stage] or value.get("review_sha256")!=full_sha_hash(review):return False
+ history=run.get("attempt_history");previous=history[-1] if isinstance(history,list) and history else None
+ if not isinstance(previous,dict) or previous.get("attempt")!=value["from_attempt"] or review.get("reviewed_sha")!=previous.get("head_sha"):return False
+ intent=internal.get("repair_intent") if isinstance(internal,dict) else None
+ return isinstance(intent,dict) and intent.get("from_attempt")==value["from_attempt"] and intent.get("attempt")==run.get("attempt") and intent.get("repair_context_sha256")==full_sha_hash(value)
 def _runner_pythonpath(existing:str|None)->str:
  """Build the `worker_runner` subprocess's PYTHONPATH from the authoritative
  package site -- the directory containing this very `hermes_coding_workflow`
@@ -77,12 +90,17 @@ class WorkflowService:
  def _require_succeeded_worker(self,s:RunStore,run:dict[str,Any],stage:str)->dict[str,Any]:
   attempt=run["attempt"];latest=s.latest_worker_attempt(stage,attempt)
   record=s.read_worker(stage,attempt,latest) if latest else None;dispatch=run["dispatches"].get(stage) or {}
+  repair_context=s.read("repair-context.json") if s._path("repair-context.json").exists() else None
   expected_dispatch=full_sha_hash({"run_id":run["id"],"stage":stage,"task_id":run["kanban_task_ids"][stage],"profile":PROFILES[stage],"attempt":attempt,"brief_hash":dispatch.get("brief_hash")})
   if not record or validate_record(record) or record.get("state")!="succeeded" or record.get("exit_code")!=0:raise WorkflowError("worker_not_succeeded")
-  internal=s.read("internal.json") if s._path("internal.json").exists() else {};intent=_authoritative_intent(internal,attempt);intent_tasks=intent.get("task_ids") if isinstance(intent,dict) else None;intent_hashes=intent.get("brief_hashes") if isinstance(intent,dict) else None
+  internal=s.read("internal.json") if s._path("internal.json").exists() else {}
+  if not _valid_repair_context(repair_context,run,internal):raise WorkflowError("worker_not_succeeded")
+  intent=_authoritative_intent(internal,attempt);intent_tasks=intent.get("task_ids") if isinstance(intent,dict) else None;intent_hashes=intent.get("brief_hashes") if isinstance(intent,dict) else None
   if not isinstance(intent_tasks,dict) or intent_tasks.get(stage)!=run["kanban_task_ids"][stage] or not isinstance(intent_hashes,dict) or intent_hashes.get(stage)!=dispatch.get("brief_hash"):raise WorkflowError("worker_not_succeeded")
   if record.get("run_id")!=run["id"] or record.get("stage")!=stage or record.get("task_id")!=run["kanban_task_ids"][stage] or record.get("profile")!=PROFILES[stage] or record.get("attempt")!=attempt or record.get("worker_attempt")!=latest or record.get("brief_hash")!=dispatch.get("brief_hash") or record.get("backend")!=CLAUDE_BACKEND or record.get("model")!=CLAUDE_TIER_MODELS[stage] or record.get("worktree_path")!=run["worktree_path"]:raise WorkflowError("worker_not_succeeded")
   if record.get("design_sha256")!=full_sha_hash(s.read("approved-design.json")) or record.get("plan_sha256")!=full_sha_hash(s.read("plan.json")) or record.get("dispatch_sha256")!=expected_dispatch:raise WorkflowError("worker_not_succeeded")
+  record_context_hash=record.get("repair_context_sha256")
+  if (record_context_hash is None and repair_context is not None) or (record_context_hash is not None and record_context_hash!=full_sha_hash(repair_context)):raise WorkflowError("worker_not_succeeded")
   artifact_root=s.root/"artifacts"
   if artifact_root.is_symlink() or not artifact_root.is_dir():raise WorkflowError("worker_not_succeeded")
   for path_key,hash_key in (("stdout_path","stdout_sha256"),("stderr_path","stderr_sha256")):
@@ -290,16 +308,29 @@ class WorkflowService:
    recovery_stage="spec-review" if actor.task_id==run["kanban_task_ids"].get("spec-review") else "quality-review"
    self._actor(run,actor,recovery_stage)
    if run["status"]!="repairing" or run["stage_statuses"].get(recovery_stage)!="blocked":raise WorkflowError("repair_not_authorized")
+   internal=s.read("internal.json") if s._path("internal.json").exists() else {}
+   prior=internal.get("repair_intent")
+   published_context=s.read("repair-context.json") if s._path("repair-context.json").exists() else None
+   if isinstance(prior,dict) and prior.get("status")=="graph_created" and prior.get("attempt")==run.get("attempt") and _valid_repair_context(published_context,run,internal):
+    prior["status"]="completed";internal["repair_intent"]=prior;RunStore._atomic(s._path("internal.json"),internal)
+   existing_context=published_context
+   reviews=s.read("reviews.json").get("reviews",[]) if s._path("reviews.json").exists() else []
+   source_review=next((item for item in reversed(reviews) if item.get("decision")=="changes_requested" and item.get("reviewer",{}).get("task_id")==actor.task_id),None)
+   if isinstance(source_review,dict) and not validate_record(source_review):
+    repair_context={"schema_version":SCHEMA_VERSION,"kind":"repair_context","from_attempt":run["attempt"],"source_stage":recovery_stage,"review_sha256":full_sha_hash(source_review),"review":source_review}
+   elif isinstance(prior,dict) and prior.get("status")!="completed" and isinstance(existing_context,dict) and prior.get("repair_context_sha256")==full_sha_hash(existing_context):
+    repair_context=existing_context
+   else:raise WorkflowError("repair_not_authorized")
    if (self.repo/".worktrees").is_symlink() or (self.repo/".hermes").is_symlink():raise WorkflowError("path_scope_violation")
    old=Path(run["worktree_path"]);attempt=run["attempt"]+1;branch=f"hcw/{rid}/attempt-{attempt}";worktree=self.repo/".worktrees"/f"hcw-{rid}-{attempt}"
    if worktree.is_symlink():raise WorkflowError("path_scope_violation")
-   internal=s.read("internal.json") if s._path("internal.json").exists() else {};k=board or self._boards.get(rid) or KanbanAdapter(self.repo,run["kanban_board"],home=Path(internal["kanban_home"]) if isinstance(internal.get("kanban_home"),str) else None)
-   requested={"operation":"repair","status":"pending","from_attempt":run["attempt"],"attempt":attempt,"branch":branch,"worktree_path":str(worktree),"base_sha":run["base_sha"],"board":run["kanban_board"]}
-   prior=internal.get("repair_intent")
+   k=board or self._boards.get(rid) or KanbanAdapter(self.repo,run["kanban_board"],home=Path(internal["kanban_home"]) if isinstance(internal.get("kanban_home"),str) else None)
+   requested={"operation":"repair","status":"pending","from_attempt":run["attempt"],"attempt":attempt,"branch":branch,"worktree_path":str(worktree),"base_sha":run["base_sha"],"board":run["kanban_board"],"repair_context_sha256":full_sha_hash(repair_context)}
    if prior and prior.get("status")!="completed":
     if any(prior.get(key)!=value for key,value in requested.items() if key!="status"):raise WorkflowError("repair_setup_failed")
    else:
     internal["repair_intent"]=requested;RunStore._atomic(s._path("internal.json"),internal)
+   RunStore._atomic(s._path("repair-context.json"),repair_context)
    try:
     if worktree.exists():
      top=subprocess.run(["git","-C",str(worktree),"rev-parse","--show-toplevel"],text=True,capture_output=True);head=subprocess.run(["git","-C",str(worktree),"rev-parse","HEAD"],text=True,capture_output=True);checked_branch=subprocess.run(["git","-C",str(worktree),"branch","--show-current"],text=True,capture_output=True)
@@ -379,8 +410,10 @@ class WorkflowService:
     if latest>=MAX_WORKER_ATTEMPTS:raise WorkflowError("worker_retry_exhausted")
    worker_attempt=latest+1;stamp=now()
    design_sha256=full_sha_hash(s.read("approved-design.json"));plan_sha256=full_sha_hash(s.read("plan.json"))
+   repair_context=s.read("repair-context.json") if s._path("repair-context.json").exists() else None
+   if not _valid_repair_context(repair_context,run,internal):raise WorkflowError("repair_context_invalid")
    dispatch_sha256=full_sha_hash({"run_id":rid,"stage":stage,"task_id":task_id,"profile":PROFILES[stage],"attempt":attempt,"brief_hash":brief_hash})
-   record={"schema_version":SCHEMA_VERSION,"kind":"worker","id":f"worker-{rid}-{stage}-{attempt}-{worker_attempt}","created_at":stamp,"updated_at":stamp,"run_id":rid,"stage":stage,"task_id":task_id,"profile":PROFILES[stage],"backend":CLAUDE_BACKEND,"model":CLAUDE_TIER_MODELS[stage],"attempt":attempt,"worker_attempt":worker_attempt,"brief_hash":brief_hash,"worktree_path":str(worktree),"pid":None,"state":"queued","stdout_path":None,"stderr_path":None,"stdout_sha256":None,"stderr_sha256":None,"exit_code":None,"note":None,"design_sha256":design_sha256,"plan_sha256":plan_sha256,"dispatch_sha256":dispatch_sha256,"process_identity":None}
+   record={"schema_version":SCHEMA_VERSION,"kind":"worker","id":f"worker-{rid}-{stage}-{attempt}-{worker_attempt}","created_at":stamp,"updated_at":stamp,"run_id":rid,"stage":stage,"task_id":task_id,"profile":PROFILES[stage],"backend":CLAUDE_BACKEND,"model":CLAUDE_TIER_MODELS[stage],"attempt":attempt,"worker_attempt":worker_attempt,"brief_hash":brief_hash,"worktree_path":str(worktree),"pid":None,"state":"queued","stdout_path":None,"stderr_path":None,"stdout_sha256":None,"stderr_sha256":None,"exit_code":None,"note":None,"design_sha256":design_sha256,"plan_sha256":plan_sha256,"dispatch_sha256":dispatch_sha256,"repair_context_sha256":full_sha_hash(repair_context),"process_identity":None}
    s.write_worker(stage,attempt,worker_attempt,record)
    runner_env=dict(os.environ);runner_env["PYTHONPATH"]=_runner_pythonpath(runner_env.get("PYTHONPATH"))
    log=s.worker_dir()/f"{stage}-{attempt}-{worker_attempt}.runner-log"

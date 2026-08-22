@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .claude_worker import actor_env, build_argv, build_prompt, resolve_claude_executable, scrub_env
 from .safety import atomic_write_text, redact, validate_controlled_worktree
-from .service import _authoritative_intent, full_sha_hash, now
+from .service import _authoritative_intent, _valid_repair_context, full_sha_hash, now
 from .store import RunStore
 
 
@@ -81,6 +81,7 @@ def main(argv: list[str]) -> int:
             return 1
         plan_record = store.read("plan.json")
         design_record = store.read("approved-design.json")
+        repair_context = store.read("repair-context.json") if store._path("repair-context.json").exists() else None
         dispatch_sha256 = full_sha_hash({
             "run_id": run_id, "stage": stage, "task_id": record["task_id"], "profile": record["profile"],
             "attempt": attempt, "brief_hash": record["brief_hash"],
@@ -89,6 +90,9 @@ def main(argv: list[str]) -> int:
             full_sha_hash(design_record) != record.get("design_sha256")
             or full_sha_hash(plan_record) != record.get("plan_sha256")
             or dispatch_sha256 != record.get("dispatch_sha256")
+            or (record.get("repair_context_sha256") is None and repair_context is not None)
+            or (record.get("repair_context_sha256") is not None and record.get("repair_context_sha256") != full_sha_hash(repair_context))
+            or not _valid_repair_context(repair_context, run, internal)
         ):
             updated = dict(record)
             updated.update(state="failed", note="artifact_mutated", updated_at=now())
@@ -108,6 +112,7 @@ def main(argv: list[str]) -> int:
         prompt = build_prompt(
             run=run, plan=plan, design=design, stage=stage, profile=record["profile"],
             task_id=record["task_id"], brief_hash=record["brief_hash"], worktree_path=str(worktree),
+            repair_context=repair_context,
         )
         executable = resolve_claude_executable()
         cmd = build_argv(executable, stage, plan)
