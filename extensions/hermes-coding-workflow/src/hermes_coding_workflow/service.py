@@ -37,6 +37,13 @@ def _valid_repair_context(value:object,run:dict[str,Any],internal:dict[str,Any])
  if not isinstance(previous,dict) or previous.get("attempt")!=value["from_attempt"] or review.get("reviewed_sha")!=previous.get("head_sha"):return False
  intent=internal.get("repair_intent") if isinstance(internal,dict) else None
  return isinstance(intent,dict) and intent.get("from_attempt")==value["from_attempt"] and intent.get("attempt")==run.get("attempt") and intent.get("repair_context_sha256")==full_sha_hash(value) and intent.get("base_sha")==review.get("reviewed_sha")
+def _valid_legacy_wrong_base_context(value:object,run:dict[str,Any],internal:dict[str,Any])->bool:
+ if run.get("attempt",1)<=1 or "attempt_base_sha" in run or not isinstance(value,dict) or set(value)!=REPAIR_CONTEXT_FIELDS:return False
+ if value.get("schema_version")!=SCHEMA_VERSION or value.get("kind")!="repair_context" or value.get("from_attempt")!=run.get("attempt",0)-1 or value.get("source_stage") not in {"spec-review","quality-review"}:return False
+ review=value.get("review");stage=value["source_stage"]
+ if not isinstance(review,dict) or validate_record(review) or review.get("decision")!="changes_requested" or review.get("reviewer",{}).get("profile")!=PROFILES[stage] or value.get("review_sha256")!=full_sha_hash(review):return False
+ history=run.get("attempt_history");previous=history[-1] if isinstance(history,list) and history else None;intent=internal.get("repair_intent") if isinstance(internal,dict) else None
+ return isinstance(previous,dict) and previous.get("attempt")==value["from_attempt"] and review.get("reviewed_sha")==previous.get("head_sha") and isinstance(intent,dict) and intent.get("status") in {"completed","graph_created"} and intent.get("from_attempt")==value["from_attempt"] and intent.get("attempt")==run.get("attempt") and intent.get("repair_context_sha256")==full_sha_hash(value) and intent.get("base_sha")==run.get("base_sha")==run.get("head_sha") and intent.get("base_sha")!=review.get("reviewed_sha")
 def _runner_pythonpath(existing:str|None)->str:
  """Build the `worker_runner` subprocess's PYTHONPATH from the authoritative
  package site -- the directory containing this very `hermes_coding_workflow`
@@ -455,7 +462,7 @@ class WorkflowService:
     if not isinstance(persisted_base,str) or not full_sha(persisted_base):raise WorkflowError("force_repair_not_authorized")
     force_base_sha=persisted_base
    elif "attempt_base_sha" not in run and attempt>1:
-    if not _valid_repair_context(existing_context,run,internal):raise WorkflowError("force_repair_not_authorized")
+    if not _valid_legacy_wrong_base_context(existing_context,run,internal):raise WorkflowError("force_repair_not_authorized")
     legacy_review=existing_context.get("review") if isinstance(existing_context,dict) else None
     reviewed_sha=legacy_review.get("reviewed_sha") if isinstance(legacy_review,dict) else None
     history=run.get("attempt_history")
@@ -474,7 +481,7 @@ class WorkflowService:
      if source_review.get("reviewed_sha")!=force_base_sha:raise WorkflowError("force_repair_not_authorized")
      force_context=existing_context
    else:
-    if not _valid_repair_context(existing_context,run,internal):raise WorkflowError("force_repair_not_authorized")
+    if not (_valid_repair_context(existing_context,run,internal) or _valid_legacy_wrong_base_context(existing_context,run,internal)):raise WorkflowError("force_repair_not_authorized")
     if attempt==1:
      force_context={"schema_version":SCHEMA_VERSION,"kind":"force_repair_context","from_attempt":attempt,"force_base_sha":force_base_sha}
     else:

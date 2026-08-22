@@ -621,6 +621,8 @@ def test_force_repair_migrates_legacy_wrong_base_to_reviewed_candidate(repo:Path
  store=RunStore(repo,"run-1");legacy=dict(store.read())
  legacy.pop("attempt_base_sha",None);legacy["head_sha"]=original["base_sha"]
  RunStore._atomic(store._path("run.json"),legacy)
+ internal=store.read("internal.json");internal["repair_intent"]["base_sha"]=original["base_sha"]
+ RunStore._atomic(store._path("internal.json"),internal)
  for _ in range(MAX_WORKER_ATTEMPTS):seed_failed_worker(repo,"red")
  recovered=s.force_repair("run-1",act("red"),"red",board(repo,[]))
  assert recovered["attempt"]==3
