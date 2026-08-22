@@ -192,6 +192,14 @@ def test_macos_fixture_is_built_from_the_actual_feature_pack(tmp_path):
     validate_macos_bundle(app, _manifest(), list_asar=list_asar, read_asar=read_asar)
 
 
+def test_desktop_build_uses_production_jsx_runtime(tmp_path):
+    """Regression: production Hermes exposes jsxDEV as undefined and the page crashes."""
+    package = build_feature_pack(REPO_ROOT, tmp_path / "package")
+    bundle = (package / "desktop/dist/rhythm.mjs").read_text(encoding="utf-8")
+    assert 'react/jsx-dev-runtime' not in bundle
+    assert "jsxDEV" not in bundle
+
+
 def test_nix_directory_plugin_convention_accepts_the_closed_feature_pack():
     """Regression: Nix packaging drifts from Hermes's directory-plugin contract."""
     nix_module = (REPO_ROOT / "nix/moduleCommon.nix").read_text(encoding="utf-8")
