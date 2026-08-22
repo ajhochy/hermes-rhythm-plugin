@@ -137,6 +137,12 @@ def test_authoritative_check_skills_use_production_timeout_budget() -> None:
             assert f"--timeout 600 {kind} --" in text
 
 
+def test_active_stage_bootstrap_uses_production_timeout_before_check_type(workflow) -> None:
+    plugin = load_plugin("hermes-coding-workflow")
+    bootstrap = plugin._build_bootstrap()
+    assert "--timeout 600 red -- <failing-test-command>" in bootstrap
+
+
 def test_green_controller_commits_before_running_the_authoritative_check(workflow, monkeypatch) -> None:
     plugin = load_plugin("hermes-coding-workflow")
     repo, _, state = workflow
@@ -221,12 +227,12 @@ def test_nested_hcw_stage_missing_locator_still_fails_closed(nested_workflow, mo
     (
         ("design", "dev-planner", "task-design", ("approve-design <repo> run-test --json <payload>",)),
         ("plan", "dev-planner", "task-plan", ("approve-plan <repo> run-test --json <payload>",)),
-        ("red", "dev-contract", "task-red", ("dispatch-worker <repo> run-test red", "worker-status <repo> run-test red", "check <repo> run-test red -- <failing-test-command>")),
-        ("green", "dev-builder", "task-green", ("dispatch-worker <repo> run-test green", "worker-status <repo> run-test green", "commit <repo> run-test --message <quoted-commit-message>", "check <repo> run-test green -- <passing-test-command>")),
+        ("red", "dev-contract", "task-red", ("dispatch-worker <repo> run-test red", "worker-status <repo> run-test red", "check <repo> run-test --timeout 600 red -- <failing-test-command>")),
+        ("green", "dev-builder", "task-green", ("dispatch-worker <repo> run-test green", "worker-status <repo> run-test green", "commit <repo> run-test --message <quoted-commit-message>", "check <repo> run-test --timeout 600 green -- <passing-test-command>")),
         ("spec-review", "dev-spec-reviewer", "task-spec", ("review <repo> run-test --json <payload>",)),
         ("quality-review", "dev-quality-reviewer", "task-quality", ("dispatch-worker <repo> run-test quality-review", "worker-status <repo> run-test quality-review", "review <repo> run-test --json <payload>")),
-        ("verify", "dev-verifier", "task-verify", ("check <repo> run-test full -- <full-test-command>", "check <repo> run-test security -- <security-test-command>", "verify <repo> run-test")),
-        ("live", "dev-verifier", "task-live", ("check <repo> run-test live -- <live-acceptance-command>",)),
+        ("verify", "dev-verifier", "task-verify", ("check <repo> run-test --timeout 600 full -- <full-test-command>", "check <repo> run-test --timeout 600 security -- <security-test-command>", "verify <repo> run-test")),
+        ("live", "dev-verifier", "task-live", ("check <repo> run-test --timeout 600 live -- <live-acceptance-command>",)),
         ("complete", "dev-recorder", "task-complete", ("dispatch-worker <repo> run-test complete", "worker-status <repo> run-test complete", "complete <repo> run-test")),
     ),
 )
