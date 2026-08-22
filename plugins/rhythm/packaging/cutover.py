@@ -54,14 +54,16 @@ POLICY_DISABLED_ACTIONS = (
 )
 
 _NATIVE_TOOLS = ["rhythm_complete_task", "rhythm_get_dashboard", "rhythm_list_tasks"]
-_ALLOWED_WRITE_CONFIRMATIONS: dict[str, dict[str, str]] = {
-    "tasks": {"operation": "tasks.complete", "confirmation": "fixture-scoped-receipt"},
-    "planner": {"operation": "planner.update-task", "confirmation": "fixture-scoped-receipt"},
-    "rhythms": {"operation": "rhythms.update-rule", "confirmation": "fixture-scoped-receipt"},
-    "projects": {"operation": "projects.update-template", "confirmation": "fixture-scoped-receipt"},
-    "messages": {"operation": "messages.mark-read", "confirmation": "fixture-scoped-receipt"},
-    "facilities": {"operation": "facilities.update-reservation", "confirmation": "fixture-scoped-receipt"},
+_ALLOWED_WRITE_CONFIRMATIONS: dict[str, dict[str, Any]] = {
+    "tasks": {"operation": "tasks.complete", "evidence": {"suite": "desktop-mounted", "test": "mounts the actual TasksScreen adapter: local confirm then one bound operation, with no token or broad writes", "result": "pass"}},
+    "planner": {"operation": "planner.update-task", "evidence": {"suite": "desktop-mounted", "test": "mounts Planner: the visible confirmation and operation carry one identical generation", "result": "pass"}},
+    "rhythms": {"operation": "rhythms.update-rule", "evidence": {"suite": "shared-react18-react19", "test_file": "tests/rhythms.screen.test.ts", "test": "requires one exact host confirmation before a permitted rule update and never writes when cancelled", "result": "pass"}},
+    "projects": {"operation": "projects.update-template", "evidence": {"suite": "shared-react18-react19", "test_file": "tests/projects.screen.test.ts", "test": "uses the exact narrow Projects capability and one foreground confirmation before a project-step mutation", "result": "pass"}},
+    "messages": {"operation": "messages.mark-read", "evidence": {"suite": "shared-react18-react19", "test_file": "tests/messages.screen.test.ts", "test": "opens a thread, marks it read, and shows the transcript and participants", "result": "pass"}},
+    "facilities": {"operation": "facilities.update-reservation", "evidence": {"suite": "shared-react18-react19", "test_file": "tests/facilities.screen.test.ts", "test": "binds facility writes to the exact foreground confirmation payload before mutation", "result": "pass"}},
 }
+_MOUNTED_DESTINATION_EVIDENCE = {"suite": "desktop-mounted", "test": "mounts every approved destination in compact and expanded failure states", "result": "pass"}
+_PROFILE_SWITCH_EVIDENCE = {"suite": "desktop-mounted", "test": "does not let a deferred old gateway publish after a provider re-home", "result": "pass", "mutation": "zero_patch"}
 _SECRET_MARKERS = ("bearer ", "token=", "api_key=", "secret=", "password=", "access_token=")
 
 
@@ -150,19 +152,25 @@ def validate_cutover_ledger(ledger: dict[str, Any]) -> None:
             raise CutoverError("module is missing fixture evidence")
         if not row.get("canonical_reads"):
             raise CutoverError("module is missing canonical read evidence")
-        if not row.get("responsive_a11y"):
-            raise CutoverError("module is missing responsive/a11y evidence")
-        if not row.get("failure_state"):
-            raise CutoverError("module is missing failure-state evidence")
+        responsive = row.get("responsive_a11y")
+        if not isinstance(responsive, dict) or responsive.get("result") != "pass" or responsive.get("test") != _MOUNTED_DESTINATION_EVIDENCE["test"]:
+            raise CutoverError("module is missing mounted responsive/a11y evidence")
+        failure = row.get("failure_state")
+        if not isinstance(failure, dict) or failure.get("result") != "pass" or failure.get("test") != _MOUNTED_DESTINATION_EVIDENCE["test"]:
+            raise CutoverError("module is missing mounted failure-state evidence")
         allowed = row.get("allowed_write_confirmation")
-        if allowed is not None and allowed.get("operation") not in {entry["operation"] for entry in _ALLOWED_WRITE_CONFIRMATIONS.values()}:
-            raise CutoverError("unapproved write confirmation in ledger")
+        if allowed is not None:
+            if allowed.get("operation") not in {entry["operation"] for entry in _ALLOWED_WRITE_CONFIRMATIONS.values()} or allowed.get("evidence", {}).get("result") != "pass":
+                raise CutoverError("unapproved or unexecuted write confirmation in ledger")
     if ledger.get("native_tools", {}).get("exercised") != _NATIVE_TOOLS:
         raise CutoverError("ledger native tools are not exact")
     if ledger.get("policy_disabled_actions") != list(POLICY_DISABLED_ACTIONS):
         raise CutoverError("policy-disabled actions are incomplete")
     if ledger.get("policy_disabled_proof") != "absent_from_adapter_and_native_tool_surface":
         raise CutoverError("policy-disabled proof is missing")
+    profile = ledger.get("safety_checks", {}).get("profile_switch_generation_invalidation")
+    if profile != _PROFILE_SWITCH_EVIDENCE:
+        raise CutoverError("profile-switch evidence is not the executed mounted regression")
     if _has_secret(ledger):
         raise CutoverError("credential-shaped value found in cutover ledger")
     performance = ledger.get("safety_checks", {}).get("performance", {})
@@ -206,8 +214,8 @@ def run_fixture_cutover(repo_root: Path, temporary_home: Path) -> dict[str, Any]
                 "fixture": "sanitized-canonical-v1",
                 "canonical_reads": reads,
                 "allowed_write_confirmation": _ALLOWED_WRITE_CONFIRMATIONS.get(module),
-                "responsive_a11y": "mounted-screen coverage: semantic role, compact/expanded viewport, and focusable controls",
-                "failure_state": "mounted gateway maps unauthorized/unavailable/server_error without mutation",
+                "responsive_a11y": dict(_MOUNTED_DESTINATION_EVIDENCE),
+                "failure_state": dict(_MOUNTED_DESTINATION_EVIDENCE),
             }
         )
     if calls != [("GET", path) for paths in APPROVED_DESTINATIONS.values() for path in paths]:
@@ -231,7 +239,7 @@ def run_fixture_cutover(repo_root: Path, temporary_home: Path) -> dict[str, Any]
         "safety_checks": {
             "auth_expiry": _assert_auth_expiry(),
             "restart_signal": "hermes gateway restart",
-            "profile_switch_generation_invalidation": "zero_patch",
+            "profile_switch_generation_invalidation": dict(_PROFILE_SWITCH_EVIDENCE),
             "uncertain_write": _assert_uncertain_write(),
             "secret_redaction": "pass",
             "performance": {"budget_ms": 2500, "elapsed_ms": elapsed_ms},

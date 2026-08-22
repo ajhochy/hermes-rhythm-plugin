@@ -4,22 +4,299 @@
   "evidence_mode": "sanitized_canonical_fixture_transport",
   "external_credentialed_live_read": "pending_manual",
   "modules": [
-    {"module":"dashboard","fixture":"sanitized-canonical-v1","canonical_reads":["/auth/me","/workspaces/me","/dashboard/summary"],"allowed_write_confirmation":null,"responsive_a11y":"mounted-screen coverage: semantic role, compact/expanded viewport, and focusable controls","failure_state":"mounted gateway maps unauthorized/unavailable/server_error without mutation"},
-    {"module":"tasks","fixture":"sanitized-canonical-v1","canonical_reads":["/tasks"],"allowed_write_confirmation":{"operation":"tasks.complete","confirmation":"fixture-scoped-receipt"},"responsive_a11y":"mounted-screen coverage: semantic role, compact/expanded viewport, and focusable controls","failure_state":"mounted gateway maps unauthorized/unavailable/server_error without mutation"},
-    {"module":"planner","fixture":"sanitized-canonical-v1","canonical_reads":["/planner/weeks/2026-08-17"],"allowed_write_confirmation":{"operation":"planner.update-task","confirmation":"fixture-scoped-receipt"},"responsive_a11y":"mounted-screen coverage: semantic role, compact/expanded viewport, and focusable controls","failure_state":"mounted gateway maps unauthorized/unavailable/server_error without mutation"},
-    {"module":"rhythms","fixture":"sanitized-canonical-v1","canonical_reads":["/recurring-rules"],"allowed_write_confirmation":{"operation":"rhythms.update-rule","confirmation":"fixture-scoped-receipt"},"responsive_a11y":"mounted-screen coverage: semantic role, compact/expanded viewport, and focusable controls","failure_state":"mounted gateway maps unauthorized/unavailable/server_error without mutation"},
-    {"module":"projects","fixture":"sanitized-canonical-v1","canonical_reads":["/project-templates","/project-instances"],"allowed_write_confirmation":{"operation":"projects.update-template","confirmation":"fixture-scoped-receipt"},"responsive_a11y":"mounted-screen coverage: semantic role, compact/expanded viewport, and focusable controls","failure_state":"mounted gateway maps unauthorized/unavailable/server_error without mutation"},
-    {"module":"messages","fixture":"sanitized-canonical-v1","canonical_reads":["/message-threads","/users"],"allowed_write_confirmation":{"operation":"messages.mark-read","confirmation":"fixture-scoped-receipt"},"responsive_a11y":"mounted-screen coverage: semantic role, compact/expanded viewport, and focusable controls","failure_state":"mounted gateway maps unauthorized/unavailable/server_error without mutation"},
-    {"module":"facilities","fixture":"sanitized-canonical-v1","canonical_reads":["/facilities","/facilities/reservations"],"allowed_write_confirmation":{"operation":"facilities.update-reservation","confirmation":"fixture-scoped-receipt"},"responsive_a11y":"mounted-screen coverage: semantic role, compact/expanded viewport, and focusable controls","failure_state":"mounted gateway maps unauthorized/unavailable/server_error without mutation"},
-    {"module":"automations","fixture":"sanitized-canonical-v1","canonical_reads":["/automations/catalog","/automations/rules"],"allowed_write_confirmation":null,"responsive_a11y":"mounted-screen coverage: semantic role, compact/expanded viewport, and focusable controls","failure_state":"mounted gateway maps unauthorized/unavailable/server_error without mutation"},
-    {"module":"integrations","fixture":"sanitized-canonical-v1","canonical_reads":["/integrations/status","/integrations/settings","/integrations/sync"],"allowed_write_confirmation":null,"responsive_a11y":"mounted-screen coverage: semantic role, compact/expanded viewport, and focusable controls","failure_state":"mounted gateway maps unauthorized/unavailable/server_error without mutation"},
-    {"module":"artifacts","fixture":"sanitized-canonical-v1","canonical_reads":["/artifacts"],"allowed_write_confirmation":null,"responsive_a11y":"mounted-screen coverage: semantic role, compact/expanded viewport, and focusable controls","failure_state":"mounted gateway maps unauthorized/unavailable/server_error without mutation"}
+    {
+      "module": "dashboard",
+      "fixture": "sanitized-canonical-v1",
+      "canonical_reads": [
+        "/auth/me",
+        "/workspaces/me",
+        "/dashboard/summary"
+      ],
+      "allowed_write_confirmation": null,
+      "responsive_a11y": {
+        "suite": "desktop-mounted",
+        "test": "mounts every approved destination in compact and expanded failure states",
+        "result": "pass"
+      },
+      "failure_state": {
+        "suite": "desktop-mounted",
+        "test": "mounts every approved destination in compact and expanded failure states",
+        "result": "pass"
+      }
+    },
+    {
+      "module": "tasks",
+      "fixture": "sanitized-canonical-v1",
+      "canonical_reads": [
+        "/tasks"
+      ],
+      "allowed_write_confirmation": {
+        "operation": "tasks.complete",
+        "evidence": {
+          "suite": "desktop-mounted",
+          "test": "mounts the actual TasksScreen adapter: local confirm then one bound operation, with no token or broad writes",
+          "result": "pass"
+        }
+      },
+      "responsive_a11y": {
+        "suite": "desktop-mounted",
+        "test": "mounts every approved destination in compact and expanded failure states",
+        "result": "pass"
+      },
+      "failure_state": {
+        "suite": "desktop-mounted",
+        "test": "mounts every approved destination in compact and expanded failure states",
+        "result": "pass"
+      }
+    },
+    {
+      "module": "planner",
+      "fixture": "sanitized-canonical-v1",
+      "canonical_reads": [
+        "/planner/weeks/2026-08-17"
+      ],
+      "allowed_write_confirmation": {
+        "operation": "planner.update-task",
+        "evidence": {
+          "suite": "desktop-mounted",
+          "test": "mounts Planner: the visible confirmation and operation carry one identical generation",
+          "result": "pass"
+        }
+      },
+      "responsive_a11y": {
+        "suite": "desktop-mounted",
+        "test": "mounts every approved destination in compact and expanded failure states",
+        "result": "pass"
+      },
+      "failure_state": {
+        "suite": "desktop-mounted",
+        "test": "mounts every approved destination in compact and expanded failure states",
+        "result": "pass"
+      }
+    },
+    {
+      "module": "rhythms",
+      "fixture": "sanitized-canonical-v1",
+      "canonical_reads": [
+        "/recurring-rules"
+      ],
+      "allowed_write_confirmation": {
+        "operation": "rhythms.update-rule",
+        "evidence": {
+          "suite": "shared-react18-react19",
+          "test_file": "tests/rhythms.screen.test.ts",
+          "test": "requires one exact host confirmation before a permitted rule update and never writes when cancelled",
+          "result": "pass"
+        }
+      },
+      "responsive_a11y": {
+        "suite": "desktop-mounted",
+        "test": "mounts every approved destination in compact and expanded failure states",
+        "result": "pass"
+      },
+      "failure_state": {
+        "suite": "desktop-mounted",
+        "test": "mounts every approved destination in compact and expanded failure states",
+        "result": "pass"
+      }
+    },
+    {
+      "module": "projects",
+      "fixture": "sanitized-canonical-v1",
+      "canonical_reads": [
+        "/project-templates",
+        "/project-instances"
+      ],
+      "allowed_write_confirmation": {
+        "operation": "projects.update-template",
+        "evidence": {
+          "suite": "shared-react18-react19",
+          "test_file": "tests/projects.screen.test.ts",
+          "test": "uses the exact narrow Projects capability and one foreground confirmation before a project-step mutation",
+          "result": "pass"
+        }
+      },
+      "responsive_a11y": {
+        "suite": "desktop-mounted",
+        "test": "mounts every approved destination in compact and expanded failure states",
+        "result": "pass"
+      },
+      "failure_state": {
+        "suite": "desktop-mounted",
+        "test": "mounts every approved destination in compact and expanded failure states",
+        "result": "pass"
+      }
+    },
+    {
+      "module": "messages",
+      "fixture": "sanitized-canonical-v1",
+      "canonical_reads": [
+        "/message-threads",
+        "/users"
+      ],
+      "allowed_write_confirmation": {
+        "operation": "messages.mark-read",
+        "evidence": {
+          "suite": "shared-react18-react19",
+          "test_file": "tests/messages.screen.test.ts",
+          "test": "opens a thread, marks it read, and shows the transcript and participants",
+          "result": "pass"
+        }
+      },
+      "responsive_a11y": {
+        "suite": "desktop-mounted",
+        "test": "mounts every approved destination in compact and expanded failure states",
+        "result": "pass"
+      },
+      "failure_state": {
+        "suite": "desktop-mounted",
+        "test": "mounts every approved destination in compact and expanded failure states",
+        "result": "pass"
+      }
+    },
+    {
+      "module": "facilities",
+      "fixture": "sanitized-canonical-v1",
+      "canonical_reads": [
+        "/facilities",
+        "/facilities/reservations"
+      ],
+      "allowed_write_confirmation": {
+        "operation": "facilities.update-reservation",
+        "evidence": {
+          "suite": "shared-react18-react19",
+          "test_file": "tests/facilities.screen.test.ts",
+          "test": "binds facility writes to the exact foreground confirmation payload before mutation",
+          "result": "pass"
+        }
+      },
+      "responsive_a11y": {
+        "suite": "desktop-mounted",
+        "test": "mounts every approved destination in compact and expanded failure states",
+        "result": "pass"
+      },
+      "failure_state": {
+        "suite": "desktop-mounted",
+        "test": "mounts every approved destination in compact and expanded failure states",
+        "result": "pass"
+      }
+    },
+    {
+      "module": "automations",
+      "fixture": "sanitized-canonical-v1",
+      "canonical_reads": [
+        "/automations/catalog",
+        "/automations/rules"
+      ],
+      "allowed_write_confirmation": null,
+      "responsive_a11y": {
+        "suite": "desktop-mounted",
+        "test": "mounts every approved destination in compact and expanded failure states",
+        "result": "pass"
+      },
+      "failure_state": {
+        "suite": "desktop-mounted",
+        "test": "mounts every approved destination in compact and expanded failure states",
+        "result": "pass"
+      }
+    },
+    {
+      "module": "integrations",
+      "fixture": "sanitized-canonical-v1",
+      "canonical_reads": [
+        "/integrations/status",
+        "/integrations/settings",
+        "/integrations/sync"
+      ],
+      "allowed_write_confirmation": null,
+      "responsive_a11y": {
+        "suite": "desktop-mounted",
+        "test": "mounts every approved destination in compact and expanded failure states",
+        "result": "pass"
+      },
+      "failure_state": {
+        "suite": "desktop-mounted",
+        "test": "mounts every approved destination in compact and expanded failure states",
+        "result": "pass"
+      }
+    },
+    {
+      "module": "artifacts",
+      "fixture": "sanitized-canonical-v1",
+      "canonical_reads": [
+        "/artifacts"
+      ],
+      "allowed_write_confirmation": null,
+      "responsive_a11y": {
+        "suite": "desktop-mounted",
+        "test": "mounts every approved destination in compact and expanded failure states",
+        "result": "pass"
+      },
+      "failure_state": {
+        "suite": "desktop-mounted",
+        "test": "mounts every approved destination in compact and expanded failure states",
+        "result": "pass"
+      }
+    }
   ],
-  "native_tools":{"exercised":["rhythm_complete_task","rhythm_get_dashboard","rhythm_list_tasks"],"count":3},
-  "lifecycle":{"temporary_home_only":true,"statuses":["installed","reinstalled","upgraded","rolled_back","uninstalled"],"restart_signal":"hermes gateway restart","doctor":{"compatible":true,"connection":"unavailable","tools":["rhythm_complete_task","rhythm_get_dashboard","rhythm_list_tasks"]}},
-  "safety_checks":{"auth_expiry":"unauthorized","restart_signal":"hermes gateway restart","profile_switch_generation_invalidation":"zero_patch","uncertain_write":"no_retry_no_false_success","secret_redaction":"pass","performance":{"budget_ms":2500,"elapsed_ms":500}},
-  "policy_disabled_actions":["agent_navigation","messages.create_thread","messages.send","messages.rename_thread","messages.delete_thread","collaborator_mutations","automation_writes","integration_credential_writes"],
-  "policy_disabled_proof":"absent_from_adapter_and_native_tool_surface",
-  "automated_acceptance":"pass",
-  "manual_gates":["AJ cutover and merge","signed/notarized release"]
+  "native_tools": {
+    "exercised": [
+      "rhythm_complete_task",
+      "rhythm_get_dashboard",
+      "rhythm_list_tasks"
+    ],
+    "count": 3
+  },
+  "lifecycle": {
+    "temporary_home_only": true,
+    "statuses": [
+      "installed",
+      "reinstalled",
+      "upgraded",
+      "rolled_back",
+      "uninstalled"
+    ],
+    "restart_signal": "hermes gateway restart",
+    "doctor": {
+      "compatible": true,
+      "connection": "unavailable",
+      "tools": [
+        "rhythm_complete_task",
+        "rhythm_get_dashboard",
+        "rhythm_list_tasks"
+      ]
+    }
+  },
+  "safety_checks": {
+    "auth_expiry": "unauthorized",
+    "restart_signal": "hermes gateway restart",
+    "profile_switch_generation_invalidation": {
+      "suite": "desktop-mounted",
+      "test": "does not let a deferred old gateway publish after a provider re-home",
+      "result": "pass",
+      "mutation": "zero_patch"
+    },
+    "uncertain_write": "no_retry_no_false_success",
+    "secret_redaction": "pass",
+    "performance": {
+      "budget_ms": 2500,
+      "elapsed_ms": 853
+    }
+  },
+  "policy_disabled_actions": [
+    "agent_navigation",
+    "messages.create_thread",
+    "messages.send",
+    "messages.rename_thread",
+    "messages.delete_thread",
+    "collaborator_mutations",
+    "automation_writes",
+    "integration_credential_writes"
+  ],
+  "policy_disabled_proof": "absent_from_adapter_and_native_tool_surface",
+  "automated_acceptance": "pass",
+  "manual_gates": [
+    "AJ cutover and merge",
+    "signed/notarized release"
+  ]
 }
