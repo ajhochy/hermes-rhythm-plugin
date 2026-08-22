@@ -30,8 +30,8 @@ def board(repo:Path,calls:list,home:Path|None=None):
  statuses:dict[str,str]={}
  def run_cmd(argv,cwd):
   calls.append(tuple(argv))
-  if "create" in argv:
-   stage=argv[argv.index("create")+1].split(": ")[-1];ident="task-"+stage;statuses[ident]="todo"
+  if "create" in argv and "--body" in argv:
+   stage=json.loads(argv[argv.index("--body")+1])["stage"];ident="task-"+stage;statuses[ident]="todo"
    return subprocess.CompletedProcess(argv,0,json.dumps({"id":ident}) if "--json" in argv else "","")
   if "show" in argv:
    ident=argv[argv.index("show")+1];return subprocess.CompletedProcess(argv,0,json.dumps({"task":{"id":ident,"status":statuses.get(ident,"todo")}}),"")

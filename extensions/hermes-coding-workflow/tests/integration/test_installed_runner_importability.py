@@ -105,8 +105,8 @@ def test_dispatched_worker_reaches_terminal_state_from_an_installed_runtime_site
 
     def run(argv, cwd):
         calls.append(tuple(argv))
-        if "create" in argv:
-            stage = argv[argv.index("create") + 1].split(": ")[-1]
+        if "create" in argv and "--body" in argv:
+            stage = json.loads(argv[argv.index("--body") + 1])["stage"]
             ident = "task-" + stage
             statuses[ident] = "todo"
             return subprocess.CompletedProcess(argv, 0, json.dumps({"id": ident}) if "--json" in argv else "", "")

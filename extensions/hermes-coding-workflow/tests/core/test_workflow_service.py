@@ -17,8 +17,8 @@ def board(repo:Path,calls:list[tuple[str,...]],home:Path|None=None,fail_complete
  def run(argv,cwd):
   nonlocal failed
   calls.append(tuple(argv))
-  if "create" in argv:
-   stage=argv[argv.index("create")+1].split(": ")[-1];ident="task-"+stage;statuses[ident]="todo";return subprocess.CompletedProcess(argv,0,json.dumps({"id":ident}) if "--json" in argv else "","")
+  if "create" in argv and "--body" in argv:
+   stage=json.loads(argv[argv.index("--body")+1])["stage"];ident="task-"+stage;statuses[ident]="todo";return subprocess.CompletedProcess(argv,0,json.dumps({"id":ident}) if "--json" in argv else "","")
   if "show" in argv:
    ident=argv[argv.index("show")+1];return subprocess.CompletedProcess(argv,0,json.dumps({"task":{"id":ident,"status":statuses.get(ident,"todo")}}),"")
   if "promote" in argv:
@@ -118,7 +118,7 @@ def test_graph_failure_never_deletes_idempotent_task_ids(repo:Path)->None:
  def runner(argv,cwd):
   nonlocal created
   calls.append(tuple(argv))
-  if "create" in argv:created+=1;return subprocess.CompletedProcess(argv,0,json.dumps({"id":f"existing-{created}"}),"")
+  if "create" in argv and "--body" in argv:created+=1;return subprocess.CompletedProcess(argv,0,json.dumps({"id":f"existing-{created}"}),"")
   if "link" in argv:return subprocess.CompletedProcess(argv,1,"","injected")
   return subprocess.CompletedProcess(argv,0,"","")
  with pytest.raises(RuntimeError,match="kanban_failed"):
