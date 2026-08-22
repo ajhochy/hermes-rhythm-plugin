@@ -612,3 +612,30 @@ def test_force_repair_rejects_worker_with_wrong_authority_field(repo:Path,bad_fi
  _seed_failed_worker_with_field_override(repo,"red",{bad_field:bad_value})
  with pytest.raises(WorkflowError,match="force_repair_not_authorized"):
   s.force_repair("run-1",act("red"),"red",board(repo,[]))
+
+
+def test_force_repair_migrates_legacy_wrong_base_to_reviewed_candidate(repo:Path)->None:
+ """A legacy repaired attempt can truthfully branch back to its reviewed candidate."""
+ s,original,candidate_sha=_do_attempt1_through_review(repo)
+ s.repair("run-1",act("spec-review"),board(repo,[]))
+ store=RunStore(repo,"run-1");legacy=dict(store.read())
+ legacy.pop("attempt_base_sha",None);legacy["head_sha"]=original["base_sha"]
+ RunStore._atomic(store._path("run.json"),legacy)
+ for _ in range(MAX_WORKER_ATTEMPTS):seed_failed_worker(repo,"red")
+ recovered=s.force_repair("run-1",act("red"),"red",board(repo,[]))
+ assert recovered["attempt"]==3
+ assert recovered["base_sha"]==original["base_sha"]
+ assert recovered["attempt_base_sha"]==candidate_sha
+ archived=recovered["attempt_history"][-1]
+ assert "attempt_base_sha" not in archived
+ assert archived["head_sha"]==original["base_sha"]
+ assert archived["next_attempt_base_sha"]==candidate_sha
+ assert validate_record(recovered) is None
+
+
+def test_contracts_reject_malformed_next_attempt_base_sha(repo:Path)->None:
+ s,_,_=ready(repo);store=RunStore(repo,"run-1");saved=dict(store.read())
+ saved["attempt"]=2;saved["attempt_base_sha"]="b"*40
+ saved["attempt_history"]=[{"attempt":1,"worktree_path":"/tmp/one","head_sha":"a"*40,"attempt_base_sha":saved["base_sha"],"next_attempt_base_sha":"bad"}]
+ saved["dispatches"]={stage:{**value,"attempt":2} for stage,value in saved["dispatches"].items()}
+ assert validate_record(saved)=="malformed_schema"

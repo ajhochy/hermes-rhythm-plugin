@@ -26,11 +26,12 @@ def full_sha(value: object) -> bool: return isinstance(value, str) and bool(SHA.
 def _valid_attempt_history_item(item: object) -> bool:
     if not isinstance(item, dict): return False
     base_keys = {"attempt", "worktree_path", "head_sha"}
-    if set(item) - base_keys - {"attempt_base_sha"}: return False
+    if set(item) - base_keys - {"attempt_base_sha","next_attempt_base_sha"}: return False
     if not isinstance(item.get("attempt"), int) or item["attempt"] < 1: return False
     if not _text(item.get("worktree_path"), 4096) or not item.get("worktree_path"): return False
     if not full_sha(item.get("head_sha")): return False
     if "attempt_base_sha" in item and not full_sha(item["attempt_base_sha"]): return False
+    if "next_attempt_base_sha" in item and not full_sha(item["next_attempt_base_sha"]): return False
     return True
 def valid_run_id(value: object) -> bool: return isinstance(value, str) and bool(RUN_ID.fullmatch(value))
 def _text(value: object, maximum: int = 4096) -> bool: return isinstance(value, str) and bool(value) and len(value) <= maximum
@@ -107,13 +108,13 @@ def validate_record(record: Mapping[str, Any]) -> str | None:
         # Chain rule for attempt_base_sha (when populated; absent = legacy, skip)
         for i, entry in enumerate(history):
             if "attempt_base_sha" not in entry: continue
-            expected_sha = record["base_sha"] if i == 0 else history[i - 1].get("head_sha")
+            expected_sha = record["base_sha"] if i == 0 else history[i - 1].get("next_attempt_base_sha",history[i - 1].get("head_sha"))
             if entry["attempt_base_sha"] != expected_sha: return "malformed_schema"
         if "attempt_base_sha" in record:
             if cur_attempt == 1:
                 if record["attempt_base_sha"] != record["base_sha"]: return "malformed_schema"
             elif history:
-                if record["attempt_base_sha"] != history[-1].get("head_sha"): return "malformed_schema"
+                if record["attempt_base_sha"] != history[-1].get("next_attempt_base_sha",history[-1].get("head_sha")): return "malformed_schema"
         return None
     if kind == "evidence": return None if valid_run_id(record.get("run_id")) and record.get("type") in {"red","green","full","security","live"} and _actor(record.get("actor")) and full_sha(record.get("commit_sha")) and _argv(record.get("command")) and isinstance(record.get("exit_code"), int) and _text(record.get("artifact_path"),512) and isinstance(record.get("artifact_sha256"),str) and bool(re.fullmatch(r"[0-9a-f]{64}",record["artifact_sha256"])) else "malformed_schema"
     if kind == "review": return None if valid_run_id(record.get("run_id")) and _actor(record.get("reviewer")) and validate_review({k: record[k] for k in ("reviewed_sha","decision","findings","dispositions")}) else "malformed_schema"

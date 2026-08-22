@@ -448,7 +448,19 @@ class WorkflowService:
         rec.get("dispatch_sha256")!=dispatch_sha256_req or
         (ctx_hash is not None and rec.get("repair_context_sha256")!=ctx_hash)):raise WorkflowError("force_repair_not_authorized")
    if (self.repo/".worktrees").is_symlink() or (self.repo/".hermes").is_symlink():raise WorkflowError("path_scope_violation")
-   force_base_sha=_attempt_base_sha(run)
+   current_attempt_base=_attempt_base_sha(run)
+   force_base_sha=current_attempt_base
+   if _context_written:
+    persisted_base=prior_fi.get("base_sha") if isinstance(prior_fi,dict) else None
+    if not isinstance(persisted_base,str) or not full_sha(persisted_base):raise WorkflowError("force_repair_not_authorized")
+    force_base_sha=persisted_base
+   elif "attempt_base_sha" not in run and attempt>1:
+    if not _valid_repair_context(existing_context,run,internal):raise WorkflowError("force_repair_not_authorized")
+    legacy_review=existing_context.get("review") if isinstance(existing_context,dict) else None
+    reviewed_sha=legacy_review.get("reviewed_sha") if isinstance(legacy_review,dict) else None
+    history=run.get("attempt_history")
+    if not isinstance(reviewed_sha,str) or not full_sha(reviewed_sha) or not isinstance(history,list) or not history or history[-1].get("head_sha")!=reviewed_sha:raise WorkflowError("force_repair_not_authorized")
+    force_base_sha=reviewed_sha
    old=Path(run["worktree_path"]);new_attempt=attempt+1;branch=f"hcw/{rid}/attempt-{new_attempt}";worktree=self.repo/".worktrees"/f"hcw-{rid}-{new_attempt}"
    if worktree.is_symlink():raise WorkflowError("path_scope_violation")
    k=board or self._boards.get(rid) or KanbanAdapter(self.repo,run["kanban_board"],home=Path(internal["kanban_home"]) if isinstance(internal.get("kanban_home"),str) else None)
@@ -509,7 +521,10 @@ class WorkflowService:
    for name in ("evidence.jsonl","reviews.json","verification.json","handoff.json"):
     src=s._path(name)
     if src.exists():shutil.move(str(src),str(archive/name))
-   run["attempt_history"].append({"attempt":attempt,"worktree_path":str(old),"attempt_base_sha":force_base_sha,"head_sha":run["head_sha"]})
+   archived_attempt={"attempt":attempt,"worktree_path":str(old),"head_sha":run["head_sha"]}
+   if "attempt_base_sha" in run:archived_attempt["attempt_base_sha"]=current_attempt_base
+   if force_base_sha!=run["head_sha"]:archived_attempt["next_attempt_base_sha"]=force_base_sha
+   run["attempt_history"].append(archived_attempt)
    run.update({"attempt":new_attempt,"branch":branch,"worktree_path":str(worktree.resolve()),"head_sha":force_base_sha,"attempt_base_sha":force_base_sha,"kanban_task_ids":tasks,"dispatches":draft["dispatches"],"stage_statuses":{st:("completed" if st in {"design","plan"} else "active" if st=="red" else "pending") for st in STAGES},"status":"awaiting_red"})
    self._bump(s,run)
    internal3=s.read("internal.json")
