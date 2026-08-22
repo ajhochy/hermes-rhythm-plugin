@@ -62,7 +62,7 @@ def _build_desktop(source: Path, output: Path, entry_relative: str) -> None:
         target = output / entry_relative
         target.parent.mkdir(parents=True, exist_ok=True)
         command = [
-            "bun", "build", str(entry), "--outfile", str(target), "--format=esm", "--target=browser", "--minify",
+            "bun", "build", str(entry), "--outfile", str(target), "--format=esm", "--target=browser", "--minify", "--production",
             "--external", "react", "--external", "react-dom", "--external", "react/*",
             "--external", "@hermes/plugin-sdk",
         ]
