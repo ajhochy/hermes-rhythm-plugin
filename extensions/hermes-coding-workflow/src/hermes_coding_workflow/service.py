@@ -18,12 +18,19 @@ def _attempt_base_sha(run:dict[str,Any])->str:
  return value
 MAX_WORKER_ATTEMPTS=3
 REPAIR_CONTEXT_FIELDS={"schema_version","kind","from_attempt","source_stage","review_sha256","review"}
+FORCE_REPAIR_CONTEXT_FIELDS={"schema_version","kind","from_attempt","force_base_sha"}
 def _valid_repair_context(value:object,run:dict[str,Any],internal:dict[str,Any])->bool:
  if run.get("attempt")==1:return value is None
  intent=internal.get("repair_intent") if isinstance(internal,dict) else None
  if value is None:
   return isinstance(intent,dict) and "repair_context_sha256" not in intent and intent.get("status") in {"completed","graph_created"} and intent.get("from_attempt")==run.get("attempt",0)-1 and intent.get("attempt")==run.get("attempt")
- if not isinstance(value,dict) or set(value)!=REPAIR_CONTEXT_FIELDS or value.get("schema_version")!=SCHEMA_VERSION or value.get("kind")!="repair_context" or value.get("from_attempt")!=run.get("attempt",0)-1 or value.get("source_stage") not in {"spec-review","quality-review"}:return False
+ if not isinstance(value,dict):return False
+ if value.get("kind")=="force_repair_context":
+  if set(value)!=FORCE_REPAIR_CONTEXT_FIELDS or value.get("schema_version")!=SCHEMA_VERSION:return False
+  if value.get("from_attempt")!=run.get("attempt",0)-1:return False
+  if not full_sha(value.get("force_base_sha")):return False
+  return isinstance(intent,dict) and intent.get("attempt")==run.get("attempt") and intent.get("from_attempt")==value["from_attempt"] and intent.get("repair_context_sha256")==full_sha_hash(value) and intent.get("base_sha")==value["force_base_sha"]
+ if set(value)!=REPAIR_CONTEXT_FIELDS or value.get("schema_version")!=SCHEMA_VERSION or value.get("kind")!="repair_context" or value.get("from_attempt")!=run.get("attempt",0)-1 or value.get("source_stage") not in {"spec-review","quality-review"}:return False
  review=value.get("review");stage=value["source_stage"]
  if not isinstance(review,dict) or validate_record(review) or review.get("decision")!="changes_requested" or review.get("reviewer",{}).get("profile")!=PROFILES[stage] or value.get("review_sha256")!=full_sha_hash(review):return False
  history=run.get("attempt_history");previous=history[-1] if isinstance(history,list) and history else None
@@ -426,6 +433,8 @@ class WorkflowService:
    # Context hash for binding: use existing_context only when context has not yet been
    # overwritten by a prior crash (in _context_written replay, workers hold the old hash).
    ctx_hash=None if _context_written else full_sha_hash(existing_context)
+   design_sha256_req=full_sha_hash(s.read("approved-design.json"));plan_sha256_req=full_sha_hash(s.read("plan.json"))
+   dispatch_sha256_req=full_sha_hash({"run_id":rid,"stage":stage,"task_id":run["kanban_task_ids"].get(stage),"profile":PROFILES[stage],"attempt":attempt,"brief_hash":dispatch.get("brief_hash")})
    for wa in range(1,MAX_WORKER_ATTEMPTS+1):
     rec=s.read_worker(stage,attempt,wa)
     # Schema-valid, correct bindings, terminal failed, no succeeded/queued/running
@@ -434,6 +443,9 @@ class WorkflowService:
         rec.get("worker_attempt")!=wa or rec.get("task_id")!=run["kanban_task_ids"].get(stage) or
         rec.get("profile")!=PROFILES[stage] or rec.get("worktree_path")!=run["worktree_path"] or
         rec.get("brief_hash")!=dispatch.get("brief_hash") or rec.get("state")!="failed" or
+        rec.get("backend")!=CLAUDE_BACKEND or rec.get("model")!=CLAUDE_TIER_MODELS[stage] or
+        rec.get("design_sha256")!=design_sha256_req or rec.get("plan_sha256")!=plan_sha256_req or
+        rec.get("dispatch_sha256")!=dispatch_sha256_req or
         (ctx_hash is not None and rec.get("repair_context_sha256")!=ctx_hash)):raise WorkflowError("force_repair_not_authorized")
    if (self.repo/".worktrees").is_symlink() or (self.repo/".hermes").is_symlink():raise WorkflowError("path_scope_violation")
    force_base_sha=_attempt_base_sha(run)
@@ -441,16 +453,23 @@ class WorkflowService:
    if worktree.is_symlink():raise WorkflowError("path_scope_violation")
    k=board or self._boards.get(rid) or KanbanAdapter(self.repo,run["kanban_board"],home=Path(internal["kanban_home"]) if isinstance(internal.get("kanban_home"),str) else None)
    if _context_written:
-    source_review=existing_context.get("review") if isinstance(existing_context,dict) else None
-    if not isinstance(source_review,dict):raise WorkflowError("force_repair_not_authorized")
-    if source_review.get("reviewed_sha")!=force_base_sha:raise WorkflowError("force_repair_not_authorized")
-    force_context=existing_context
+    if isinstance(existing_context,dict) and existing_context.get("kind")=="force_repair_context":
+     if existing_context.get("force_base_sha")!=force_base_sha:raise WorkflowError("force_repair_not_authorized")
+     force_context=existing_context
+    else:
+     source_review=existing_context.get("review") if isinstance(existing_context,dict) else None
+     if not isinstance(source_review,dict):raise WorkflowError("force_repair_not_authorized")
+     if source_review.get("reviewed_sha")!=force_base_sha:raise WorkflowError("force_repair_not_authorized")
+     force_context=existing_context
    else:
     if not _valid_repair_context(existing_context,run,internal):raise WorkflowError("force_repair_not_authorized")
-    source_review=existing_context["review"] if isinstance(existing_context,dict) else None
-    if not isinstance(source_review,dict):raise WorkflowError("force_repair_not_authorized")
-    if source_review.get("reviewed_sha")!=force_base_sha:raise WorkflowError("force_repair_not_authorized")
-    force_context={"schema_version":SCHEMA_VERSION,"kind":"repair_context","from_attempt":attempt,"source_stage":existing_context.get("source_stage","spec-review"),"review_sha256":full_sha_hash(source_review),"review":source_review}
+    if attempt==1:
+     force_context={"schema_version":SCHEMA_VERSION,"kind":"force_repair_context","from_attempt":attempt,"force_base_sha":force_base_sha}
+    else:
+     source_review=existing_context["review"] if isinstance(existing_context,dict) else None
+     if not isinstance(source_review,dict):raise WorkflowError("force_repair_not_authorized")
+     if source_review.get("reviewed_sha")!=force_base_sha:raise WorkflowError("force_repair_not_authorized")
+     force_context={"schema_version":SCHEMA_VERSION,"kind":"repair_context","from_attempt":attempt,"source_stage":existing_context.get("source_stage","spec-review"),"review_sha256":full_sha_hash(source_review),"review":source_review}
    # Persist intent (with new context hash) before any mutations
    force_intent={"operation":"force_repair","status":"pending","from_attempt":attempt,"attempt":new_attempt,"branch":branch,"worktree_path":str(worktree),"base_sha":force_base_sha,"board":run["kanban_board"],"repair_context_sha256":full_sha_hash(force_context)}
    if _intent_matches:

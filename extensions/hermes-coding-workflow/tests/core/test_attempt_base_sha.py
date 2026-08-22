@@ -56,7 +56,7 @@ def seed_failed_worker(repo:Path,stage:str)->dict:
  store=RunStore(repo,"run-1");run=store.read();attempt=run["attempt"]
  worker_attempt=store.latest_worker_attempt(stage,attempt)+1;dispatch=run["dispatches"][stage];stamp="2026-08-22T00:00:00Z"
  rc=store.read("repair-context.json") if store._path("repair-context.json").exists() else None
- record={"schema_version":"hcw/v1","kind":"worker","id":f"worker-run-1-{stage}-{attempt}-{worker_attempt}","created_at":stamp,"updated_at":stamp,"run_id":"run-1","stage":stage,"task_id":run["kanban_task_ids"][stage],"profile":PROFILES[stage],"backend":CLAUDE_BACKEND,"model":CLAUDE_TIER_MODELS[stage],"attempt":attempt,"worker_attempt":worker_attempt,"brief_hash":dispatch["brief_hash"],"worktree_path":run["worktree_path"],"pid":None,"state":"failed","stdout_path":None,"stderr_path":None,"stdout_sha256":None,"stderr_sha256":None,"exit_code":1,"note":"forced_failure","design_sha256":full_sha_hash(store.read("approved-design.json")),"plan_sha256":full_sha_hash(store.read("plan.json")),"dispatch_sha256":full_sha_hash({"run_id":"run-1","stage":stage,"task_id":run["kanban_task_ids"][stage],"profile":PROFILES[stage],"attempt":attempt,"brief_hash":dispatch["brief_hash"]}),"repair_context_sha256":full_sha_hash(rc) if rc else None,"process_identity":None}
+ record={"schema_version":"hcw/v1","kind":"worker","id":f"worker-run-1-{stage}-{attempt}-{worker_attempt}","created_at":stamp,"updated_at":stamp,"run_id":"run-1","stage":stage,"task_id":run["kanban_task_ids"][stage],"profile":PROFILES[stage],"backend":CLAUDE_BACKEND,"model":CLAUDE_TIER_MODELS[stage],"attempt":attempt,"worker_attempt":worker_attempt,"brief_hash":dispatch["brief_hash"],"worktree_path":run["worktree_path"],"pid":None,"state":"failed","stdout_path":None,"stderr_path":None,"stdout_sha256":None,"stderr_sha256":None,"exit_code":1,"note":"forced_failure","design_sha256":full_sha_hash(store.read("approved-design.json")),"plan_sha256":full_sha_hash(store.read("plan.json")),"dispatch_sha256":full_sha_hash({"run_id":"run-1","stage":stage,"task_id":run["kanban_task_ids"][stage],"profile":PROFILES[stage],"attempt":attempt,"brief_hash":dispatch["brief_hash"]}),"repair_context_sha256":full_sha_hash(rc),"process_identity":None}
  store.write_worker(stage,attempt,worker_attempt,record);return record
 
 def ready(repo:Path):
@@ -488,3 +488,127 @@ def test_contracts_accept_legacy_history_entries_without_attempt_base_sha(repo:P
  # Remove from current run too
  saved.pop("attempt_base_sha",None)
  assert validate_record(saved) is None,"legacy run without attempt_base_sha must be valid"
+
+
+# ── P1 RED: attempt-1 force-repair without a review context ──────────────────
+
+def test_force_repair_attempt1_exhaustion_creates_attempt2(repo:Path)->None:
+ """RED: force_repair on attempt 1 (no repair-context.json, 3 failed workers)
+ must succeed and produce attempt 2.  Currently fails with force_repair_not_authorized."""
+ s,run,_=ready(repo)
+ assert run["attempt"]==1,"precondition: we are on attempt 1"
+ # Exhaust all 3 RED workers on attempt 1 (no repair() has been called)
+ for _ in range(MAX_WORKER_ATTEMPTS):seed_failed_worker(repo,"red")
+ store=RunStore(repo,"run-1")
+ assert store._path("repair-context.json").exists() is False,"precondition: no repair context on attempt 1"
+ result=s.force_repair("run-1",act("red"),"red",board(repo,[]))
+ assert result["attempt"]==2,"force_repair on attempt 1 must produce attempt 2"
+ assert result["base_sha"]==run["base_sha"],"base_sha must remain immutable"
+ assert result.get("attempt_base_sha")==run["base_sha"],"attempt_base_sha must equal base_sha for attempt-1 force-repair"
+
+
+def test_force_repair_attempt1_repair_intent_accepted_by_dispatch_worker(repo:Path)->None:
+ """RED: after attempt-1 force_repair, dispatch_worker must accept the repair_intent
+ (i.e. _valid_repair_context passes for the force_repair_context kind)."""
+ s,run,_=ready(repo)
+ for _ in range(MAX_WORKER_ATTEMPTS):seed_failed_worker(repo,"red")
+ s.force_repair("run-1",act("red"),"red",board(repo,[]))
+ store=RunStore(repo,"run-1");run2=store.read()
+ assert run2["attempt"]==2
+ ctx=store.read("repair-context.json")
+ internal=store.read("internal.json") if store._path("internal.json").exists() else {}
+ # _valid_repair_context must accept the force_repair_context for attempt 2
+ from hermes_coding_workflow.service import _valid_repair_context
+ assert _valid_repair_context(ctx,run2,internal) is True,"force_repair_context must be valid for attempt 2"
+
+
+def test_force_repair_attempt1_adversarial_context_mismatch_rejected(repo:Path)->None:
+ """RED: after attempt-1 force_repair, _valid_repair_context must reject contexts
+ with wrong from_attempt, wrong force_base_sha, wrong kind, or extra fields."""
+ s,run,_=ready(repo)
+ for _ in range(MAX_WORKER_ATTEMPTS):seed_failed_worker(repo,"red")
+ s.force_repair("run-1",act("red"),"red",board(repo,[]))
+ store=RunStore(repo,"run-1");run2=store.read()
+ internal=store.read("internal.json") if store._path("internal.json").exists() else {}
+ ctx=store.read("repair-context.json")
+ from hermes_coding_workflow.service import _valid_repair_context
+ from hermes_coding_workflow.contracts import SCHEMA_VERSION as SV
+ # Wrong from_attempt
+ bad_from={**ctx,"from_attempt":99}
+ assert _valid_repair_context(bad_from,run2,internal) is False,"wrong from_attempt must be rejected"
+ # Wrong force_base_sha
+ bad_base={**ctx,"force_base_sha":"e"*40}
+ assert _valid_repair_context(bad_base,run2,internal) is False,"wrong force_base_sha must be rejected"
+ # Wrong kind
+ bad_kind={**ctx,"kind":"repair_context"}
+ assert _valid_repair_context(bad_kind,run2,internal) is False,"wrong kind must be rejected"
+ # Extra field injected
+ extra_field={**ctx,"injected":"evil"}
+ assert _valid_repair_context(extra_field,run2,internal) is False,"extra field must be rejected"
+
+
+# ── P1 RED: crash-boundary replay for attempt-1 force-repair ─────────────────
+
+def test_force_repair_attempt1_crash_at_context_boundary_is_replayable(repo:Path)->None:
+ """RED: crash after writing force_repair_intent+force_repair_context on attempt 1
+ (before worktree creation) must replay cleanly without requiring a review."""
+ s,run,_=ready(repo)
+ for _ in range(MAX_WORKER_ATTEMPTS):seed_failed_worker(repo,"red")
+ store=RunStore(repo,"run-1");run1=store.read()
+ internal=store.read("internal.json") if store._path("internal.json").exists() else {}
+ force_base_sha=run1.get("attempt_base_sha") or run1["base_sha"]
+ new_attempt=run1["attempt"]+1
+ branch=f"hcw/run-1/attempt-{new_attempt}"
+ worktree=repo/".worktrees"/f"hcw-run-1-{new_attempt}"
+ from hermes_coding_workflow.contracts import SCHEMA_VERSION as SV
+ # Simulate the force_repair_context that would be written for attempt 1
+ force_ctx={"schema_version":SV,"kind":"force_repair_context","from_attempt":run1["attempt"],"force_base_sha":force_base_sha}
+ force_intent={"operation":"force_repair","status":"pending","from_attempt":run1["attempt"],"attempt":new_attempt,"branch":branch,"worktree_path":str(worktree),"base_sha":force_base_sha,"board":run1["kanban_board"],"repair_context_sha256":full_sha_hash(force_ctx)}
+ internal["force_repair_intent"]=force_intent
+ RunStore._atomic(store._path("internal.json"),internal)
+ RunStore._atomic(store._path("repair-context.json"),force_ctx)
+ result=s.force_repair("run-1",act("red"),"red",board(repo,[]))
+ assert result["attempt"]==new_attempt,"crash replay must complete at the expected new attempt"
+ assert result["attempt_base_sha"]==force_base_sha
+
+
+# ── P2 RED: worker authority fields in force_repair failed-worker loop ────────
+
+def _setup_attempt2_exhausted_for_p2(repo:Path):
+ """Return (svc, orig_base_sha) with attempt-2 exhausted (3 failed RED workers)."""
+ s,run,candidate_sha=_do_attempt1_through_review(repo)
+ s.repair("run-1",act("spec-review"),board(repo,[]))
+ for _ in range(MAX_WORKER_ATTEMPTS):seed_failed_worker(repo,"red")
+ return s,run["base_sha"],candidate_sha
+
+
+def _seed_failed_worker_with_field_override(repo:Path,stage:str,overrides:dict)->None:
+ """Seed a failed worker for the current attempt with specific field overrides."""
+ store=RunStore(repo,"run-1");run=store.read();attempt=run["attempt"]
+ worker_attempt=store.latest_worker_attempt(stage,attempt)+1
+ dispatch=run["dispatches"][stage];stamp="2026-08-22T00:00:00Z"
+ rc=store.read("repair-context.json") if store._path("repair-context.json").exists() else None
+ base={"schema_version":"hcw/v1","kind":"worker","id":f"worker-run-1-{stage}-{attempt}-{worker_attempt}","created_at":stamp,"updated_at":stamp,"run_id":"run-1","stage":stage,"task_id":run["kanban_task_ids"][stage],"profile":PROFILES[stage],"backend":CLAUDE_BACKEND,"model":CLAUDE_TIER_MODELS[stage],"attempt":attempt,"worker_attempt":worker_attempt,"brief_hash":dispatch["brief_hash"],"worktree_path":run["worktree_path"],"pid":None,"state":"failed","stdout_path":None,"stderr_path":None,"stdout_sha256":None,"stderr_sha256":None,"exit_code":1,"note":"forced_failure","design_sha256":full_sha_hash(store.read("approved-design.json")),"plan_sha256":full_sha_hash(store.read("plan.json")),"dispatch_sha256":full_sha_hash({"run_id":"run-1","stage":stage,"task_id":run["kanban_task_ids"][stage],"profile":PROFILES[stage],"attempt":attempt,"brief_hash":dispatch["brief_hash"]}),"repair_context_sha256":full_sha_hash(rc),"process_identity":None}
+ record={**base,**overrides}
+ # Use _atomic directly to bypass validate_worker when testing bad field values
+ RunStore._atomic(store.worker_path(stage,attempt,worker_attempt),record)
+
+
+@pytest.mark.parametrize("bad_field,bad_value",[
+ ("backend","wrong-backend"),
+ ("model","wrong-model"),
+ ("design_sha256","a"*64),
+ ("plan_sha256","b"*64),
+ ("dispatch_sha256","c"*64),
+])
+def test_force_repair_rejects_worker_with_wrong_authority_field(repo:Path,bad_field:str,bad_value:object)->None:
+ """RED: force_repair must reject workers with wrong backend/model/design/plan/dispatch binding.
+ Currently force_repair does not check these fields so these tests fail (no error raised)."""
+ s,_,_=_do_attempt1_through_review(repo)
+ s.repair("run-1",act("spec-review"),board(repo,[]))
+ # Seed MAX-1 correct workers
+ for _ in range(MAX_WORKER_ATTEMPTS-1):seed_failed_worker(repo,"red")
+ # Seed the last worker with the bad field
+ _seed_failed_worker_with_field_override(repo,"red",{bad_field:bad_value})
+ with pytest.raises(WorkflowError,match="force_repair_not_authorized"):
+  s.force_repair("run-1",act("red"),"red",board(repo,[]))
