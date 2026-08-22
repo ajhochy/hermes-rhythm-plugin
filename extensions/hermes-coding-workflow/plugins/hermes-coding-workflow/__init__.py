@@ -551,7 +551,8 @@ def _terminal_allowed(run: dict[str, Any] | None, stage: str | None, args: dict[
         if subcommand == "check":
             check_index = 4
             if len(argv) > 5 and argv[4] == "--timeout":
-                if not argv[5].isdigit() or int(argv[5]) <= 0:
+                timeout_token = argv[5]
+                if not timeout_token.isascii() or not timeout_token.isdigit() or not timeout_token.strip("0"):
                     return False
                 check_index = 6
             if len(argv) <= check_index + 2 or argv[check_index + 1] != "--":

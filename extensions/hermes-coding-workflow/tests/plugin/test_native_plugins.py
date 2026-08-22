@@ -277,10 +277,18 @@ def test_stage_worker_bootstrap_derives_registered_run_and_guides_only_its_activ
         "live": f"check {repo} run-test --timeout 600 live -- pytest",
         "complete": f"complete {repo} run-test",
     }
+    assert plugin.__file__ is not None
+    launcher = Path(plugin.__file__).resolve().parent / "runtime" / "bin" / "hcw"
     assert plugin._pre_tool_call(
         tool_name="terminal",
-        args={"command": f"{Path(plugin.__file__).resolve().parent / 'runtime' / 'bin' / 'hcw'} {authorized_commands[stage]}"},
+        args={"command": f"{launcher} {authorized_commands[stage]}"},
     ) is None
+    if stage in {"red", "green", "verify", "live"}:
+        malformed = authorized_commands[stage].replace("--timeout 600", "--timeout ²")
+        assert plugin._pre_tool_call(
+            tool_name="terminal",
+            args={"command": f"{launcher} {malformed}"},
+        ) == {"action": "block", "message": "terminal command is not allowlisted for this workflow stage"}
 
 
 @pytest.mark.parametrize(
