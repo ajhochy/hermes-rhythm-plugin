@@ -8,6 +8,18 @@ from typing import Any
 SCHEMA_VERSION = "hcw/v1"
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
 SHA = re.compile(r"[0-9a-f]{40}\Z")
+# Bounded workflow depth. The intended lifecycle is exactly ONE Kanban-owned
+# root workspace with ONE HCW-controlled attempt worktree beneath it, i.e. a
+# single `.worktrees/hcw-<run>-<attempt>` segment. A repo path with more than
+# this many `.worktrees` segments means a workflow was bootstrapped inside
+# another workflow's attempt worktree -- the shape that produced 49 cards
+# nested five deep and one workspace with eight nested segments.
+WORKTREE_DIR = ".worktrees"
+MAX_WORKFLOW_DEPTH = 1
+# Bounded repair. After this many attempts on one canonical run, HCW blocks
+# the run instead of creating another attempt graph. Fan-out is never the
+# answer to a failing stage.
+MAX_ATTEMPTS = 5
 STAGES = ("design", "plan", "red", "green", "spec-review", "quality-review", "verify", "live", "complete")
 PROFILES = {"design": "dev-planner", "plan": "dev-planner", "red": "dev-contract", "green": "dev-builder", "spec-review": "dev-spec-reviewer", "quality-review": "dev-quality-reviewer", "verify": "dev-verifier", "live": "dev-verifier", "complete": "dev-recorder"}
 

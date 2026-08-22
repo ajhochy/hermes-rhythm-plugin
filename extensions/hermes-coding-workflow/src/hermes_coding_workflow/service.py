@@ -6,7 +6,7 @@ from datetime import datetime,timezone
 from pathlib import Path
 from typing import Any
 from .adapters import GitAdapter,KanbanAdapter
-from .contracts import CLAUDE_BACKEND,CLAUDE_STAGES,CLAUDE_TIER_MODELS,PROFILES,SCHEMA_VERSION,STAGES,full_sha,valid_run_id,validate_design,validate_plan,validate_record,validate_review,validate_worker
+from .contracts import CLAUDE_BACKEND,CLAUDE_STAGES,CLAUDE_TIER_MODELS,MAX_ATTEMPTS,MAX_WORKFLOW_DEPTH,PROFILES,SCHEMA_VERSION,STAGES,WORKTREE_DIR,full_sha,valid_run_id,validate_design,validate_plan,validate_record,validate_review,validate_worker
 from . import process
 from .safety import open_nofollow_write_fd,redact,validate_controlled_worktree
 from .store import RunStore
@@ -78,6 +78,22 @@ def _authoritative_intent(internal:dict[str,Any],attempt:int)->dict[str,Any]:
   return intent if isinstance(intent,dict) else {}
  intent=internal.get("repair_intent")
  return intent if isinstance(intent,dict) and intent.get("attempt")==attempt else {}
+def _worktree_depth(path:Path)->int:
+ """Count nested HCW-controlled worktree segments in a repo path."""
+ return sum(1 for part in path.resolve().parts if part==WORKTREE_DIR)
+def _assert_bootstrap_allowed(repo:Path)->None:
+ """Fail closed BEFORE any worktree or card exists when a run would be
+ bootstrapped from inside a workflow-controlled worktree.
+
+ Two structural signals, neither of them a title or a heuristic:
+   * `.hermes/hcw-run.json` -- the locator HCW itself writes into every
+     attempt worktree. Its presence means `repo` IS an attempt worktree, so
+     the caller is a stage, and a stage may never become a package root.
+   * `.worktrees` segment count -- bounds nesting even for a path whose
+     locator was lost or never written.
+ """
+ if (repo/".hermes"/"hcw-run.json").is_file():raise WorkflowError("nested_workflow_forbidden")
+ if _worktree_depth(repo)>MAX_WORKFLOW_DEPTH:raise WorkflowError("workflow_depth_exceeded")
 def _worker_process_alive(record:dict[str,Any])->bool:
  """A worker record is only "alive" when its recorded `process_identity`
  matches a live process's current argv suffix and start time. A bare PID
@@ -147,6 +163,9 @@ class WorkflowService:
    run=store.read();self._reconcile(store,run);return run
  def show(self,rid:str)->dict[str,Any]:return self.reconcile(rid)
  def create_run(self,package:str,scope:list[str],run_id:str,board_name:str,kanban:KanbanAdapter|None=None,goal:str="unspecified") -> dict[str,Any]:
+  # A machine-generated stage must never bootstrap a workflow. Checked FIRST,
+  # before the intent store, the board, or any filesystem write.
+  _assert_bootstrap_allowed(self.repo)
   if not scope or any(not x or x.startswith("/") or ".." in Path(x).parts for x in scope):raise WorkflowError("path_scope_violation")
   if (self.repo/".worktrees").is_symlink() or (self.repo/".hermes").is_symlink():raise WorkflowError("path_scope_violation")
   store=self._store(run_id)
@@ -186,7 +205,7 @@ class WorkflowService:
    if prior.get("status") in {"graph_created","completed"} and isinstance(persisted_tasks,dict) and set(persisted_tasks)==set(STAGES) and all(isinstance(v,str) and v for v in persisted_tasks.values()) and isinstance(persisted_hashes,dict) and set(persisted_hashes)==set(STAGES) and all(isinstance(v,str) and len(v)==64 for v in persisted_hashes.values()):
     tasks=dict(persisted_tasks);brief_hashes=dict(persisted_hashes)
    else:
-    board.ensure_board();tasks=board.graph(run_id,branch,worktree.resolve(),PROFILES,attempt=1,scope=scope,goal=goal,base_sha=base);brief_hashes={stage:board.last_briefs[stage]["sha256"] for stage in STAGES}
+    board.ensure_board();tasks=board.graph(run_id,branch,worktree.resolve(),PROFILES,attempt=1,scope=scope,goal=goal,base_sha=base,package_id=package);brief_hashes={stage:board.last_briefs[stage]["sha256"] for stage in STAGES}
     internal=store.read("internal.json");internal["create_intent"].update({"status":"graph_created","task_ids":tasks,"brief_hashes":brief_hashes});RunStore._atomic(store._path("internal.json"),internal)
    stamp=now();run={"schema_version":SCHEMA_VERSION,"kind":"run","id":run_id,"revision":0,"created_at":stamp,"updated_at":stamp,"package_id":package,"base_sha":base,"head_sha":base,"attempt_base_sha":base,"branch":branch,"repo_root":str(self.repo),"worktree_path":str(worktree.resolve()),"status":"awaiting_design","scope":scope,"attempt":1,"attempt_history":[],"kanban_board":board.board,"kanban_task_ids":tasks,"stage_profiles":PROFILES,"stage_statuses":{stage:("active" if stage=="design" else "pending") for stage in STAGES},"setup":{"created":["worktree",*tasks.values()]},"goal":goal,"dispatches":{stage:{"stage":stage,"task_id":tasks[stage],"profile":PROFILES[stage],"attempt":1,"brief_hash":brief_hashes[stage],"session_id":"unavailable","model":"unavailable","provider":"unavailable"} for stage in STAGES}}
    self._boards[run_id]=board;store.write_run(run,None)
@@ -194,6 +213,42 @@ class WorkflowService:
   except Exception as exc:
    if isinstance(exc,WorkflowError):raise
    raise WorkflowError("setup_failed")
+ def _assert_repair_budget(self,run:dict[str,Any],board:KanbanAdapter|None=None,internal:dict[str,Any]|None=None)->None:
+  """Bounded repair: refuse a further attempt once MAX_ATTEMPTS is reached.
+
+  A failing stage is repaired within its own canonical run, and only so many
+  times. At the ceiling HCW blocks exactly ONE card -- the root of this
+  run's stage chain -- with an actionable reason, and marks the run
+  blocked_setup. It never calls the generic decomposer, never changes
+  package identity, and never creates another graph. Fan-out is not a
+  recovery strategy.
+  """
+  if run.get("attempt",1)<MAX_ATTEMPTS:return
+  # A crash REPLAY of an attempt whose graph was already created must still
+  # converge, not be refused: the cards and worktree exist, so failing here
+  # would strand a half-built attempt. The ceiling only refuses creating a
+  # genuinely NEW attempt.
+  if isinstance(internal,dict):
+   want=run.get("attempt",1)+1
+   for key in ("repair_intent","force_repair_intent"):
+    intent=internal.get(key)
+    if isinstance(intent,dict) and intent.get("attempt")==want and intent.get("status") in {"graph_created","completed"}:return
+  rid=run["id"];root=run["kanban_task_ids"]["design"]
+  reason=(f"HCW run {rid} (package {run.get('package_id')}) exhausted its repair "
+          f"budget after {run.get('attempt')} of {MAX_ATTEMPTS} attempts on branch "
+          f"{run.get('branch')}. Inspect .hermes/workflows/{rid}/ for the last "
+          f"stage failure, then either widen scope with `hcw amend-scope` or "
+          f"close this run out manually. No further attempts will be created.")
+  s=self._store(rid)
+  if run.get("status")!="blocked_setup":
+   run["status"]="blocked_setup";self._bump(s,run)
+  k=board or self._boards.get(rid)
+  if k is None:
+   internal=s.read("internal.json") if s._path("internal.json").exists() else {}
+   k=KanbanAdapter(self.repo,run["kanban_board"],home=Path(internal["kanban_home"]) if isinstance(internal.get("kanban_home"),str) else None)
+  try:k.block(root,reason)
+  except Exception:pass
+  raise WorkflowError("repair_ceiling_reached")
  def approve_design(self,rid:str,actor:ActorContext,payload:dict[str,Any])->dict[str,Any]:
   s=self._store(rid)
   with s.locked():
@@ -376,6 +431,7 @@ class WorkflowService:
    else:raise WorkflowError("repair_not_authorized")
    repair_base_sha=repair_context["review"]["reviewed_sha"]
    if (self.repo/".worktrees").is_symlink() or (self.repo/".hermes").is_symlink():raise WorkflowError("path_scope_violation")
+   self._assert_repair_budget(run,board,internal)
    old=Path(run["worktree_path"]);attempt=run["attempt"]+1;branch=f"hcw/{rid}/attempt-{attempt}";worktree=self.repo/".worktrees"/f"hcw-{rid}-{attempt}"
    if worktree.is_symlink():raise WorkflowError("path_scope_violation")
    k=board or self._boards.get(rid) or KanbanAdapter(self.repo,run["kanban_board"],home=Path(internal["kanban_home"]) if isinstance(internal.get("kanban_home"),str) else None)
@@ -401,7 +457,7 @@ class WorkflowService:
     if prior.get("status") in {"graph_created","completed"} and isinstance(persisted_tasks,dict) and set(persisted_tasks)==set(STAGES) and all(isinstance(v,str) and v for v in persisted_tasks.values()) and isinstance(persisted_hashes,dict) and set(persisted_hashes)==set(STAGES) and all(isinstance(v,str) and len(v)==64 for v in persisted_hashes.values()):
      tasks=dict(persisted_tasks);brief_hashes=dict(persisted_hashes)
     else:
-     tasks=k.graph(rid,branch,worktree.resolve(),PROFILES,attempt=attempt,scope=run["scope"],goal=run["goal"],base_sha=repair_base_sha);brief_hashes={stage:k.last_briefs[stage]["sha256"] for stage in STAGES}
+     tasks=k.graph(rid,branch,worktree.resolve(),PROFILES,attempt=attempt,scope=run["scope"],goal=run["goal"],base_sha=repair_base_sha,package_id=run["package_id"]);brief_hashes={stage:k.last_briefs[stage]["sha256"] for stage in STAGES}
      internal=s.read("internal.json");internal["repair_intent"].update({"status":"graph_created","task_ids":tasks,"brief_hashes":brief_hashes});RunStore._atomic(s._path("internal.json"),internal)
     draft=dict(run);draft.update({"attempt":attempt,"kanban_task_ids":tasks,"dispatches":{stage:{"stage":stage,"task_id":tasks[stage],"profile":PROFILES[stage],"attempt":attempt,"brief_hash":brief_hashes[stage],"session_id":"unavailable","model":"unavailable","provider":"unavailable"} for stage in STAGES}})
     self._attach_plan_briefs(s,draft,k,s.read("plan.json"));self._persist_authoritative_briefs(s,draft)
@@ -468,6 +524,7 @@ class WorkflowService:
     history=run.get("attempt_history")
     if not isinstance(reviewed_sha,str) or not full_sha(reviewed_sha) or not isinstance(history,list) or not history or history[-1].get("head_sha")!=reviewed_sha:raise WorkflowError("force_repair_not_authorized")
     force_base_sha=reviewed_sha
+   self._assert_repair_budget(run,board,internal)
    old=Path(run["worktree_path"]);new_attempt=attempt+1;branch=f"hcw/{rid}/attempt-{new_attempt}";worktree=self.repo/".worktrees"/f"hcw-{rid}-{new_attempt}"
    if worktree.is_symlink():raise WorkflowError("path_scope_violation")
    k=board or self._boards.get(rid) or KanbanAdapter(self.repo,run["kanban_board"],home=Path(internal["kanban_home"]) if isinstance(internal.get("kanban_home"),str) else None)
@@ -516,7 +573,7 @@ class WorkflowService:
      if not isinstance(pri_int.get("repair_intent"),dict) or pri_int["repair_intent"].get("attempt")!=new_attempt:
       pri_int["repair_intent"]={"operation":"repair","status":"graph_created","from_attempt":attempt,"attempt":new_attempt,"branch":branch,"worktree_path":str(worktree),"base_sha":force_base_sha,"board":run["kanban_board"],"repair_context_sha256":full_sha_hash(force_context),"task_ids":tasks,"brief_hashes":brief_hashes};RunStore._atomic(s._path("internal.json"),pri_int)
     else:
-     tasks=k.graph(rid,branch,worktree.resolve(),PROFILES,attempt=new_attempt,scope=run["scope"],goal=run["goal"],base_sha=force_base_sha);brief_hashes={st:k.last_briefs[st]["sha256"] for st in STAGES}
+     tasks=k.graph(rid,branch,worktree.resolve(),PROFILES,attempt=new_attempt,scope=run["scope"],goal=run["goal"],base_sha=force_base_sha,package_id=run["package_id"]);brief_hashes={st:k.last_briefs[st]["sha256"] for st in STAGES}
      internal2=s.read("internal.json");internal2["force_repair_intent"].update({"status":"graph_created","task_ids":tasks,"brief_hashes":brief_hashes})
      internal2["repair_intent"]={"operation":"repair","status":"graph_created","from_attempt":attempt,"attempt":new_attempt,"branch":branch,"worktree_path":str(worktree),"base_sha":force_base_sha,"board":run["kanban_board"],"repair_context_sha256":full_sha_hash(force_context),"task_ids":tasks,"brief_hashes":brief_hashes}
      RunStore._atomic(s._path("internal.json"),internal2)
