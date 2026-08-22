@@ -747,6 +747,11 @@ def test_guard_fails_closed_without_identity_and_enforces_exact_lifecycle_comman
     red = {"schema_version":"hcw/v1", "kind":"evidence", "id":"EV-red", "created_at":"2026-08-19T00:00:00Z", "run_id":"run-test", "type":"red", "actor":{"profile":"dev-contract", "task_id":"task-red"}, "commit_sha":state["base_sha"], "command":["python","-m","unittest"], "exit_code":1, "artifact_path":"artifacts/red.log", "artifact_sha256":"a" * 64, "previous_evidence_hash":None}
     red["evidence_hash"] = hashlib.sha256(json.dumps(red, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     (repo / ".hermes" / "workflows" / "run-test" / "evidence.jsonl").write_text(json.dumps(red) + "\n")
+    launcher=(ROOT / "plugins" / "hermes-coding-workflow" / "runtime" / "bin" / "hcw").resolve()
+    amend=f"{launcher} amend-scope {repo.resolve()} run-test --add-scope plugins/github_intake/** --reason approved --expected-revision {state['revision']} --expected-head {state['head_sha']}"
+    assert plugin._pre_tool_call(tool_name="terminal",args={"command":amend}) is None
+    assert plugin._pre_tool_call(tool_name="terminal",args={"command":amend.replace("plugins/github_intake/**","**")})["action"] == "block"
+    assert plugin._pre_tool_call(tool_name="terminal",args={"command":amend+" --add-scope plugins/other/**"})["action"] == "block"
     assert plugin._pre_tool_call(tool_name="write_file", args={"path":"app.py"}) is None
     assert plugin._pre_tool_call(tool_name="write_file", args={"path":"README.md"})["action"] == "block"
     assert plugin._pre_tool_call(tool_name="write_file", args={"path":str(worktree.parent / "outside.py")})["action"] == "block"

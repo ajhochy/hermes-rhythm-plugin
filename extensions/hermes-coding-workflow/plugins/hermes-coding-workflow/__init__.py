@@ -18,7 +18,7 @@ _WRITE_TOOLS = {"write_file", "patch", "apply_patch", "execute_code"}
 _TERMINAL_TOOLS = {"terminal", "exec_command", "run_terminal"}
 _TEST_PATH = re.compile(r"(?:^|/)(?:tests?/.*|test_[^/]+|[^/]+_test\.[^/]+|[^/]+\.(?:test|spec)\.[^/]+)$")
 _READ_ONLY_GIT = {"status", "diff", "log", "show", "rev-parse"}
-_HCW_COMMANDS = {"create-run", "show", "approve-design", "approve-plan", "check", "commit", "review", "verify", "complete", "repair", "dispatch-worker", "worker-status"}
+_HCW_COMMANDS = {"create-run", "show", "approve-design", "approve-plan", "check", "commit", "review", "verify", "complete", "repair", "amend-scope", "dispatch-worker", "worker-status"}
 _CLAUDE_WORKER_COMMANDS = {"dispatch-worker", "worker-status"}
 _CLAUDE_WORKER_STAGES = {"red", "green", "quality-review", "complete"}
 _STAGE_PAYLOAD_NAMES = {
@@ -545,7 +545,7 @@ def _terminal_allowed(run: dict[str, Any] | None, stage: str | None, args: dict[
             return False
         if not _is_exact_authoritative_repo(argv[2], run):
             return False
-        expected = {"design":{"approve-design"}, "plan":{"approve-plan"}, "red":{"check","dispatch-worker","worker-status"}, "green":{"check","commit","dispatch-worker","worker-status"}, "spec-review":{"review"}, "quality-review":{"review","dispatch-worker","worker-status"}, "verify":{"check","verify"}, "live":{"check"}, "complete":{"complete","dispatch-worker","worker-status"}}
+        expected = {"design":{"approve-design"}, "plan":{"approve-plan"}, "red":{"check","dispatch-worker","worker-status"}, "green":{"check","commit","amend-scope","dispatch-worker","worker-status"}, "spec-review":{"review"}, "quality-review":{"review","dispatch-worker","worker-status"}, "verify":{"check","verify"}, "live":{"check"}, "complete":{"complete","dispatch-worker","worker-status"}}
         if subcommand not in expected.get(stage, set()):
             return False
         if subcommand == "check":
@@ -560,6 +560,14 @@ def _terminal_allowed(run: dict[str, Any] | None, stage: str | None, args: dict[
             check_type = argv[check_index]
             expected_check = {"red":"red","green":"green","verify":"full","live":"live"}.get(stage) if stage is not None else None
             return check_type == expected_check or (stage == "verify" and check_type == "security")
+        if subcommand == "amend-scope":
+            if len(argv) != 12 or argv[4] != "--add-scope" or argv[6] != "--reason" or argv[8] != "--expected-revision" or argv[10] != "--expected-head":
+                return False
+            parts = argv[5].split("/")
+            if len(parts) < 3 or parts[-1] != "**" or any(part in {"", ".", ".."} for part in parts) or any(any(ch in part for ch in "*?[") for part in parts[:-1]):
+                return False
+            revision = argv[9]
+            return bool(argv[7]) and revision.isascii() and revision.isdigit() and int(revision) == run.get("revision") and re.fullmatch(r"[0-9a-f]{40}", argv[11]) is not None and argv[11] == run.get("head_sha")
         if subcommand in _CLAUDE_WORKER_COMMANDS:
             if len(argv) < 5 or not _is_exact_authoritative_repo(argv[2], run) or argv[4] != stage:
                 return False

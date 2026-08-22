@@ -59,6 +59,8 @@ def seed_worker_success(repo:Path,stage:str)->dict:
 def test_scope_amendment_is_additive_head_bound_and_audited(repo:Path)->None:
  s,run,_=ready(repo);store=RunStore(repo,"run-1");state=store.read();state["status"]="awaiting_green";state["stage_statuses"]["design"]="completed";state["stage_statuses"]["plan"]="completed";state["stage_statuses"]["red"]="completed";state["stage_statuses"]["green"]="active";store.write_json("run.json",state)
  amended=s.amend_scope("run-1",act("green"),["plugins/github_intake/**"],reason="user-approved importable package",expected_revision=state["revision"],expected_head=state["head_sha"])
+ replayed=s.amend_scope("run-1",act("green"),["plugins/github_intake/**"],reason="user-approved importable package",expected_revision=state["revision"],expected_head=state["head_sha"])
+ assert replayed==amended
  assert amended["scope"]==["app.txt","plugins/github_intake/**"]
  audit=store.read("scope-amendments.json")["amendments"][-1]
  assert audit["attempt"]==1 and audit["added_scope"]==["plugins/github_intake/**"] and audit["reason"]=="user-approved importable package"

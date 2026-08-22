@@ -308,21 +308,25 @@ class WorkflowService:
    run=s.read();self._actor(run,actor,"green")
    if run["status"]!="awaiting_green" or run["stage_statuses"].get("green")!="active":raise WorkflowError("scope_amendment_not_authorized")
    if not isinstance(reason,str) or not reason.strip() or len(reason)>512 or not isinstance(added_scope,list) or not added_scope:raise WorkflowError("invalid_scope_amendment")
-   normalized=[]
+   validated=[]
    for pattern in added_scope:
     if not isinstance(pattern,str) or "\\" in pattern or pattern.startswith("/"):raise WorkflowError("invalid_scope_amendment")
     parts=pattern.split("/")
     if len(parts)<3 or parts[-1]!="**" or any(part in {"",".",".."} for part in parts) or any(any(ch in part for ch in "*?[") for part in parts[:-1]):raise WorkflowError("invalid_scope_amendment")
-    if pattern not in run["scope"] and pattern not in normalized:normalized.append(pattern)
-   if not normalized:raise WorkflowError("invalid_scope_amendment")
+    if pattern not in validated:validated.append(pattern)
+   if not validated:raise WorkflowError("invalid_scope_amendment")
    internal=s.read("internal.json") if s._path("internal.json").exists() else {}
    prior=internal.get("scope_amendment_intent")
-   requested={"operation":"amend_scope","status":"pending","id":"scope-amendment-"+uuid.uuid4().hex,"attempt":run["attempt"],"expected_revision":expected_revision,"expected_head":expected_head,"old_scope":list(run["scope"]),"added_scope":normalized,"reason":reason.strip(),"actor":actor.record()}
+   replay_keys={"operation":"amend_scope","attempt":run["attempt"],"expected_revision":expected_revision,"expected_head":expected_head,"added_scope":validated,"reason":reason.strip(),"actor":actor.record()}
    if isinstance(prior,dict) and prior.get("status")=="pending":
-    if any(prior.get(key)!=value for key,value in requested.items() if key not in {"id","status","old_scope"}):raise WorkflowError("scope_amendment_stale")
+    if any(prior.get(key)!=value for key,value in replay_keys.items()):raise WorkflowError("scope_amendment_stale")
     requested=prior
-   elif run["revision"]!=expected_revision or run["head_sha"]!=expected_head:raise WorkflowError("scope_amendment_stale")
    else:
+    if isinstance(prior,dict) and prior.get("status")=="completed" and all(prior.get(key)==value for key,value in replay_keys.items()) and all(pattern in run["scope"] for pattern in validated):return run
+    if run["revision"]!=expected_revision or run["head_sha"]!=expected_head:raise WorkflowError("scope_amendment_stale")
+    normalized=[pattern for pattern in validated if pattern not in run["scope"]]
+    if not normalized:raise WorkflowError("invalid_scope_amendment")
+    requested={**replay_keys,"status":"pending","id":"scope-amendment-"+uuid.uuid4().hex,"old_scope":list(run["scope"]),"added_scope":normalized}
     internal["scope_amendment_intent"]=requested;RunStore._atomic(s._path("internal.json"),internal)
    missing=[pattern for pattern in requested["added_scope"] if pattern not in run["scope"]]
    if missing:run["scope"].extend(missing);self._bump(s,run)
