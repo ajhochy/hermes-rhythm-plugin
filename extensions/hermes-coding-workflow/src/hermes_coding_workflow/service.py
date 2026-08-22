@@ -12,6 +12,7 @@ from .safety import open_nofollow_write_fd,redact,validate_controlled_worktree
 from .store import RunStore
 def now()->str:return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00","Z")
 def full_sha_hash(value:object)->str:return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+MAX_WORKER_ATTEMPTS=3
 def _runner_pythonpath(existing:str|None)->str:
  """Build the `worker_runner` subprocess's PYTHONPATH from the authoritative
  package site -- the directory containing this very `hermes_coding_workflow`
@@ -185,6 +186,12 @@ class WorkflowService:
    k=self._board_for(s,run)
    self._attach_plan_briefs(s,run,k,record);self._persist_authoritative_briefs(s,run)
    run["status"]="awaiting_red";self._advance(run,"plan","red");self._bump(s,run);self._reconcile(s,run);return record
+ def _record_worker_retry_authorization(self,s:RunStore,run:dict[str,Any],stage:str,gate:str,head:str)->None:
+  worker=self._require_succeeded_worker(s,run,stage)
+  internal=s.read("internal.json") if s._path("internal.json").exists() else {}
+  authorizations=internal.setdefault("worker_retry_authorizations",{})
+  authorizations[stage]={"attempt":run["attempt"],"worker_id":worker["id"],"head_sha":head,"gate":gate,"created_at":now(),"consumed_at":None}
+  RunStore._atomic(s._path("internal.json"),internal)
  def check(self,rid:str,actor:ActorContext,typ:str,argv:list[str],timeout:int=60)->dict[str,Any]:
   if typ not in {"red","green","full","security","live"} or not argv:raise WorkflowError("invalid_check")
   s=self._store(rid)
@@ -198,12 +205,20 @@ class WorkflowService:
    check_env={"PATH":os.environ.get("PATH", ""),"PYTHONDONTWRITEBYTECODE":"1","PYTHONPYCACHEPREFIX":os.environ.get("PYTHONPYCACHEPREFIX","/tmp/hcw-pyc")}
    if os.environ.get("HOME"):check_env["HOME"]=os.environ["HOME"]
    try:r=subprocess.run(argv,cwd=Path(run["worktree_path"]),text=True,capture_output=True,timeout=timeout,env=check_env)
-   except subprocess.TimeoutExpired as exc:raise WorkflowError("check_timeout") from exc
+   except subprocess.TimeoutExpired as exc:
+    if typ in {"red","green"}:self._record_worker_retry_authorization(s,run,typ,"check_timeout",head)
+    raise WorkflowError("check_timeout") from exc
    must_fail=typ=="red"
-   if (must_fail and r.returncode==0) or (not must_fail and r.returncode!=0):raise WorkflowError("unexpected_check_exit")
-   if typ=="red" and (g.head()!=head or any(not self._test_path(run,p) for p in g.paths(head))):raise WorkflowError("red_mutation_violation")
+   if (must_fail and r.returncode==0) or (not must_fail and r.returncode!=0):
+    if typ in {"red","green"}:self._record_worker_retry_authorization(s,run,typ,"unexpected_check_exit",head)
+    raise WorkflowError("unexpected_check_exit")
+   if typ=="red" and (g.head()!=head or any(not self._test_path(run,p) for p in g.paths(head))):
+    self._record_worker_retry_authorization(s,run,typ,"red_mutation_violation",head)
+    raise WorkflowError("red_mutation_violation")
    if typ=="green":
-    if head==run["base_sha"] or g.dirty() or not all(any(fnmatch.fnmatch(p,pat) for pat in run["scope"]) for p in g.paths(run["base_sha"])):raise WorkflowError("path_scope_violation")
+    if head==run["base_sha"] or g.dirty() or not all(any(fnmatch.fnmatch(p,pat) for pat in run["scope"]) for p in g.paths(run["base_sha"])):
+     self._record_worker_retry_authorization(s,run,typ,"path_scope_violation",head)
+     raise WorkflowError("path_scope_violation")
     run["head_sha"]=head;run["status"]="awaiting_spec_review";self._advance(run,"green","spec-review")
    elif typ=="red":run["status"]="awaiting_green";self._advance(run,"red","green")
    artifact_dir=s.root/"artifacts"
@@ -226,12 +241,18 @@ class WorkflowService:
    run=s.read();self._actor(run,actor,"green")
    if run["status"]!="awaiting_green":raise WorkflowError("check_not_ready")
    self._require_succeeded_worker(s,run,"green")
-   g=self._workgit(run);paths=sorted(g.paths(run["base_sha"]))
-   if not paths or not all(any(fnmatch.fnmatch(path,pat) for pat in run["scope"]) for path in paths):raise WorkflowError("path_scope_violation")
+   g=self._workgit(run);paths=sorted(g.paths(run["base_sha"]));head=g.head()
+   if not paths or not all(any(fnmatch.fnmatch(path,pat) for pat in run["scope"]) for path in paths):
+    self._record_worker_retry_authorization(s,run,"green","path_scope_violation",head)
+    raise WorkflowError("path_scope_violation")
    result=subprocess.run(["git","-C",str(run["worktree_path"]),"add","--",*paths],text=True,capture_output=True)
-   if result.returncode:raise WorkflowError("commit_failed")
+   if result.returncode:
+    self._record_worker_retry_authorization(s,run,"green","commit_failed",head)
+    raise WorkflowError("commit_failed")
    result=subprocess.run(["git","-C",str(run["worktree_path"]),"commit","--no-verify","-m",message,"--",*paths],text=True,capture_output=True)
-   if result.returncode:raise WorkflowError("commit_failed")
+   if result.returncode:
+    self._record_worker_retry_authorization(s,run,"green","commit_failed",g.head())
+    raise WorkflowError("commit_failed")
    return {"commit_sha":g.head(),"paths":paths}
  def review(self,rid:str,actor:ActorContext,payload:dict[str,Any])->dict[str,Any]:
   s=self._store(rid)
@@ -307,7 +328,7 @@ class WorkflowService:
     if source.exists():shutil.move(str(source),str(archive/name))
    run["attempt_history"].append({"attempt":run["attempt"],"worktree_path":str(old),"head_sha":run["head_sha"]});run.update({"attempt":attempt,"branch":branch,"worktree_path":str(worktree.resolve()),"head_sha":run["base_sha"],"kanban_task_ids":tasks,"dispatches":draft["dispatches"],"stage_statuses":{stage:("completed" if stage in {"design","plan"} else "active" if stage=="red" else "pending") for stage in STAGES},"status":"awaiting_red"});self._bump(s,run)
    internal=s.read("internal.json");internal["repair_intent"]["status"]="completed";RunStore._atomic(s._path("internal.json"),internal);self._reconcile(s,run);return run
- def dispatch_worker(self,rid:str,stage:str)->dict[str,Any]:
+ def dispatch_worker(self,rid:str,stage:str,*,retry_succeeded:bool=False)->dict[str,Any]:
   """Launch the sole eligible Claude-backed stage as a detached, async worker.
 
   This is a Hermes control-plane action at the service/CLI layer: unlike
@@ -343,11 +364,19 @@ class WorkflowService:
    latest=s.latest_worker_attempt(stage,attempt)
    if latest:
     previous=s.read_worker(stage,attempt,latest)
-    if previous and previous.get("state")=="succeeded":return self._require_succeeded_worker(s,run,stage)
+    if previous and previous.get("state")=="succeeded":
+     if not retry_succeeded:return self._require_succeeded_worker(s,run,stage)
+     self._require_succeeded_worker(s,run,stage)
+     if stage not in {"red","green"}:raise WorkflowError("worker_retry_not_authorized")
+     authorization=(internal.get("worker_retry_authorizations") or {}).get(stage)
+     current_head=GitAdapter(worktree).head()
+     if not isinstance(authorization,dict) or authorization.get("attempt")!=attempt or authorization.get("worker_id")!=previous.get("id") or authorization.get("head_sha")!=current_head or authorization.get("consumed_at") is not None:raise WorkflowError("worker_retry_not_authorized")
+     authorization["consumed_at"]=now();RunStore._atomic(s._path("internal.json"),internal)
     if previous and previous["state"] in {"queued","running"} and _worker_process_alive(previous):
      raise WorkflowError("worker_dispatch_in_progress")
     if previous and previous["state"] in {"queued","running"}:
      stale=dict(previous);stale.update(state="failed",note="stale_process_lost",updated_at=now());s.write_worker(stage,attempt,latest,stale)
+    if latest>=MAX_WORKER_ATTEMPTS:raise WorkflowError("worker_retry_exhausted")
    worker_attempt=latest+1;stamp=now()
    design_sha256=full_sha_hash(s.read("approved-design.json"));plan_sha256=full_sha_hash(s.read("plan.json"))
    dispatch_sha256=full_sha_hash({"run_id":rid,"stage":stage,"task_id":task_id,"profile":PROFILES[stage],"attempt":attempt,"brief_hash":brief_hash})

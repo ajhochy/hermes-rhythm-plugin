@@ -12,8 +12,8 @@ def test_dispatch_worker_command_bypasses_actor_env_like_show(monkeypatch, tmp_p
     class Service:
         def __init__(self, repo): pass
         def reconcile(self, run_id): return {"id": run_id}
-        def dispatch_worker(self, run_id, stage):
-            seen["args"] = (run_id, stage)
+        def dispatch_worker(self, run_id, stage, *, retry_succeeded=False):
+            seen["args"] = (run_id, stage, retry_succeeded)
             return {"state": "queued", "stage": stage}
 
     monkeypatch.setattr(cli, "WorkflowService", Service)
@@ -21,7 +21,9 @@ def test_dispatch_worker_command_bypasses_actor_env_like_show(monkeypatch, tmp_p
     monkeypatch.delenv("HERMES_PROFILE", raising=False)
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     assert cli.main(["dispatch-worker", str(tmp_path), "run-1", "red"]) == 0
-    assert seen["args"] == ("run-1", "red")
+    assert seen["args"] == ("run-1", "red", False)
+    assert cli.main(["dispatch-worker", str(tmp_path), "run-1", "red", "--retry-succeeded"]) == 0
+    assert seen["args"] == ("run-1", "red", True)
 
 
 def test_worker_status_command_reports_terminal_state(monkeypatch, tmp_path: Path, capsys) -> None:
@@ -42,7 +44,7 @@ def test_dispatch_worker_command_reports_workflow_errors_as_json_error(monkeypat
 
     class Service:
         def __init__(self, repo): pass
-        def dispatch_worker(self, run_id, stage):
+        def dispatch_worker(self, run_id, stage, *, retry_succeeded=False):
             raise WorkflowError("unsupported_claude_stage")
 
     monkeypatch.setattr(cli, "WorkflowService", Service)

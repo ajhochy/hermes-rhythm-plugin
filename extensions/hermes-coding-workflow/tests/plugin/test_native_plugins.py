@@ -283,6 +283,22 @@ def test_stage_worker_bootstrap_derives_registered_run_and_guides_only_its_activ
         tool_name="terminal",
         args={"command": f"{launcher} {authorized_commands[stage]}"},
     ) is None
+    if stage in {"red", "green"}:
+        retry = f"{launcher} dispatch-worker {repo} run-test {stage} --retry-succeeded"
+        assert plugin._pre_tool_call(tool_name="terminal", args={"command": retry}) is None
+    if stage in {"red", "green", "quality-review", "complete"}:
+        for malformed_retry in (
+            f"{launcher} dispatch-worker {repo} run-test {stage} --force",
+            f"{launcher} worker-status {repo} run-test {stage} --retry-succeeded",
+        ):
+            assert plugin._pre_tool_call(tool_name="terminal", args={"command": malformed_retry}) == {
+                "action": "block", "message": "terminal command is not allowlisted for this workflow stage"
+            }
+        if stage in {"quality-review", "complete"}:
+            disallowed_retry = f"{launcher} dispatch-worker {repo} run-test {stage} --retry-succeeded"
+            assert plugin._pre_tool_call(tool_name="terminal", args={"command": disallowed_retry}) == {
+                "action": "block", "message": "terminal command is not allowlisted for this workflow stage"
+            }
     if stage in {"red", "green", "verify", "live"}:
         malformed = authorized_commands[stage].replace("--timeout 600", "--timeout ²")
         assert plugin._pre_tool_call(

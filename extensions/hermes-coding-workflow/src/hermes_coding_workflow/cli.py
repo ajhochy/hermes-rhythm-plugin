@@ -24,13 +24,14 @@ def main(argv:list[str]|None=None)->int:
   if name=="check":q.add_argument("type",choices=["red","green","full","security","live"]);q.add_argument("--timeout",type=int,default=60);q.add_argument("command_argv",nargs=argparse.REMAINDER)
   if name=="commit":q.add_argument("--message",required=True)
   if name in {"dispatch-worker","worker-status"}:q.add_argument("stage")
+  if name=="dispatch-worker":q.add_argument("--retry-succeeded",action="store_true")
  a=p.parse_args(argv)
  try:
   if a.command=="create-run":out=WorkflowService(Path(a.repo)).create_run(a.package,a.scope,a.run_id,a.board,goal=a.goal)
   else:
    repo,rid=_repo_and_run(Path(a.repo),a.run_id);svc=WorkflowService(repo)
    if a.command=="show":out=svc.show(rid)
-   elif a.command=="dispatch-worker":out=svc.dispatch_worker(rid,a.stage)
+   elif a.command=="dispatch-worker":out=svc.dispatch_worker(rid,a.stage,retry_succeeded=a.retry_succeeded)
    elif a.command=="worker-status":out=svc.worker_status(rid,a.stage)
    else:
     svc.reconcile(rid)

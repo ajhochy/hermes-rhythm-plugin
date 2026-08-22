@@ -561,7 +561,11 @@ def _terminal_allowed(run: dict[str, Any] | None, stage: str | None, args: dict[
             expected_check = {"red":"red","green":"green","verify":"full","live":"live"}.get(stage) if stage is not None else None
             return check_type == expected_check or (stage == "verify" and check_type == "security")
         if subcommand in _CLAUDE_WORKER_COMMANDS:
-            return len(argv) == 5 and _is_exact_authoritative_repo(argv[2], run) and argv[4] == stage
+            if len(argv) < 5 or not _is_exact_authoritative_repo(argv[2], run) or argv[4] != stage:
+                return False
+            if subcommand == "worker-status":
+                return len(argv) == 5
+            return len(argv) == 5 or (stage in {"red", "green"} and len(argv) == 6 and argv[5] == "--retry-succeeded")
         if subcommand in {"approve-design", "approve-plan", "review"}:
             json_paths: list[str] = []
             index = 4

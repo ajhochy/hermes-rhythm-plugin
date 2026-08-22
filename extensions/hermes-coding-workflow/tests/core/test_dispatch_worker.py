@@ -478,6 +478,68 @@ def test_dispatch_after_success_is_idempotent_and_does_not_launch_attempt_two(re
     assert RunStore(repo, "run-1").latest_worker_attempt("red", 1) == 1
 
 
+def test_explicit_retry_after_success_requires_a_failed_authoritative_gate(repo: Path, fake_claude: Path) -> None:
+    svc, _ = ready(repo)
+    activate_stage(repo, "green", "awaiting_green")
+    svc.dispatch_worker("run-1", "green")
+    first = wait_terminal(svc, "run-1", "green")
+
+    with pytest.raises(WorkflowError, match="worker_retry_not_authorized"):
+        svc.dispatch_worker("run-1", "green", retry_succeeded=True)
+    with pytest.raises(WorkflowError, match="path_scope_violation"):
+        svc.commit("run-1", act("green"), "candidate")
+    retried = svc.dispatch_worker("run-1", "green", retry_succeeded=True)
+
+    assert retried["state"] == "queued"
+    assert retried["worker_attempt"] == 2
+    assert retried["id"] != first["id"]
+    assert wait_terminal(svc, "run-1", "green")["state"] == "succeeded"
+    assert RunStore(repo, "run-1").latest_worker_attempt("green", 1) == 2
+    with pytest.raises(WorkflowError, match="worker_retry_not_authorized"):
+        svc.dispatch_worker("run-1", "green", retry_succeeded=True)
+
+
+def test_authorized_retry_revalidates_the_succeeded_worker_artifacts(repo: Path, fake_claude: Path) -> None:
+    svc, _ = ready(repo)
+    activate_stage(repo, "green", "awaiting_green")
+    svc.dispatch_worker("run-1", "green")
+    final = wait_terminal(svc, "run-1", "green")
+    with pytest.raises(WorkflowError, match="path_scope_violation"):
+        svc.commit("run-1", act("green"), "candidate")
+    (repo / final["stdout_path"]).write_text("tampered\n")
+
+    with pytest.raises(WorkflowError, match="worker_not_succeeded"):
+        svc.dispatch_worker("run-1", "green", retry_succeeded=True)
+
+
+def test_explicit_retry_after_success_stops_at_the_worker_attempt_ceiling(repo: Path, fake_claude: Path) -> None:
+    svc, _ = ready(repo)
+    activate_stage(repo, "green", "awaiting_green")
+    svc.dispatch_worker("run-1", "green")
+    assert wait_terminal(svc, "run-1", "green")["state"] == "succeeded"
+    for expected in (2, 3):
+        with pytest.raises(WorkflowError, match="path_scope_violation"):
+            svc.commit("run-1", act("green"), "candidate")
+        assert svc.dispatch_worker("run-1", "green", retry_succeeded=True)["worker_attempt"] == expected
+        assert wait_terminal(svc, "run-1", "green")["state"] == "succeeded"
+
+    with pytest.raises(WorkflowError, match="path_scope_violation"):
+        svc.commit("run-1", act("green"), "candidate")
+    with pytest.raises(WorkflowError, match="worker_retry_exhausted"):
+        svc.dispatch_worker("run-1", "green", retry_succeeded=True)
+
+
+def test_failed_workers_also_stop_at_the_worker_attempt_ceiling(repo: Path, fake_claude: Path, monkeypatch) -> None:
+    monkeypatch.setenv("FAKE_CLAUDE_EXIT", "3")
+    svc, _ = ready(repo)
+    for expected in (1, 2, 3):
+        assert svc.dispatch_worker("run-1", "red")["worker_attempt"] == expected
+        assert wait_terminal(svc, "run-1", "red")["state"] == "failed"
+
+    with pytest.raises(WorkflowError, match="worker_retry_exhausted"):
+        svc.dispatch_worker("run-1", "red")
+
+
 def test_tampered_success_artifact_relocks_the_authoritative_transition(repo: Path, fake_claude: Path) -> None:
     svc, _ = ready(repo)
     svc.dispatch_worker("run-1", "red")
