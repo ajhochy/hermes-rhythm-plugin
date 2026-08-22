@@ -521,6 +521,9 @@ def test_explicit_retry_after_success_requires_a_failed_authoritative_gate(repo:
     assert retried["state"] == "queued"
     assert retried["worker_attempt"] == 2
     assert retried["id"] != first["id"]
+    authorization = RunStore(repo, "run-1").read("internal.json")["worker_retry_authorizations"]["green"]
+    assert authorization["retry_worker_attempt"] == 2
+    assert authorization["details"]["reason"] == "path_scope_violation"
     assert wait_terminal(svc, "run-1", "green")["state"] == "succeeded"
     assert RunStore(repo, "run-1").latest_worker_attempt("green", 1) == 2
     with pytest.raises(WorkflowError, match="worker_retry_not_authorized"):

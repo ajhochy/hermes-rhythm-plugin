@@ -61,6 +61,8 @@ def main(argv: list[str]) -> int:
         # that binding from a fresh read, still under this same lock, is
         # what actually closes the window.
         internal = store.read("internal.json") if store._path("internal.json").exists() else {}
+        retry_authorization = (internal.get("worker_retry_authorizations") or {}).get(stage)
+        gate_failure_context = retry_authorization if isinstance(retry_authorization, dict) and retry_authorization.get("attempt") == attempt and retry_authorization.get("retry_worker_attempt") == worker_attempt else None
         intent = _authoritative_intent(internal, attempt)
         dispatch = run.get("dispatches", {}).get(stage, {})
         if (
@@ -113,6 +115,7 @@ def main(argv: list[str]) -> int:
             run=run, plan=plan, design=design, stage=stage, profile=record["profile"],
             task_id=record["task_id"], brief_hash=record["brief_hash"], worktree_path=str(worktree),
             repair_context=repair_context,
+            gate_failure_context=gate_failure_context,
         )
         executable = resolve_claude_executable()
         cmd = build_argv(executable, stage, plan)

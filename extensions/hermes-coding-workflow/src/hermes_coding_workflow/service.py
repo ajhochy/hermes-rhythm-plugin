@@ -204,11 +204,11 @@ class WorkflowService:
    k=self._board_for(s,run)
    self._attach_plan_briefs(s,run,k,record);self._persist_authoritative_briefs(s,run)
    run["status"]="awaiting_red";self._advance(run,"plan","red");self._bump(s,run);self._reconcile(s,run);return record
- def _record_worker_retry_authorization(self,s:RunStore,run:dict[str,Any],stage:str,gate:str,head:str)->None:
+ def _record_worker_retry_authorization(self,s:RunStore,run:dict[str,Any],stage:str,gate:str,head:str,details:dict[str,Any]|None=None)->None:
   worker=self._require_succeeded_worker(s,run,stage)
   internal=s.read("internal.json") if s._path("internal.json").exists() else {}
   authorizations=internal.setdefault("worker_retry_authorizations",{})
-  authorizations[stage]={"attempt":run["attempt"],"worker_id":worker["id"],"head_sha":head,"gate":gate,"created_at":now(),"consumed_at":None}
+  authorizations[stage]={"attempt":run["attempt"],"worker_id":worker["id"],"head_sha":head,"gate":gate,"details":details or {},"created_at":now(),"consumed_at":None,"retry_worker_attempt":None}
   RunStore._atomic(s._path("internal.json"),internal)
  def check(self,rid:str,actor:ActorContext,typ:str,argv:list[str],timeout:int=60)->dict[str,Any]:
   if typ not in {"red","green","full","security","live"} or not argv:raise WorkflowError("invalid_check")
@@ -260,8 +260,9 @@ class WorkflowService:
    if run["status"]!="awaiting_green":raise WorkflowError("check_not_ready")
    self._require_succeeded_worker(s,run,"green")
    g=self._workgit(run);paths=sorted(g.paths(run["base_sha"]));head=g.head()
-   if not paths or not all(any(fnmatch.fnmatch(path,pat) for pat in run["scope"]) for path in paths):
-    self._record_worker_retry_authorization(s,run,"green","path_scope_violation",head)
+   out_of_scope=[path for path in paths if not any(fnmatch.fnmatch(path,pat) for pat in run["scope"])]
+   if not paths or out_of_scope:
+    self._record_worker_retry_authorization(s,run,"green","commit",head,{"reason":"path_scope_violation","changed_paths":paths[:200],"out_of_scope_paths":out_of_scope[:200],"allowed_scope":run["scope"]})
     raise WorkflowError("path_scope_violation")
    result=subprocess.run(["git","-C",str(run["worktree_path"]),"add","--",*paths],text=True,capture_output=True)
    if result.returncode:
@@ -402,7 +403,7 @@ class WorkflowService:
      authorization=(internal.get("worker_retry_authorizations") or {}).get(stage)
      current_head=GitAdapter(worktree).head()
      if not isinstance(authorization,dict) or authorization.get("attempt")!=attempt or authorization.get("worker_id")!=previous.get("id") or authorization.get("head_sha")!=current_head or authorization.get("consumed_at") is not None:raise WorkflowError("worker_retry_not_authorized")
-     authorization["consumed_at"]=now();RunStore._atomic(s._path("internal.json"),internal)
+     authorization["consumed_at"]=now();authorization["retry_worker_attempt"]=latest+1;RunStore._atomic(s._path("internal.json"),internal)
     if previous and previous["state"] in {"queued","running"} and _worker_process_alive(previous):
      raise WorkflowError("worker_dispatch_in_progress")
     if previous and previous["state"] in {"queued","running"}:
