@@ -42,13 +42,13 @@ def test_issue_14_c2_ledger_rejects_missing_proof_secret_leaks_or_unapproved_wri
         validate_cutover_ledger(ledger)
 
     ledger = run_fixture_cutover(REPO_ROOT, tmp_path / "hermes-home" / "profiles" / "m10b")
-    ledger["modules"][0]["failure_state"] = "Bearer " + "fixture-" + "secret-" + "token"
+    ledger["modules"][0]["fixture"] = "Bearer " + "fixture-" + "secret-" + "token"
     with pytest.raises(CutoverError, match="credential-shaped"):
         validate_cutover_ledger(ledger)
 
     ledger = run_fixture_cutover(REPO_ROOT, tmp_path / "hermes-home" / "profiles" / "m10c")
     ledger["modules"][0]["allowed_write_confirmation"] = {"operation": "messages.send"}
-    with pytest.raises(CutoverError, match="unapproved write"):
+    with pytest.raises(CutoverError, match="unapproved or unexecuted"):
         validate_cutover_ledger(ledger)
 
 
@@ -57,7 +57,8 @@ def test_issue_14_c3_auth_expiry_restart_profile_generation_uncertain_and_perfor
     ledger = run_fixture_cutover(REPO_ROOT, tmp_path / "hermes-home" / "profiles" / "m10")
     checks = ledger["safety_checks"]
     assert checks["auth_expiry"] == "unauthorized"
-    assert checks["profile_switch_generation_invalidation"] == "zero_patch"
+    assert checks["profile_switch_generation_invalidation"]["result"] == "pass"
+    assert checks["profile_switch_generation_invalidation"]["mutation"] == "zero_patch"
     assert checks["uncertain_write"] == "no_retry_no_false_success"
     assert checks["secret_redaction"] == "pass"
     assert checks["performance"]["elapsed_ms"] <= checks["performance"]["budget_ms"]

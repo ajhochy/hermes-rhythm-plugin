@@ -134,6 +134,7 @@ function createNonce() {
 function ArtifactsScreen({ artifactsGateway, artifactHostPort }) {
   const [items, setItems] = useState([]);
   const [opened, setOpened] = useState(null);
+  const [error, setError] = useState(false);
   const [frameId, setFrameId] = useState("");
   const [nonce, setNonce] = useState("");
   const frame = useRef(null);
@@ -144,7 +145,12 @@ function ArtifactsScreen({ artifactsGateway, artifactHostPort }) {
     if (!artifactsGateway) return;
     let cancelled = false;
     void artifactsGateway.list().then((loaded) => {
-      if (!cancelled) setItems(loaded);
+      if (!cancelled) {
+        setItems(loaded);
+        setError(false);
+      }
+    }).catch(() => {
+      if (!cancelled) setError(true);
     });
     return () => {
       cancelled = true;
@@ -174,6 +180,7 @@ function ArtifactsScreen({ artifactsGateway, artifactHostPort }) {
   }, [artifactHostPort, frameId, opened]);
   const openArtifact = (artifactId) => {
     if (!artifactHostPort) return;
+    setError(false);
     const attempt = ++openAttempt.current;
     void artifactHostPort.open(artifactId).then((document2) => {
       const nextNonce = createNonce();
@@ -183,6 +190,8 @@ function ArtifactsScreen({ artifactsGateway, artifactHostPort }) {
       setFrameId(`rhythm-artifact-frame-${nextFrameId.current}`);
       setNonce(nextNonce);
       setOpened(document2);
+    }).catch(() => {
+      if (attempt === openAttempt.current) setError(true);
     });
   };
   return /* @__PURE__ */ jsxs(
@@ -193,6 +202,7 @@ function ArtifactsScreen({ artifactsGateway, artifactHostPort }) {
       extraDataAttributes: { "data-rhythm-artifacts-state": artifactsGateway ? "unlocked" : "locked" },
       children: [
         /* @__PURE__ */ jsx("h1", { children: "Artifacts" }),
+        error ? /* @__PURE__ */ jsx("p", { role: "alert", "data-testid": "rhythm-artifacts-error", children: "Artifacts are temporarily unavailable." }) : null,
         artifactsGateway ? /* @__PURE__ */ jsxs(Fragment, { children: [
           /* @__PURE__ */ jsx("ul", { "data-testid": "rhythm-artifacts-list", children: items.map((artifact) => /* @__PURE__ */ jsx("li", { "data-testid": `rhythm-artifact-row-${artifact.id}`, children: artifactHostPort ? /* @__PURE__ */ jsx("button", { type: "button", onClick: () => openArtifact(artifact.id), "data-testid": `rhythm-artifact-open-${artifact.id}`, children: artifact.title }) : artifact.title }, artifact.id)) }),
           opened && frameId && nonce ? /* @__PURE__ */ jsx("iframe", { ref: frame, title: opened.artifactId, "data-testid": "rhythm-artifact-frame", "data-frame-id": frameId, sandbox: "allow-scripts", srcDoc: documentSource(opened, nonce) }) : null
