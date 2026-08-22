@@ -26,6 +26,21 @@ def test_dispatch_worker_command_bypasses_actor_env_like_show(monkeypatch, tmp_p
     assert seen["args"] == ("run-1", "red", True)
 
 
+def test_amend_scope_command_passes_revision_head_and_reason(monkeypatch, tmp_path: Path) -> None:
+    seen = {}
+    class Service:
+        def __init__(self, repo): pass
+        def reconcile(self, run_id): return {"id": run_id}
+        def amend_scope(self, run_id, actor, added_scope, *, reason, expected_revision, expected_head):
+            seen["args"] = (run_id, actor.profile, actor.task_id, added_scope, reason, expected_revision, expected_head)
+            return {"scope": added_scope}
+    monkeypatch.setattr(cli, "WorkflowService", Service)
+    monkeypatch.setattr(cli, "_repo_and_run", lambda repo, run_id: (repo, run_id))
+    monkeypatch.setenv("HERMES_PROFILE", "dev-builder");monkeypatch.setenv("HERMES_KANBAN_TASK", "task-green")
+    assert cli.main(["amend-scope",str(tmp_path),"run-1","--add-scope","plugins/github_intake/**","--reason","approved","--expected-revision","7","--expected-head","a"*40]) == 0
+    assert seen["args"] == ("run-1","dev-builder","task-green",["plugins/github_intake/**"],"approved",7,"a"*40)
+
+
 def test_worker_status_command_reports_terminal_state(monkeypatch, tmp_path: Path, capsys) -> None:
     class Service:
         def __init__(self, repo): pass

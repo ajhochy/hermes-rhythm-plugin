@@ -301,6 +301,36 @@ class WorkflowService:
    current_ids=[item["id"] for item in ev if item["commit_sha"]==head]
    if run["status"]!="verified" or v.get("candidate_sha")!=head or v.get("evidence_ids")!=current_ids or len(current_ids)!=len(set(current_ids)) or not {"green","full","security","live"}.issubset({item["type"] for item in ev if item["commit_sha"]==head and item["exit_code"]==0}) or self._workgit(run).dirty():raise WorkflowError("premature_completion")
    h={"schema_version":SCHEMA_VERSION,"kind":"handoff","id":"handoff-"+uuid.uuid4().hex,"created_at":now(),"run_id":rid,"candidate_sha":head,"action":"draft_pr_manual_merge"};RunStore._atomic(s._path("handoff.json"),h);run["status"]="completed";self._advance(run,"complete",None);self._bump(s,run);self._reconcile(s,run);return run
+ def amend_scope(self,rid:str,actor:ActorContext,added_scope:list[str],*,reason:str,expected_revision:int,expected_head:str)->dict[str,Any]:
+  """Add narrowly bounded paths to an active GREEN contract with an audit trail."""
+  s=self._store(rid)
+  with s.locked():
+   run=s.read();self._actor(run,actor,"green")
+   if run["status"]!="awaiting_green" or run["stage_statuses"].get("green")!="active":raise WorkflowError("scope_amendment_not_authorized")
+   if not isinstance(reason,str) or not reason.strip() or len(reason)>512 or not isinstance(added_scope,list) or not added_scope:raise WorkflowError("invalid_scope_amendment")
+   normalized=[]
+   for pattern in added_scope:
+    if not isinstance(pattern,str) or "\\" in pattern or pattern.startswith("/"):raise WorkflowError("invalid_scope_amendment")
+    parts=pattern.split("/")
+    if len(parts)<3 or parts[-1]!="**" or any(part in {"",".",".."} for part in parts) or any(any(ch in part for ch in "*?[") for part in parts[:-1]):raise WorkflowError("invalid_scope_amendment")
+    if pattern not in run["scope"] and pattern not in normalized:normalized.append(pattern)
+   if not normalized:raise WorkflowError("invalid_scope_amendment")
+   internal=s.read("internal.json") if s._path("internal.json").exists() else {}
+   prior=internal.get("scope_amendment_intent")
+   requested={"operation":"amend_scope","status":"pending","id":"scope-amendment-"+uuid.uuid4().hex,"attempt":run["attempt"],"expected_revision":expected_revision,"expected_head":expected_head,"old_scope":list(run["scope"]),"added_scope":normalized,"reason":reason.strip(),"actor":actor.record()}
+   if isinstance(prior,dict) and prior.get("status")=="pending":
+    if any(prior.get(key)!=value for key,value in requested.items() if key not in {"id","status","old_scope"}):raise WorkflowError("scope_amendment_stale")
+    requested=prior
+   elif run["revision"]!=expected_revision or run["head_sha"]!=expected_head:raise WorkflowError("scope_amendment_stale")
+   else:
+    internal["scope_amendment_intent"]=requested;RunStore._atomic(s._path("internal.json"),internal)
+   missing=[pattern for pattern in requested["added_scope"] if pattern not in run["scope"]]
+   if missing:run["scope"].extend(missing);self._bump(s,run)
+   audit=s.read("scope-amendments.json") if s._path("scope-amendments.json").exists() else {"amendments":[]}
+   if not any(item.get("id")==requested["id"] for item in audit.get("amendments",[])):
+    audit.setdefault("amendments",[]).append({**requested,"status":"completed","created_at":now(),"new_scope":list(run["scope"])});RunStore._atomic(s._path("scope-amendments.json"),audit)
+   internal=s.read("internal.json");internal["scope_amendment_intent"]={**requested,"status":"completed"};RunStore._atomic(s._path("internal.json"),internal)
+   return run
  def repair(self,rid:str,actor:ActorContext,board:KanbanAdapter|None=None)->dict[str,Any]:
   """Archive an attempt and create a fresh, independently bound task graph."""
   s=self._store(rid)

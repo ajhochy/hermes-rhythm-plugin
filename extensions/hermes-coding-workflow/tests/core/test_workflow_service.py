@@ -56,6 +56,20 @@ def seed_worker_success(repo:Path,stage:str)->dict:
  rel_stdout=str(stdout.relative_to(repo));rel_stderr=str(stderr.relative_to(repo));stamp="2026-08-21T00:00:00Z"
  record={"schema_version":"hcw/v1","kind":"worker","id":f"worker-run-1-{stage}-{attempt}-{worker_attempt}","created_at":stamp,"updated_at":stamp,"run_id":"run-1","stage":stage,"task_id":run["kanban_task_ids"][stage],"profile":PROFILES[stage],"backend":CLAUDE_BACKEND,"model":CLAUDE_TIER_MODELS[stage],"attempt":attempt,"worker_attempt":worker_attempt,"brief_hash":dispatch["brief_hash"],"worktree_path":run["worktree_path"],"pid":None,"state":"succeeded","stdout_path":rel_stdout,"stderr_path":rel_stderr,"stdout_sha256":__import__("hashlib").sha256(stdout.read_bytes()).hexdigest(),"stderr_sha256":__import__("hashlib").sha256(stderr.read_bytes()).hexdigest(),"exit_code":0,"note":None,"design_sha256":full_sha_hash(store.read("approved-design.json")),"plan_sha256":full_sha_hash(store.read("plan.json")),"dispatch_sha256":full_sha_hash({"run_id":"run-1","stage":stage,"task_id":run["kanban_task_ids"][stage],"profile":PROFILES[stage],"attempt":attempt,"brief_hash":dispatch["brief_hash"]}),"process_identity":None}
  store.write_worker(stage,attempt,worker_attempt,record);return record
+def test_scope_amendment_is_additive_head_bound_and_audited(repo:Path)->None:
+ s,run,_=ready(repo);store=RunStore(repo,"run-1");state=store.read();state["status"]="awaiting_green";state["stage_statuses"]["design"]="completed";state["stage_statuses"]["plan"]="completed";state["stage_statuses"]["red"]="completed";state["stage_statuses"]["green"]="active";store.write_json("run.json",state)
+ amended=s.amend_scope("run-1",act("green"),["plugins/github_intake/**"],reason="user-approved importable package",expected_revision=state["revision"],expected_head=state["head_sha"])
+ assert amended["scope"]==["app.txt","plugins/github_intake/**"]
+ audit=store.read("scope-amendments.json")["amendments"][-1]
+ assert audit["attempt"]==1 and audit["added_scope"]==["plugins/github_intake/**"] and audit["reason"]=="user-approved importable package"
+ assert audit["actor"]==act("green").record()
+ with pytest.raises(WorkflowError,match="scope_amendment_stale"):s.amend_scope("run-1",act("green"),["plugins/other/**"],reason="stale",expected_revision=state["revision"],expected_head=state["head_sha"])
+
+@pytest.mark.parametrize("pattern",["**","../outside/**","/tmp/**","*/anything/**"])
+def test_scope_amendment_rejects_broad_or_escaping_patterns(repo:Path,pattern:str)->None:
+ s,_,_=ready(repo);store=RunStore(repo,"run-1");state=store.read();state["status"]="awaiting_green";state["stage_statuses"]["green"]="active";store.write_json("run.json",state)
+ with pytest.raises(WorkflowError,match="invalid_scope_amendment"):s.amend_scope("run-1",act("green"),[pattern],reason="bad",expected_revision=state["revision"],expected_head=state["head_sha"])
+
 def test_create_graph_uses_actual_workspace_and_exact_profiles(repo:Path)->None:
  s,run,calls=ready(repo)
  assert run["status"]=="awaiting_design" and run["stage_profiles"]==PROFILES

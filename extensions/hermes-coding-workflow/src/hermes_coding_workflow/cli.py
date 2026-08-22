@@ -18,11 +18,12 @@ def _repo_and_run(repo:Path,run_id:str)->tuple[Path,str]:
 def main(argv:list[str]|None=None)->int:
  p=argparse.ArgumentParser(prog="hcw");s=p.add_subparsers(dest="command",required=True)
  create=s.add_parser("create-run");create.add_argument("repo");create.add_argument("--run-id",required=True);create.add_argument("--package",required=True);create.add_argument("--scope",action="append",required=True);create.add_argument("--board",required=True);create.add_argument("--goal",required=True)
- for name in ("approve-design","approve-plan","check","commit","review","verify","complete","repair","show","dispatch-worker","worker-status"):
+ for name in ("approve-design","approve-plan","check","commit","review","verify","complete","repair","amend-scope","show","dispatch-worker","worker-status"):
   q=s.add_parser(name);q.add_argument("repo");q.add_argument("run_id")
   if name in {"approve-design","approve-plan","review"}:q.add_argument("--json",required=True)
   if name=="check":q.add_argument("type",choices=["red","green","full","security","live"]);q.add_argument("--timeout",type=int,default=60);q.add_argument("command_argv",nargs=argparse.REMAINDER)
   if name=="commit":q.add_argument("--message",required=True)
+  if name=="amend-scope":q.add_argument("--add-scope",action="append",required=True);q.add_argument("--reason",required=True);q.add_argument("--expected-revision",type=int,required=True);q.add_argument("--expected-head",required=True)
   if name in {"dispatch-worker","worker-status"}:q.add_argument("stage")
   if name=="dispatch-worker":q.add_argument("--retry-succeeded",action="store_true")
  a=p.parse_args(argv)
@@ -45,6 +46,7 @@ def main(argv:list[str]|None=None)->int:
     elif a.command=="commit":out=svc.commit(rid,actor,a.message)
     elif a.command=="verify":out=svc.verify(rid,actor)
     elif a.command=="repair":out=svc.repair(rid,actor)
+    elif a.command=="amend-scope":out=svc.amend_scope(rid,actor,a.add_scope,reason=a.reason,expected_revision=a.expected_revision,expected_head=a.expected_head)
     else:out=svc.complete(rid,actor)
   _json(out);return 0
  except (WorkflowError,ValueError,RuntimeError,json.JSONDecodeError) as e:_json({"error":getattr(e,"code",str(e))});return 2
