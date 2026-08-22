@@ -18,7 +18,7 @@ _WRITE_TOOLS = {"write_file", "patch", "apply_patch", "execute_code"}
 _TERMINAL_TOOLS = {"terminal", "exec_command", "run_terminal"}
 _TEST_PATH = re.compile(r"(?:^|/)(?:tests?/.*|test_[^/]+|[^/]+_test\.[^/]+|[^/]+\.(?:test|spec)\.[^/]+)$")
 _READ_ONLY_GIT = {"status", "diff", "log", "show", "rev-parse"}
-_HCW_COMMANDS = {"create-run", "show", "approve-design", "approve-plan", "check", "commit", "review", "verify", "complete", "repair", "amend-scope", "dispatch-worker", "worker-status"}
+_HCW_COMMANDS = {"create-run", "show", "approve-design", "approve-plan", "check", "commit", "review", "verify", "complete", "repair", "force-repair", "amend-scope", "dispatch-worker", "worker-status"}
 _CLAUDE_WORKER_COMMANDS = {"dispatch-worker", "worker-status"}
 _CLAUDE_WORKER_STAGES = {"red", "green", "quality-review", "complete"}
 _STAGE_PAYLOAD_NAMES = {
@@ -444,7 +444,8 @@ def _verified_red(run: dict[str, Any]) -> bool:
             if item.get("previous_evidence_hash") != previous or known != digest:
                 return False
             previous = known
-            if item.get("type") == "red" and item.get("commit_sha") == run.get("base_sha") and isinstance(item.get("exit_code"), int) and item["exit_code"] != 0:
+            effective_base = run.get("attempt_base_sha") or run.get("base_sha")
+            if item.get("type") == "red" and item.get("commit_sha") == effective_base and isinstance(item.get("exit_code"), int) and item["exit_code"] != 0:
                 return True
     except (OSError, json.JSONDecodeError, TypeError):
         return False

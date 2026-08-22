@@ -12,6 +12,10 @@ from .safety import open_nofollow_write_fd,redact,validate_controlled_worktree
 from .store import RunStore
 def now()->str:return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00","Z")
 def full_sha_hash(value:object)->str:return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+def _attempt_base_sha(run:dict[str,Any])->str:
+ value=run.get("attempt_base_sha",run["base_sha"])
+ if not full_sha(value):raise WorkflowError("malformed_run_state")
+ return value
 MAX_WORKER_ATTEMPTS=3
 REPAIR_CONTEXT_FIELDS={"schema_version","kind","from_attempt","source_stage","review_sha256","review"}
 def _valid_repair_context(value:object,run:dict[str,Any],internal:dict[str,Any])->bool:
@@ -25,7 +29,7 @@ def _valid_repair_context(value:object,run:dict[str,Any],internal:dict[str,Any])
  history=run.get("attempt_history");previous=history[-1] if isinstance(history,list) and history else None
  if not isinstance(previous,dict) or previous.get("attempt")!=value["from_attempt"] or review.get("reviewed_sha")!=previous.get("head_sha"):return False
  intent=internal.get("repair_intent") if isinstance(internal,dict) else None
- return isinstance(intent,dict) and intent.get("from_attempt")==value["from_attempt"] and intent.get("attempt")==run.get("attempt") and intent.get("repair_context_sha256")==full_sha_hash(value)
+ return isinstance(intent,dict) and intent.get("from_attempt")==value["from_attempt"] and intent.get("attempt")==run.get("attempt") and intent.get("repair_context_sha256")==full_sha_hash(value) and intent.get("base_sha")==review.get("reviewed_sha")
 def _runner_pythonpath(existing:str|None)->str:
  """Build the `worker_runner` subprocess's PYTHONPATH from the authoritative
  package site -- the directory containing this very `hermes_coding_workflow`
@@ -170,7 +174,7 @@ class WorkflowService:
    else:
     board.ensure_board();tasks=board.graph(run_id,branch,worktree.resolve(),PROFILES,attempt=1,scope=scope,goal=goal,base_sha=base);brief_hashes={stage:board.last_briefs[stage]["sha256"] for stage in STAGES}
     internal=store.read("internal.json");internal["create_intent"].update({"status":"graph_created","task_ids":tasks,"brief_hashes":brief_hashes});RunStore._atomic(store._path("internal.json"),internal)
-   stamp=now();run={"schema_version":SCHEMA_VERSION,"kind":"run","id":run_id,"revision":0,"created_at":stamp,"updated_at":stamp,"package_id":package,"base_sha":base,"head_sha":base,"branch":branch,"repo_root":str(self.repo),"worktree_path":str(worktree.resolve()),"status":"awaiting_design","scope":scope,"attempt":1,"attempt_history":[],"kanban_board":board.board,"kanban_task_ids":tasks,"stage_profiles":PROFILES,"stage_statuses":{stage:("active" if stage=="design" else "pending") for stage in STAGES},"setup":{"created":["worktree",*tasks.values()]},"goal":goal,"dispatches":{stage:{"stage":stage,"task_id":tasks[stage],"profile":PROFILES[stage],"attempt":1,"brief_hash":brief_hashes[stage],"session_id":"unavailable","model":"unavailable","provider":"unavailable"} for stage in STAGES}}
+   stamp=now();run={"schema_version":SCHEMA_VERSION,"kind":"run","id":run_id,"revision":0,"created_at":stamp,"updated_at":stamp,"package_id":package,"base_sha":base,"head_sha":base,"attempt_base_sha":base,"branch":branch,"repo_root":str(self.repo),"worktree_path":str(worktree.resolve()),"status":"awaiting_design","scope":scope,"attempt":1,"attempt_history":[],"kanban_board":board.board,"kanban_task_ids":tasks,"stage_profiles":PROFILES,"stage_statuses":{stage:("active" if stage=="design" else "pending") for stage in STAGES},"setup":{"created":["worktree",*tasks.values()]},"goal":goal,"dispatches":{stage:{"stage":stage,"task_id":tasks[stage],"profile":PROFILES[stage],"attempt":1,"brief_hash":brief_hashes[stage],"session_id":"unavailable","model":"unavailable","provider":"unavailable"} for stage in STAGES}}
    self._boards[run_id]=board;store.write_run(run,None)
    internal=store.read("internal.json");internal["create_intent"]["status"]="completed";RunStore._atomic(store._path("internal.json"),internal);return run
   except Exception as exc:
@@ -219,7 +223,7 @@ class WorkflowService:
    expected={"red":"awaiting_red","green":"awaiting_green","full":"awaiting_verify","security":"awaiting_verify","live":"awaiting_live"}[typ]
    if run["status"]!=expected:raise WorkflowError("check_not_ready")
    if typ in {"red","green"}:self._require_succeeded_worker(s,run,typ)
-   if typ=="green" and not any(e["type"]=="red" and e["exit_code"]!=0 and e["commit_sha"]==run["base_sha"] for e in s.evidence()):raise WorkflowError("missing_red_evidence")
+   if typ=="green" and not any(e["type"]=="red" and e["exit_code"]!=0 and e["commit_sha"]==_attempt_base_sha(run) for e in s.evidence()):raise WorkflowError("missing_red_evidence")
    check_env={"PATH":os.environ.get("PATH", ""),"PYTHONDONTWRITEBYTECODE":"1","PYTHONPYCACHEPREFIX":os.environ.get("PYTHONPYCACHEPREFIX","/tmp/hcw-pyc")}
    if os.environ.get("HOME"):check_env["HOME"]=os.environ["HOME"]
    try:r=subprocess.run(argv,cwd=Path(run["worktree_path"]),text=True,capture_output=True,timeout=timeout,env=check_env)
@@ -234,7 +238,7 @@ class WorkflowService:
     self._record_worker_retry_authorization(s,run,typ,"red_mutation_violation",head)
     raise WorkflowError("red_mutation_violation")
    if typ=="green":
-    if head==run["base_sha"] or g.dirty() or not all(any(fnmatch.fnmatch(p,pat) for pat in run["scope"]) for p in g.paths(run["base_sha"])):
+    if head==_attempt_base_sha(run) or g.dirty() or not all(any(fnmatch.fnmatch(p,pat) for pat in run["scope"]) for p in g.paths(_attempt_base_sha(run))):
      self._record_worker_retry_authorization(s,run,typ,"path_scope_violation",head)
      raise WorkflowError("path_scope_violation")
     run["head_sha"]=head;run["status"]="awaiting_spec_review";self._advance(run,"green","spec-review")
@@ -259,7 +263,7 @@ class WorkflowService:
    run=s.read();self._actor(run,actor,"green")
    if run["status"]!="awaiting_green":raise WorkflowError("check_not_ready")
    self._require_succeeded_worker(s,run,"green")
-   g=self._workgit(run);paths=sorted(g.paths(run["base_sha"]));head=g.head()
+   g=self._workgit(run);paths=sorted(g.paths(_attempt_base_sha(run)));head=g.head()
    out_of_scope=[path for path in paths if not any(fnmatch.fnmatch(path,pat) for pat in run["scope"])]
    if not paths or out_of_scope:
     self._record_worker_retry_authorization(s,run,"green","commit",head,{"reason":"path_scope_violation","changed_paths":paths[:200],"out_of_scope_paths":out_of_scope[:200],"allowed_scope":run["scope"]})
@@ -350,17 +354,18 @@ class WorkflowService:
     prior["status"]="completed";internal["repair_intent"]=prior;RunStore._atomic(s._path("internal.json"),internal)
    existing_context=published_context
    reviews=s.read("reviews.json").get("reviews",[]) if s._path("reviews.json").exists() else []
-   source_review=next((item for item in reversed(reviews) if item.get("decision")=="changes_requested" and item.get("reviewer",{}).get("task_id")==actor.task_id),None)
+   source_review=next((item for item in reversed(reviews) if item.get("decision")=="changes_requested" and item.get("reviewer",{}).get("task_id")==actor.task_id and item.get("reviewed_sha")==run["head_sha"]),None)
    if isinstance(source_review,dict) and not validate_record(source_review):
     repair_context={"schema_version":SCHEMA_VERSION,"kind":"repair_context","from_attempt":run["attempt"],"source_stage":recovery_stage,"review_sha256":full_sha_hash(source_review),"review":source_review}
    elif isinstance(prior,dict) and prior.get("status")!="completed" and isinstance(existing_context,dict) and prior.get("repair_context_sha256")==full_sha_hash(existing_context):
     repair_context=existing_context
    else:raise WorkflowError("repair_not_authorized")
+   repair_base_sha=repair_context["review"]["reviewed_sha"]
    if (self.repo/".worktrees").is_symlink() or (self.repo/".hermes").is_symlink():raise WorkflowError("path_scope_violation")
    old=Path(run["worktree_path"]);attempt=run["attempt"]+1;branch=f"hcw/{rid}/attempt-{attempt}";worktree=self.repo/".worktrees"/f"hcw-{rid}-{attempt}"
    if worktree.is_symlink():raise WorkflowError("path_scope_violation")
    k=board or self._boards.get(rid) or KanbanAdapter(self.repo,run["kanban_board"],home=Path(internal["kanban_home"]) if isinstance(internal.get("kanban_home"),str) else None)
-   requested={"operation":"repair","status":"pending","from_attempt":run["attempt"],"attempt":attempt,"branch":branch,"worktree_path":str(worktree),"base_sha":run["base_sha"],"board":run["kanban_board"],"repair_context_sha256":full_sha_hash(repair_context)}
+   requested={"operation":"repair","status":"pending","from_attempt":run["attempt"],"attempt":attempt,"branch":branch,"worktree_path":str(worktree),"base_sha":repair_base_sha,"board":run["kanban_board"],"repair_context_sha256":full_sha_hash(repair_context)}
    if prior and prior.get("status")!="completed":
     if any(prior.get(key)!=value for key,value in requested.items() if key!="status"):raise WorkflowError("repair_setup_failed")
    else:
@@ -369,12 +374,12 @@ class WorkflowService:
    try:
     if worktree.exists():
      top=subprocess.run(["git","-C",str(worktree),"rev-parse","--show-toplevel"],text=True,capture_output=True);head=subprocess.run(["git","-C",str(worktree),"rev-parse","HEAD"],text=True,capture_output=True);checked_branch=subprocess.run(["git","-C",str(worktree),"branch","--show-current"],text=True,capture_output=True)
-     if top.returncode or head.returncode or checked_branch.returncode or Path(top.stdout.strip()).resolve()!=worktree.resolve() or head.stdout.strip()!=run["base_sha"] or checked_branch.stdout.strip()!=branch:raise WorkflowError("repair_setup_failed")
+     if top.returncode or head.returncode or checked_branch.returncode or Path(top.stdout.strip()).resolve()!=worktree.resolve() or head.stdout.strip()!=repair_base_sha or checked_branch.stdout.strip()!=branch:raise WorkflowError("repair_setup_failed")
     else:
-     result=subprocess.run(["git","-C",str(self.repo),"worktree","add","-b",branch,str(worktree),run["base_sha"]],capture_output=True,text=True)
+     result=subprocess.run(["git","-C",str(self.repo),"worktree","add","-b",branch,str(worktree),repair_base_sha],capture_output=True,text=True)
      if result.returncode:
       branch_head=subprocess.run(["git","-C",str(self.repo),"rev-parse",branch],text=True,capture_output=True)
-      if branch_head.returncode or branch_head.stdout.strip()!=run["base_sha"]:raise WorkflowError("repair_setup_failed")
+      if branch_head.returncode or branch_head.stdout.strip()!=repair_base_sha:raise WorkflowError("repair_setup_failed")
       result=subprocess.run(["git","-C",str(self.repo),"worktree","add",str(worktree),branch],capture_output=True,text=True)
      if result.returncode:raise WorkflowError("repair_setup_failed")
     (worktree/".hermes").mkdir(parents=True,exist_ok=True);(worktree/".hermes"/"hcw-run.json").write_text(json.dumps({"schema_version":SCHEMA_VERSION,"run_id":rid,"repo_root":str(self.repo),"worktree_path":str(worktree.resolve())})+"\n")
@@ -382,7 +387,7 @@ class WorkflowService:
     if prior.get("status") in {"graph_created","completed"} and isinstance(persisted_tasks,dict) and set(persisted_tasks)==set(STAGES) and all(isinstance(v,str) and v for v in persisted_tasks.values()) and isinstance(persisted_hashes,dict) and set(persisted_hashes)==set(STAGES) and all(isinstance(v,str) and len(v)==64 for v in persisted_hashes.values()):
      tasks=dict(persisted_tasks);brief_hashes=dict(persisted_hashes)
     else:
-     tasks=k.graph(rid,branch,worktree.resolve(),PROFILES,attempt=attempt,scope=run["scope"],goal=run["goal"],base_sha=run["base_sha"]);brief_hashes={stage:k.last_briefs[stage]["sha256"] for stage in STAGES}
+     tasks=k.graph(rid,branch,worktree.resolve(),PROFILES,attempt=attempt,scope=run["scope"],goal=run["goal"],base_sha=repair_base_sha);brief_hashes={stage:k.last_briefs[stage]["sha256"] for stage in STAGES}
      internal=s.read("internal.json");internal["repair_intent"].update({"status":"graph_created","task_ids":tasks,"brief_hashes":brief_hashes});RunStore._atomic(s._path("internal.json"),internal)
     draft=dict(run);draft.update({"attempt":attempt,"kanban_task_ids":tasks,"dispatches":{stage:{"stage":stage,"task_id":tasks[stage],"profile":PROFILES[stage],"attempt":attempt,"brief_hash":brief_hashes[stage],"session_id":"unavailable","model":"unavailable","provider":"unavailable"} for stage in STAGES}})
     self._attach_plan_briefs(s,draft,k,s.read("plan.json"));self._persist_authoritative_briefs(s,draft)
@@ -392,8 +397,80 @@ class WorkflowService:
    for name in ("evidence.jsonl","reviews.json","verification.json","handoff.json"):
     source=s._path(name)
     if source.exists():shutil.move(str(source),str(archive/name))
-   run["attempt_history"].append({"attempt":run["attempt"],"worktree_path":str(old),"head_sha":run["head_sha"]});run.update({"attempt":attempt,"branch":branch,"worktree_path":str(worktree.resolve()),"head_sha":run["base_sha"],"kanban_task_ids":tasks,"dispatches":draft["dispatches"],"stage_statuses":{stage:("completed" if stage in {"design","plan"} else "active" if stage=="red" else "pending") for stage in STAGES},"status":"awaiting_red"});self._bump(s,run)
+   run["attempt_history"].append({"attempt":run["attempt"],"worktree_path":str(old),"attempt_base_sha":_attempt_base_sha(run),"head_sha":run["head_sha"]});run.update({"attempt":attempt,"branch":branch,"worktree_path":str(worktree.resolve()),"head_sha":repair_base_sha,"attempt_base_sha":repair_base_sha,"kanban_task_ids":tasks,"dispatches":draft["dispatches"],"stage_statuses":{stage:("completed" if stage in {"design","plan"} else "active" if stage=="red" else "pending") for stage in STAGES},"status":"awaiting_red"});self._bump(s,run)
    internal=s.read("internal.json");internal["repair_intent"]["status"]="completed";RunStore._atomic(s._path("internal.json"),internal);self._reconcile(s,run);return run
+ def force_repair(self,rid:str,actor:ActorContext,stage:str,board:KanbanAdapter|None=None)->dict[str,Any]:
+  """Operator recovery: create a new attempt when all MAX_WORKER_ATTEMPTS for the active stage are terminal failed and no succeeded worker exists."""
+  if stage not in {"red","green"}:raise WorkflowError("force_repair_not_authorized")
+  s=self._store(rid)
+  with s.locked():
+   run=s.read()
+   self._actor(run,actor,stage)
+   stage_status_map={"red":"awaiting_red","green":"awaiting_green"}
+   if run["status"]!=stage_status_map[stage] or run["stage_statuses"].get(stage)!="active":raise WorkflowError("force_repair_not_authorized")
+   attempt=run["attempt"]
+   latest=s.latest_worker_attempt(stage,attempt)
+   if not latest or latest<MAX_WORKER_ATTEMPTS:raise WorkflowError("force_repair_not_authorized")
+   for wa in range(1,latest+1):
+    rec=s.read_worker(stage,attempt,wa)
+    if rec is None or rec.get("state")!="failed":raise WorkflowError("force_repair_not_authorized")
+   internal=s.read("internal.json") if s._path("internal.json").exists() else {}
+   existing_context=s.read("repair-context.json") if s._path("repair-context.json").exists() else None
+   if not _valid_repair_context(existing_context,run,internal):raise WorkflowError("force_repair_not_authorized")
+   source_review=existing_context["review"] if isinstance(existing_context,dict) else None
+   if not isinstance(source_review,dict):raise WorkflowError("force_repair_not_authorized")
+   force_base_sha=_attempt_base_sha(run)
+   if source_review.get("reviewed_sha")!=force_base_sha:raise WorkflowError("force_repair_not_authorized")
+   force_context={"schema_version":SCHEMA_VERSION,"kind":"repair_context","from_attempt":attempt,"source_stage":existing_context.get("source_stage","spec-review"),"review_sha256":full_sha_hash(source_review),"review":source_review}
+   if (self.repo/".worktrees").is_symlink() or (self.repo/".hermes").is_symlink():raise WorkflowError("path_scope_violation")
+   old=Path(run["worktree_path"]);new_attempt=attempt+1;branch=f"hcw/{rid}/attempt-{new_attempt}";worktree=self.repo/".worktrees"/f"hcw-{rid}-{new_attempt}"
+   if worktree.is_symlink():raise WorkflowError("path_scope_violation")
+   k=board or self._boards.get(rid) or KanbanAdapter(self.repo,run["kanban_board"],home=Path(internal["kanban_home"]) if isinstance(internal.get("kanban_home"),str) else None)
+   force_intent={"operation":"force_repair","status":"pending","from_attempt":attempt,"attempt":new_attempt,"branch":branch,"worktree_path":str(worktree),"base_sha":force_base_sha,"board":run["kanban_board"],"repair_context_sha256":full_sha_hash(force_context)}
+   prior_fi=internal.get("force_repair_intent")
+   if isinstance(prior_fi,dict) and prior_fi.get("status") not in {"completed",None}:
+    if any(prior_fi.get(key)!=value for key,value in force_intent.items() if key!="status"):raise WorkflowError("force_repair_failed")
+   else:
+    internal["force_repair_intent"]=force_intent;RunStore._atomic(s._path("internal.json"),internal)
+   RunStore._atomic(s._path("repair-context.json"),force_context)
+   try:
+    if worktree.exists():
+     top=subprocess.run(["git","-C",str(worktree),"rev-parse","--show-toplevel"],text=True,capture_output=True);whead=subprocess.run(["git","-C",str(worktree),"rev-parse","HEAD"],text=True,capture_output=True);cbranch=subprocess.run(["git","-C",str(worktree),"branch","--show-current"],text=True,capture_output=True)
+     if top.returncode or whead.returncode or cbranch.returncode or Path(top.stdout.strip()).resolve()!=worktree.resolve() or whead.stdout.strip()!=force_base_sha or cbranch.stdout.strip()!=branch:raise WorkflowError("force_repair_failed")
+    else:
+     result=subprocess.run(["git","-C",str(self.repo),"worktree","add","-b",branch,str(worktree),force_base_sha],capture_output=True,text=True)
+     if result.returncode:
+      bhead=subprocess.run(["git","-C",str(self.repo),"rev-parse",branch],text=True,capture_output=True)
+      if bhead.returncode or bhead.stdout.strip()!=force_base_sha:raise WorkflowError("force_repair_failed")
+      result=subprocess.run(["git","-C",str(self.repo),"worktree","add",str(worktree),branch],capture_output=True,text=True)
+     if result.returncode:raise WorkflowError("force_repair_failed")
+    (worktree/".hermes").mkdir(parents=True,exist_ok=True);(worktree/".hermes"/"hcw-run.json").write_text(json.dumps({"schema_version":SCHEMA_VERSION,"run_id":rid,"repo_root":str(self.repo),"worktree_path":str(worktree.resolve())})+"\n")
+    pri_int=s.read("internal.json");prior_fi2=pri_int["force_repair_intent"];pt=prior_fi2.get("task_ids");ph=prior_fi2.get("brief_hashes")
+    if prior_fi2.get("status") in {"graph_created","completed"} and isinstance(pt,dict) and set(pt)==set(STAGES) and all(isinstance(v,str) and v for v in pt.values()) and isinstance(ph,dict) and set(ph)==set(STAGES) and all(isinstance(v,str) and len(v)==64 for v in ph.values()):
+     tasks=dict(pt);brief_hashes=dict(ph)
+     if not isinstance(pri_int.get("repair_intent"),dict) or pri_int["repair_intent"].get("attempt")!=new_attempt:
+      pri_int["repair_intent"]={"operation":"repair","status":"graph_created","from_attempt":attempt,"attempt":new_attempt,"branch":branch,"worktree_path":str(worktree),"base_sha":force_base_sha,"board":run["kanban_board"],"repair_context_sha256":full_sha_hash(force_context),"task_ids":tasks,"brief_hashes":brief_hashes};RunStore._atomic(s._path("internal.json"),pri_int)
+    else:
+     tasks=k.graph(rid,branch,worktree.resolve(),PROFILES,attempt=new_attempt,scope=run["scope"],goal=run["goal"],base_sha=force_base_sha);brief_hashes={st:k.last_briefs[st]["sha256"] for st in STAGES}
+     internal2=s.read("internal.json");internal2["force_repair_intent"].update({"status":"graph_created","task_ids":tasks,"brief_hashes":brief_hashes})
+     internal2["repair_intent"]={"operation":"repair","status":"graph_created","from_attempt":attempt,"attempt":new_attempt,"branch":branch,"worktree_path":str(worktree),"base_sha":force_base_sha,"board":run["kanban_board"],"repair_context_sha256":full_sha_hash(force_context),"task_ids":tasks,"brief_hashes":brief_hashes}
+     RunStore._atomic(s._path("internal.json"),internal2)
+    draft=dict(run);draft.update({"attempt":new_attempt,"kanban_task_ids":tasks,"dispatches":{st:{"stage":st,"task_id":tasks[st],"profile":PROFILES[st],"attempt":new_attempt,"brief_hash":brief_hashes[st],"session_id":"unavailable","model":"unavailable","provider":"unavailable"} for st in STAGES}})
+    self._attach_plan_briefs(s,draft,k,s.read("plan.json"));self._persist_authoritative_briefs(s,draft)
+   except WorkflowError:raise
+   except Exception as exc:raise WorkflowError("force_repair_failed") from exc
+   archive=s.root/"attempts"/str(attempt);archive.mkdir(parents=True,exist_ok=True)
+   for name in ("evidence.jsonl","reviews.json","verification.json","handoff.json"):
+    src=s._path(name)
+    if src.exists():shutil.move(str(src),str(archive/name))
+   run["attempt_history"].append({"attempt":attempt,"worktree_path":str(old),"attempt_base_sha":force_base_sha,"head_sha":run["head_sha"]})
+   run.update({"attempt":new_attempt,"branch":branch,"worktree_path":str(worktree.resolve()),"head_sha":force_base_sha,"attempt_base_sha":force_base_sha,"kanban_task_ids":tasks,"dispatches":draft["dispatches"],"stage_statuses":{st:("completed" if st in {"design","plan"} else "active" if st=="red" else "pending") for st in STAGES},"status":"awaiting_red"})
+   self._bump(s,run)
+   internal3=s.read("internal.json")
+   internal3["force_repair_intent"]["status"]="completed"
+   internal3["repair_intent"]={"operation":"repair","status":"completed","from_attempt":attempt,"attempt":new_attempt,"branch":branch,"worktree_path":str(worktree),"base_sha":force_base_sha,"board":run["kanban_board"],"repair_context_sha256":full_sha_hash(force_context),"task_ids":tasks,"brief_hashes":brief_hashes}
+   RunStore._atomic(s._path("internal.json"),internal3)
+   self._reconcile(s,run);return run
  def dispatch_worker(self,rid:str,stage:str,*,retry_succeeded:bool=False)->dict[str,Any]:
   """Launch the sole eligible Claude-backed stage as a detached, async worker.
 

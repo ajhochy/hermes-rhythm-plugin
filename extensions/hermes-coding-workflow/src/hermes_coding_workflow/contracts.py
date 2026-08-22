@@ -23,6 +23,15 @@ WORKER_FIELDS = {"schema_version", "kind", "id", "created_at", "updated_at", "ru
 LEGACY_WORKER_FIELDS = WORKER_FIELDS - {"repair_context_sha256"}
 
 def full_sha(value: object) -> bool: return isinstance(value, str) and bool(SHA.fullmatch(value))
+def _valid_attempt_history_item(item: object) -> bool:
+    if not isinstance(item, dict): return False
+    base_keys = {"attempt", "worktree_path", "head_sha"}
+    if set(item) - base_keys - {"attempt_base_sha"}: return False
+    if not isinstance(item.get("attempt"), int) or item["attempt"] < 1: return False
+    if not _text(item.get("worktree_path"), 4096) or not item.get("worktree_path"): return False
+    if not full_sha(item.get("head_sha")): return False
+    if "attempt_base_sha" in item and not full_sha(item["attempt_base_sha"]): return False
+    return True
 def valid_run_id(value: object) -> bool: return isinstance(value, str) and bool(RUN_ID.fullmatch(value))
 def _text(value: object, maximum: int = 4096) -> bool: return isinstance(value, str) and bool(value) and len(value) <= maximum
 def _actor(value: object) -> bool:
@@ -84,10 +93,11 @@ def validate_record(record: Mapping[str, Any]) -> str | None:
     required = {"run": {"schema_version","kind","id","revision","created_at","updated_at","package_id","base_sha","head_sha","branch","repo_root","worktree_path","status","scope","attempt","attempt_history","kanban_board","kanban_task_ids","stage_profiles","stage_statuses","setup","goal","dispatches"}, "evidence": {"schema_version","kind","id","created_at","run_id","type","actor","commit_sha","command","exit_code","artifact_path","artifact_sha256","previous_evidence_hash","evidence_hash"}, "review": {"schema_version","kind","id","created_at","run_id","reviewer","reviewed_sha","decision","findings","dispositions"}, "verification": {"schema_version","kind","id","created_at","run_id","candidate_sha","evidence_ids","status"}, "handoff": {"schema_version","kind","id","created_at","run_id","candidate_sha","action"}, "worker": WORKER_FIELDS}
     if kind not in required: return "malformed_schema"
     if kind == "worker": return None if validate_worker(record) else "malformed_schema"
-    if set(record) != required[kind] or record.get("schema_version") != SCHEMA_VERSION: return "malformed_schema"
+    allowed_extra = {"attempt_base_sha"} if kind == "run" else set()
+    if (set(record) - allowed_extra) != required[kind] or record.get("schema_version") != SCHEMA_VERSION: return "malformed_schema"
     if kind == "run":
         statuses=record.get("stage_statuses")
-        good = valid_run_id(record.get("id")) and isinstance(record.get("revision"), int) and record["revision"] >= 0 and _text(record.get("package_id"), 120) and _text(record.get("goal")) and full_sha(record.get("base_sha")) and full_sha(record.get("head_sha")) and isinstance(record.get("scope"), list) and bool(record["scope"]) and isinstance(record.get("attempt"), int) and record["attempt"] >= 1 and isinstance(record.get("attempt_history"), list) and isinstance(record.get("kanban_task_ids"), Mapping) and set(record["kanban_task_ids"]) == set(STAGES) and all(_text(v,160) for v in record["kanban_task_ids"].values()) and record.get("stage_profiles") == PROFILES and isinstance(record.get("dispatches"),Mapping) and set(record["dispatches"]) == set(STAGES) and all(_dispatch(stage, value) for stage, value in record["dispatches"].items()) and isinstance(statuses,Mapping) and set(statuses)==set(STAGES) and all(value in {"pending","active","completed","blocked"} for value in statuses.values()) and record.get("status") in {"awaiting_design","awaiting_plan","awaiting_red","awaiting_green","awaiting_spec_review","awaiting_quality_review","awaiting_verify","awaiting_live","verified","completed","repairing","blocked_setup"}
+        good = valid_run_id(record.get("id")) and isinstance(record.get("revision"), int) and record["revision"] >= 0 and _text(record.get("package_id"), 120) and _text(record.get("goal")) and full_sha(record.get("base_sha")) and full_sha(record.get("head_sha")) and isinstance(record.get("scope"), list) and bool(record["scope"]) and isinstance(record.get("attempt"), int) and record["attempt"] >= 1 and isinstance(record.get("attempt_history"), list) and all(_valid_attempt_history_item(x) for x in record["attempt_history"]) and isinstance(record.get("kanban_task_ids"), Mapping) and set(record["kanban_task_ids"]) == set(STAGES) and all(_text(v,160) for v in record["kanban_task_ids"].values()) and record.get("stage_profiles") == PROFILES and isinstance(record.get("dispatches"),Mapping) and set(record["dispatches"]) == set(STAGES) and all(_dispatch(stage, value) for stage, value in record["dispatches"].items()) and isinstance(statuses,Mapping) and set(statuses)==set(STAGES) and all(value in {"pending","active","completed","blocked"} for value in statuses.values()) and record.get("status") in {"awaiting_design","awaiting_plan","awaiting_red","awaiting_green","awaiting_spec_review","awaiting_quality_review","awaiting_verify","awaiting_live","verified","completed","repairing","blocked_setup"} and ("attempt_base_sha" not in record or full_sha(record["attempt_base_sha"]))
         return None if good else "malformed_schema"
     if kind == "evidence": return None if valid_run_id(record.get("run_id")) and record.get("type") in {"red","green","full","security","live"} and _actor(record.get("actor")) and full_sha(record.get("commit_sha")) and _argv(record.get("command")) and isinstance(record.get("exit_code"), int) and _text(record.get("artifact_path"),512) and isinstance(record.get("artifact_sha256"),str) and bool(re.fullmatch(r"[0-9a-f]{64}",record["artifact_sha256"])) else "malformed_schema"
     if kind == "review": return None if valid_run_id(record.get("run_id")) and _actor(record.get("reviewer")) and validate_review({k: record[k] for k in ("reviewed_sha","decision","findings","dispositions")}) else "malformed_schema"
