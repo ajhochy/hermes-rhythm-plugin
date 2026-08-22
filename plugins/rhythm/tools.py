@@ -16,9 +16,9 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from plugins.rhythm.backend import store
-from plugins.rhythm.backend.client import RhythmClient, RhythmProtocolError, RhythmRemoteError
-from plugins.rhythm.dashboard.plugin_api import (
+from .backend import store
+from .backend.client import RhythmClient, RhythmProtocolError, RhythmRemoteError
+from .dashboard.plugin_api import (
     _dashboard_summary,
     _safe_identity,
     _safe_workspace,

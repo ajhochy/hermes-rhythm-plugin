@@ -13,15 +13,15 @@ import time
 from pathlib import Path
 from typing import Any
 
-from plugins.rhythm.backend.client import RhythmClient, RhythmRemoteError
-from plugins.rhythm.packaging.build import build_feature_pack
-from plugins.rhythm.packaging.lifecycle import (
+from ..backend.client import RhythmClient, RhythmRemoteError
+from .build import build_feature_pack
+from .lifecycle import (
     doctor_feature_pack,
     install_feature_pack,
     rollback_feature_pack,
     uninstall_feature_pack,
 )
-from plugins.rhythm.packaging.validate import PackagingGateError
+from .validate import PackagingGateError
 
 
 class CutoverError(ValueError):
@@ -118,7 +118,7 @@ def _assert_uncertain_write() -> str:
 
 
 def _assert_native_tool_registration() -> list[str]:
-    from plugins.rhythm import tools
+    from .. import tools
 
     registered: list[str] = []
 

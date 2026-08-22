@@ -12,6 +12,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 from typing import Literal
 from typing import Any
 from urllib.parse import urlencode
@@ -19,15 +20,35 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from plugins.rhythm.backend.client import (
-    OAUTH_CLIENT_ID,
-    RhythmClient,
-    RhythmProtocolError,
-    RhythmRemoteError,
-    _httpx_transport,
-)
-from plugins.rhythm.backend import store
-from plugins.rhythm.dashboard import artifact_host
+# Normal native-plugin loading uses package-relative imports. Dashboard APIs are
+# also imported standalone by the web server, so that path bootstraps Hermes'
+# existing ``plugins`` namespace with this trusted user-plugin root.
+try:
+    from ..backend.client import (
+        OAUTH_CLIENT_ID,
+        RhythmClient,
+        RhythmProtocolError,
+        RhythmRemoteError,
+        _httpx_transport,
+    )
+    from ..backend import store
+    from . import artifact_host
+except ImportError:
+    import plugins as _plugins_namespace
+
+    _PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+    _USER_PLUGINS_ROOT = str(_PLUGIN_ROOT.parent)
+    if _USER_PLUGINS_ROOT not in _plugins_namespace.__path__:
+        _plugins_namespace.__path__.append(_USER_PLUGINS_ROOT)
+    from plugins.rhythm.backend.client import (
+        OAUTH_CLIENT_ID,
+        RhythmClient,
+        RhythmProtocolError,
+        RhythmRemoteError,
+        _httpx_transport,
+    )
+    from plugins.rhythm.backend import store
+    from plugins.rhythm.dashboard import artifact_host
 
 router = APIRouter()
 log = logging.getLogger(__name__)
