@@ -19,6 +19,7 @@ import yaml
 # hand-kept-in-sync duplicate, exactly like the installed `runtime/bin/hcw`
 # launcher prepends its own sibling `runtime/site`.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from agent.credential_pool import load_pool  # noqa: E402
 from hermes_coding_workflow.claude_worker import (  # noqa: E402
     CLAUDE_CLI_ENV,
     OPERATIONAL_ENV_KEYS as CLAUDE_OPERATIONAL_ENV_KEYS,
@@ -138,16 +139,19 @@ def _check_account_oauth_credentials(home: Path) -> None:
     OAuth credential to verify. Claude Code CLI readiness/account-login is
     verified independently by `_check_claude_cli_ready`.
     """
-    for provider in ("openai-codex",):
-        output = _run(home, ["auth", "list", provider]).stdout
-        active = next((line for line in output.splitlines() if "←" in line), "")
-        # `auth list` ends every active row with `<auth_type> <source> ←`.
-        # Parse from the right because labels are user-controlled and may be
-        # multi-word or contain the literal word "oauth".
-        fields = active.replace("←", "").split()
-        auth_type = fields[-2].lower() if len(fields) >= 4 else ""
-        if auth_type != "oauth":
-            raise RuntimeError(f"account OAuth credential is not active for {provider}")
+    previous_home = os.environ.get("HERMES_HOME")
+    try:
+        os.environ["HERMES_HOME"] = str(home)
+        for provider in ("openai-codex",):
+            active = load_pool(provider).peek()
+            auth_type = str(getattr(active, "auth_type", "")).strip().lower()
+            if auth_type != "oauth":
+                raise RuntimeError(f"account OAuth credential is not active for {provider}")
+    finally:
+        if previous_home is None:
+            os.environ.pop("HERMES_HOME", None)
+        else:
+            os.environ["HERMES_HOME"] = previous_home
 
 
 def _check_claude_cli_ready() -> None:

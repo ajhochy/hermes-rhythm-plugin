@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import importlib.util
 import pytest
@@ -251,15 +252,18 @@ def test_doctor_rejects_oauth_route_or_fallback_drift(tmp_path: Path, config: st
 
 
 def test_doctor_requires_active_openai_oauth_credential(tmp_path: Path, monkeypatch) -> None:
-    outputs = {"openai-codex": "openai-codex (1 credential):\n  #1 chatgpt oauth browser ←\n"}
+    auth_types = {"openai-codex": "oauth"}
+    sentinel = tmp_path / "sentinel-home"
+    monkeypatch.setenv("HERMES_HOME", str(sentinel))
     monkeypatch.setattr(
         doctor,
-        "_run",
-        lambda home, args: subprocess.CompletedProcess(args, 0, stdout=outputs[args[-1]], stderr=""),
+        "load_pool",
+        lambda provider: SimpleNamespace(peek=lambda: SimpleNamespace(auth_type=auth_types[provider])),
     )
     doctor._check_account_oauth_credentials(tmp_path)
+    assert os.environ["HERMES_HOME"] == str(sentinel)
 
-    outputs["openai-codex"] = "openai-codex (1 credential):\n  #1 chatgpt api_key env ←\n"
+    auth_types["openai-codex"] = "api_key"
     with pytest.raises(RuntimeError, match="account OAuth credential"):
         doctor._check_account_oauth_credentials(tmp_path)
 
@@ -268,11 +272,11 @@ def test_doctor_never_checks_an_anthropic_account_credential(tmp_path: Path, mon
     calls = []
     monkeypatch.setattr(
         doctor,
-        "_run",
-        lambda home, args: (calls.append(args) or subprocess.CompletedProcess(args, 0, stdout="openai-codex (1 credential):\n  #1 chatgpt oauth browser ←\n", stderr="")),
+        "load_pool",
+        lambda provider: (calls.append(provider) or SimpleNamespace(peek=lambda: SimpleNamespace(auth_type="oauth"))),
     )
     doctor._check_account_oauth_credentials(tmp_path)
-    assert not any("anthropic" in call for call in calls)
+    assert calls == ["openai-codex"]
 
 
 def test_no_installed_role_or_source_tier_ever_uses_provider_anthropic() -> None:
