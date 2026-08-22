@@ -3,8 +3,8 @@ from __future__ import annotations
 import hashlib,importlib.util,json,subprocess,sys
 from pathlib import Path
 import pytest
-from hermes_coding_workflow.contracts import CLAUDE_BACKEND,CLAUDE_TIER_MODELS,PROFILES,SCHEMA_VERSION
-from hermes_coding_workflow.service import ActorContext,WorkflowError,WorkflowService,_valid_repair_context,full_sha_hash
+from hermes_coding_workflow.contracts import CLAUDE_BACKEND,CLAUDE_TIER_MODELS,PROFILES,SCHEMA_VERSION,validate_record
+from hermes_coding_workflow.service import ActorContext,MAX_WORKER_ATTEMPTS,WorkflowError,WorkflowService,_valid_repair_context,full_sha_hash
 from hermes_coding_workflow.store import RunStore
 
 ROOT=Path(__file__).resolve().parents[2]
@@ -202,3 +202,289 @@ def test_force_repair_creates_attempt_from_exhausted_workers(repo:Path)->None:
  assert attempt3["attempt"]==3,"force_repair must create attempt 3"
  assert attempt3["base_sha"]==run["base_sha"],"base_sha must remain immutable original provenance"
  assert attempt3.get("attempt_base_sha")==candidate_sha,"attempt 3 must start at same candidate as attempt 2"
+
+
+# ── helpers shared by crash-boundary and P2 tests ────────────────────────────
+
+def _setup_attempt2_exhausted(repo:Path):
+ """Return (svc, orig_run, candidate_sha) with attempt-2 exhausted (3 failed RED workers)."""
+ s,run,candidate_sha=_do_attempt1_through_review(repo)
+ s.repair("run-1",act("spec-review"),board(repo,[]))
+ for _ in range(MAX_WORKER_ATTEMPTS):seed_failed_worker(repo,"red")
+ return s,run,candidate_sha
+
+def _compute_force_context(repo:Path)->tuple[dict,dict,dict,int]:
+ """Compute (run, internal, force_context, new_attempt) for the current attempt-2 exhausted state."""
+ store=RunStore(repo,"run-1");run=store.read();attempt=run["attempt"]
+ internal=store.read("internal.json") if store._path("internal.json").exists() else {}
+ existing_ctx=store.read("repair-context.json")
+ source_review=existing_ctx["review"];force_base_sha=run.get("attempt_base_sha") or run["base_sha"]
+ force_ctx={"schema_version":SCHEMA_VERSION,"kind":"repair_context","from_attempt":attempt,"source_stage":existing_ctx.get("source_stage","spec-review"),"review_sha256":full_sha_hash(source_review),"review":source_review}
+ return run,internal,force_ctx,attempt+1
+
+
+# ── 11. crash at intent boundary — replay succeeds ────────────────────────────
+
+def test_force_repair_crash_at_intent_boundary_is_replayable(repo:Path)->None:
+ """Crash after writing force_repair_intent but before writing repair-context.json.
+ The old context remains; replay must detect the intent hash mismatch and resume."""
+ s,orig_run,candidate_sha=_setup_attempt2_exhausted(repo)
+ run,internal,force_ctx,new_attempt=_compute_force_context(repo)
+ branch=f"hcw/run-1/attempt-{new_attempt}"
+ worktree=repo/".worktrees"/f"hcw-run-1-{new_attempt}"
+ force_base_sha=run.get("attempt_base_sha") or run["base_sha"]
+ # Simulate crash: write force_repair_intent but NOT repair-context.json
+ force_intent={"operation":"force_repair","status":"pending","from_attempt":run["attempt"],"attempt":new_attempt,"branch":branch,"worktree_path":str(worktree),"base_sha":force_base_sha,"board":run["kanban_board"],"repair_context_sha256":full_sha_hash(force_ctx)}
+ internal["force_repair_intent"]=force_intent
+ RunStore._atomic(RunStore(repo,"run-1")._path("internal.json"),internal)
+ # repair-context.json is still the OLD context (not overwritten)
+ result=s.force_repair("run-1",act("red"),"red",board(repo,[]))
+ assert result["attempt"]==new_attempt
+ assert result["attempt_base_sha"]==candidate_sha
+
+
+# ── 12. crash at context boundary — replay succeeds (the P1 crash replay bug) ─
+
+def test_force_repair_crash_at_context_boundary_is_replayable(repo:Path)->None:
+ """Crash after writing new repair-context.json but before creating worktree.
+ The old context is gone; replay must detect the context hash match and skip
+ _valid_repair_context (which would fail since repair_intent is still for old attempt)."""
+ s,orig_run,candidate_sha=_setup_attempt2_exhausted(repo)
+ run,internal,force_ctx,new_attempt=_compute_force_context(repo)
+ branch=f"hcw/run-1/attempt-{new_attempt}"
+ worktree=repo/".worktrees"/f"hcw-run-1-{new_attempt}"
+ force_base_sha=run.get("attempt_base_sha") or run["base_sha"]
+ # Simulate crash: write intent AND new repair-context.json, but no worktree
+ force_intent={"operation":"force_repair","status":"pending","from_attempt":run["attempt"],"attempt":new_attempt,"branch":branch,"worktree_path":str(worktree),"base_sha":force_base_sha,"board":run["kanban_board"],"repair_context_sha256":full_sha_hash(force_ctx)}
+ store=RunStore(repo,"run-1");internal["force_repair_intent"]=force_intent
+ RunStore._atomic(store._path("internal.json"),internal)
+ RunStore._atomic(store._path("repair-context.json"),force_ctx)  # OLD context overwritten
+ result=s.force_repair("run-1",act("red"),"red",board(repo,[]))
+ assert result["attempt"]==new_attempt
+ assert result["attempt_base_sha"]==candidate_sha
+
+
+# ── 13. crash at worktree/graph boundary — replay succeeds ───────────────────
+
+def test_force_repair_crash_at_graph_boundary_is_replayable(repo:Path)->None:
+ """Crash after graph creation (force_repair_intent.status='graph_created') but before run.json
+ update. Replay must reuse cached tasks and transition run.json correctly."""
+ s,orig_run,candidate_sha=_setup_attempt2_exhausted(repo)
+ # Run force_repair to completion to get a graph_created state captured mid-way
+ attempt3=s.force_repair("run-1",act("red"),"red",board(repo,[]))
+ assert attempt3["attempt"]==3
+ # Now simulate the crash-at-graph-boundary for a second force_repair cycle:
+ # exhaust attempt-3 workers, then partially write intent+graph_created state
+ for _ in range(MAX_WORKER_ATTEMPTS):seed_failed_worker(repo,"red")
+ run2,internal2,force_ctx2,new_attempt2=_compute_force_context(repo)
+ branch2=f"hcw/run-1/attempt-{new_attempt2}"
+ worktree2=repo/".worktrees"/f"hcw-run-1-{new_attempt2}"
+ force_base_sha2=run2.get("attempt_base_sha") or run2["base_sha"]
+ # Create the worktree manually (simulates graph creation having happened)
+ subprocess.run(["git","-C",str(repo),"worktree","add","-b",branch2,str(worktree2),force_base_sha2],check=True,capture_output=True)
+ (worktree2/".hermes").mkdir(parents=True,exist_ok=True)
+ (worktree2/".hermes"/"hcw-run.json").write_text(json.dumps({"schema_version":SCHEMA_VERSION,"run_id":"run-1","repo_root":str(repo),"worktree_path":str(worktree2.resolve())})+"\n")
+ store2=RunStore(repo,"run-1")
+ # Write graph_created intent with dummy tasks (force_repair will reuse them)
+ tasks={st:"task-"+st for st in ["design","plan","red","green","spec-review","quality-review","verify","live","complete"]}
+ brief_hashes={st:"a"*64 for st in tasks}
+ force_ctx_sha=full_sha_hash(force_ctx2)
+ force_intent2={"operation":"force_repair","status":"graph_created","from_attempt":run2["attempt"],"attempt":new_attempt2,"branch":branch2,"worktree_path":str(worktree2),"base_sha":force_base_sha2,"board":run2["kanban_board"],"repair_context_sha256":force_ctx_sha,"task_ids":tasks,"brief_hashes":brief_hashes}
+ repair_intent2={"operation":"repair","status":"graph_created","from_attempt":run2["attempt"],"attempt":new_attempt2,"branch":branch2,"worktree_path":str(worktree2),"base_sha":force_base_sha2,"board":run2["kanban_board"],"repair_context_sha256":force_ctx_sha,"task_ids":tasks,"brief_hashes":brief_hashes}
+ internal2["force_repair_intent"]=force_intent2;internal2["repair_intent"]=repair_intent2
+ RunStore._atomic(store2._path("internal.json"),internal2)
+ RunStore._atomic(store2._path("repair-context.json"),force_ctx2)
+ # run.json is still at attempt 3 (not yet bumped)
+ result=s.force_repair("run-1",act("red"),"red",board(repo,[]))
+ assert result["attempt"]==new_attempt2,"replay must advance to the correct new attempt"
+ assert result["attempt_base_sha"]==candidate_sha
+
+
+# ── 14. crash at run-finalization — state is already correct ─────────────────
+
+def test_force_repair_crash_at_run_finalization_leaves_correct_state(repo:Path)->None:
+ """Crash after run.json is updated but before force_repair_intent.status='completed'.
+ Calling force_repair again must fail (run is already at new attempt with 0 workers);
+ the run is in the correct awaiting_red state for dispatch_worker."""
+ s,orig_run,candidate_sha=_setup_attempt2_exhausted(repo)
+ attempt3=s.force_repair("run-1",act("red"),"red",board(repo,[]))
+ assert attempt3["attempt"]==3
+ # Simulate incomplete finalization: reset force_repair_intent to graph_created
+ store=RunStore(repo,"run-1");internal=store.read("internal.json")
+ internal["force_repair_intent"]["status"]="graph_created"
+ RunStore._atomic(store._path("internal.json"),internal)
+ # Calling force_repair again must fail — run is already at attempt 3, no workers yet
+ with pytest.raises(WorkflowError,match="force_repair_not_authorized"):
+  s.force_repair("run-1",act("red"),"red",board(repo,[]))
+ # Run must be in valid awaiting_red state at attempt 3
+ run_final=store.read()
+ assert run_final["attempt"]==3 and run_final["status"]=="awaiting_red"
+ # repair_intent for attempt 3 must be valid (dispatch_worker can proceed)
+ internal_final=store.read("internal.json")
+ assert internal_final.get("repair_intent",{}).get("attempt")==3
+
+
+# ── 15. P2 exact ceiling: >=MAX rejected, <MAX rejected ──────────────────────
+
+def test_force_repair_requires_exactly_max_worker_attempts(repo:Path)->None:
+ """force_repair must require latest==MAX_WORKER_ATTEMPTS, reject over- and under-limit."""
+ s,orig_run,candidate_sha=_do_attempt1_through_review(repo)
+ s.repair("run-1",act("spec-review"),board(repo,[]))
+ # Under-limit: only MAX-1 failed workers
+ for _ in range(MAX_WORKER_ATTEMPTS-1):seed_failed_worker(repo,"red")
+ with pytest.raises(WorkflowError,match="force_repair_not_authorized"):
+  s.force_repair("run-1",act("red"),"red",board(repo,[]))
+ # Exactly MAX: should pass
+ seed_failed_worker(repo,"red")
+ result=s.force_repair("run-1",act("red"),"red",board(repo,[]))
+ assert result["attempt"]==3
+ # Over-limit: seed one more failed worker on attempt 3, now latest==1 not MAX
+ # Actually, test that if we had 4 workers for some attempt, force_repair rejects.
+ # We test this via the existing run's workers: after force_repair, attempt is 3.
+ # Seed MAX+1 workers for attempt 3 to create an over-limit scenario.
+ for _ in range(MAX_WORKER_ATTEMPTS):seed_failed_worker(repo,"red")  # workers 1..3 for attempt 3
+ # Add a 4th worker directly via store (simulating over-limit scenario)
+ store=RunStore(repo,"run-1");run3=store.read();dispatch3=run3["dispatches"]["red"]
+ rc3=store.read("repair-context.json") if store._path("repair-context.json").exists() else None
+ extra={"schema_version":"hcw/v1","kind":"worker","id":"worker-run-1-red-3-4","created_at":"2026-08-22T00:00:00Z","updated_at":"2026-08-22T00:00:00Z","run_id":"run-1","stage":"red","task_id":run3["kanban_task_ids"]["red"],"profile":PROFILES["red"],"backend":CLAUDE_BACKEND,"model":CLAUDE_TIER_MODELS["red"],"attempt":3,"worker_attempt":4,"brief_hash":dispatch3["brief_hash"],"worktree_path":run3["worktree_path"],"pid":None,"state":"failed","stdout_path":None,"stderr_path":None,"stdout_sha256":None,"stderr_sha256":None,"exit_code":1,"note":"over_limit","design_sha256":full_sha_hash(store.read("approved-design.json")),"plan_sha256":full_sha_hash(store.read("plan.json")),"dispatch_sha256":full_sha_hash({"run_id":"run-1","stage":"red","task_id":run3["kanban_task_ids"]["red"],"profile":PROFILES["red"],"attempt":3,"brief_hash":dispatch3["brief_hash"]}),"repair_context_sha256":full_sha_hash(rc3) if rc3 else None,"process_identity":None}
+ store.write_worker("red",3,4,extra)
+ with pytest.raises(WorkflowError,match="force_repair_not_authorized"):
+  s.force_repair("run-1",act("red"),"red",board(repo,[]))
+
+
+# ── 16. P2 exact ceiling: missing, queued, running, succeeded workers rejected ─
+
+@pytest.mark.parametrize("bad_state", ["queued","running","succeeded",None])
+def test_force_repair_rejects_non_failed_and_missing_worker_records(repo:Path,bad_state:str|None)->None:
+ """All MAX worker records must exist, be schema-valid, and be terminal failed."""
+ s,_,_=_do_attempt1_through_review(repo)
+ s.repair("run-1",act("spec-review"),board(repo,[]))
+ # Seed MAX-1 correct failed workers
+ for _ in range(MAX_WORKER_ATTEMPTS-1):seed_failed_worker(repo,"red")
+ if bad_state is None:
+  # missing record: just don't seed the last one
+  pass
+ else:
+  # Seed a worker with the bad state
+  store=RunStore(repo,"run-1");run=store.read();attempt=run["attempt"]
+  dispatch=run["dispatches"]["red"];wa=MAX_WORKER_ATTEMPTS;stamp="2026-08-22T00:00:00Z"
+  rc=store.read("repair-context.json") if store._path("repair-context.json").exists() else None
+  record={"schema_version":"hcw/v1","kind":"worker","id":f"worker-run-1-red-{attempt}-{wa}","created_at":stamp,"updated_at":stamp,"run_id":"run-1","stage":"red","task_id":run["kanban_task_ids"]["red"],"profile":PROFILES["red"],"backend":CLAUDE_BACKEND,"model":CLAUDE_TIER_MODELS["red"],"attempt":attempt,"worker_attempt":wa,"brief_hash":dispatch["brief_hash"],"worktree_path":run["worktree_path"],"pid":None,"state":bad_state,"stdout_path":None,"stderr_path":None,"stdout_sha256":None,"stderr_sha256":None,"exit_code":None,"note":None,"design_sha256":full_sha_hash(store.read("approved-design.json")),"plan_sha256":full_sha_hash(store.read("plan.json")),"dispatch_sha256":full_sha_hash({"run_id":"run-1","stage":"red","task_id":run["kanban_task_ids"]["red"],"profile":PROFILES["red"],"attempt":attempt,"brief_hash":dispatch["brief_hash"]}),"repair_context_sha256":full_sha_hash(rc) if rc else None,"process_identity":None}
+  store.write_worker("red",attempt,wa,record)
+ with pytest.raises(WorkflowError,match="force_repair_not_authorized"):
+  s.force_repair("run-1",act("red"),"red",board(repo,[]))
+
+
+# ── 17. P2 exact ceiling: schema-invalid worker record rejected ───────────────
+
+def test_force_repair_rejects_schema_invalid_worker_record(repo:Path)->None:
+ """A malformed worker record (fails validate_worker) must block force_repair."""
+ s,_,_=_do_attempt1_through_review(repo)
+ s.repair("run-1",act("spec-review"),board(repo,[]))
+ for _ in range(MAX_WORKER_ATTEMPTS-1):seed_failed_worker(repo,"red")
+ store=RunStore(repo,"run-1");run=store.read();attempt=run["attempt"];wa=MAX_WORKER_ATTEMPTS
+ # Write a worker with an invalid state value
+ rc=store.read("repair-context.json") if store._path("repair-context.json").exists() else None
+ dispatch=run["dispatches"]["red"]
+ bad={"schema_version":"hcw/v1","kind":"worker","id":f"worker-run-1-red-{attempt}-{wa}","created_at":"2026-08-22T00:00:00Z","updated_at":"2026-08-22T00:00:00Z","run_id":"run-1","stage":"red","task_id":run["kanban_task_ids"]["red"],"profile":PROFILES["red"],"backend":CLAUDE_BACKEND,"model":CLAUDE_TIER_MODELS["red"],"attempt":attempt,"worker_attempt":wa,"brief_hash":dispatch["brief_hash"],"worktree_path":run["worktree_path"],"pid":None,"state":"invalid_state","stdout_path":None,"stderr_path":None,"stdout_sha256":None,"stderr_sha256":None,"exit_code":1,"note":None,"design_sha256":full_sha_hash(store.read("approved-design.json")),"plan_sha256":full_sha_hash(store.read("plan.json")),"dispatch_sha256":full_sha_hash({"run_id":"run-1","stage":"red","task_id":run["kanban_task_ids"]["red"],"profile":PROFILES["red"],"attempt":attempt,"brief_hash":dispatch["brief_hash"]}),"repair_context_sha256":full_sha_hash(rc) if rc else None,"process_identity":None}
+ # Bypass write_worker's validate_record guard to inject the malformed record directly
+ RunStore._atomic(store.worker_path("red",attempt,wa),bad)
+ with pytest.raises(WorkflowError,match="force_repair_not_authorized"):
+  s.force_repair("run-1",act("red"),"red",board(repo,[]))
+
+
+# ── 18. P2 exact ceiling: wrong binding fields in worker record ───────────────
+
+@pytest.mark.parametrize("bad_field,bad_value",[
+ ("run_id","wrong-run"),
+ ("stage","green"),
+ ("attempt",99),
+ ("worker_attempt",99),
+ ("task_id","wrong-task"),
+ ("profile","wrong-profile"),
+])
+def test_force_repair_rejects_worker_with_wrong_bindings(repo:Path,bad_field:str,bad_value:object)->None:
+ """Worker records with wrong run/attempt/stage/task/profile bindings must be rejected."""
+ s,_,_=_do_attempt1_through_review(repo)
+ s.repair("run-1",act("spec-review"),board(repo,[]))
+ for _ in range(MAX_WORKER_ATTEMPTS-1):seed_failed_worker(repo,"red")
+ store=RunStore(repo,"run-1");run=store.read();attempt=run["attempt"];wa=MAX_WORKER_ATTEMPTS
+ rc=store.read("repair-context.json") if store._path("repair-context.json").exists() else None
+ dispatch=run["dispatches"]["red"]
+ correct_attempt=attempt if bad_field!="attempt" else run["attempt"]
+ correct_wa=wa if bad_field!="worker_attempt" else wa
+ base={"schema_version":"hcw/v1","kind":"worker","id":f"worker-run-1-red-{correct_attempt}-{correct_wa}","created_at":"2026-08-22T00:00:00Z","updated_at":"2026-08-22T00:00:00Z","run_id":"run-1","stage":"red","task_id":run["kanban_task_ids"]["red"],"profile":PROFILES["red"],"backend":CLAUDE_BACKEND,"model":CLAUDE_TIER_MODELS["red"],"attempt":correct_attempt,"worker_attempt":correct_wa,"brief_hash":dispatch["brief_hash"],"worktree_path":run["worktree_path"],"pid":None,"state":"failed","stdout_path":None,"stderr_path":None,"stdout_sha256":None,"stderr_sha256":None,"exit_code":1,"note":None,"design_sha256":full_sha_hash(store.read("approved-design.json")),"plan_sha256":full_sha_hash(store.read("plan.json")),"dispatch_sha256":full_sha_hash({"run_id":"run-1","stage":"red","task_id":run["kanban_task_ids"]["red"],"profile":PROFILES["red"],"attempt":attempt,"brief_hash":dispatch["brief_hash"]}),"repair_context_sha256":full_sha_hash(rc) if rc else None,"process_identity":None}
+ bad={**base,bad_field:bad_value}
+ store.write_worker("red",wa,wa,bad)
+ with pytest.raises(WorkflowError,match="force_repair_not_authorized"):
+  s.force_repair("run-1",act("red"),"red",board(repo,[]))
+
+
+# ── 19. P2 run relationships: sequential attempt history enforced ─────────────
+
+def test_contracts_reject_attempt_history_wrong_length(repo:Path)->None:
+ """validate_record rejects runs where len(attempt_history) != attempt - 1."""
+ s,run,_=ready(repo);store=RunStore(repo,"run-1");saved=dict(store.read())
+ # attempt=1 with a spurious history entry
+ saved["attempt_history"]=[{"attempt":1,"worktree_path":"/tmp/x","head_sha":"a"*40}]
+ assert validate_record(saved)=="malformed_schema","extra history entry on attempt=1 must be rejected"
+ # attempt=2 with no history
+ saved2=dict(store.read());saved2["attempt"]=2;saved2["attempt_history"]=[]
+ saved2["dispatches"]={st:{**v,"attempt":2} for st,v in saved2["dispatches"].items()}
+ assert validate_record(saved2)=="malformed_schema","empty history on attempt=2 must be rejected"
+
+
+def test_contracts_reject_nonsequential_attempt_history(repo:Path)->None:
+ """validate_record rejects attempt_history with non-sequential or duplicate attempt numbers."""
+ s,_,candidate_sha=_do_attempt1_through_review(repo)
+ repaired=s.repair("run-1",act("spec-review"),board(repo,[]))
+ store=RunStore(repo,"run-1");saved=dict(store.read())
+ assert saved["attempt"]==2
+ # Replace history with wrong attempt number
+ bad_history=[{"attempt":2,"worktree_path":str(Path(saved["worktree_path"]).parent)+"x","head_sha":"b"*40}]
+ saved["attempt_history"]=bad_history
+ assert validate_record(saved)=="malformed_schema","wrong attempt number in history must be rejected"
+ # Duplicate attempt numbers
+ dup_history=[{"attempt":1,"worktree_path":"/tmp/a","head_sha":"a"*40},{"attempt":1,"worktree_path":"/tmp/b","head_sha":"b"*40}]
+ saved3=dict(store.read());saved3["attempt"]=3;saved3["attempt_history"]=dup_history
+ saved3["dispatches"]={st:{**v,"attempt":3} for st,v in saved3["dispatches"].items()}
+ assert validate_record(saved3)=="malformed_schema","duplicate attempt numbers must be rejected"
+
+
+def test_contracts_reject_contradictory_attempt_base_sha_in_history(repo:Path)->None:
+ """Populated attempt_base_sha in a history entry must follow the chain rule."""
+ s,run,candidate_sha=_do_attempt1_through_review(repo)
+ repaired=s.repair("run-1",act("spec-review"),board(repo,[]))
+ store=RunStore(repo,"run-1");saved=dict(store.read())
+ assert saved["attempt"]==2
+ # attempt 1's baseline must equal base_sha — wrong value must be rejected
+ saved["attempt_history"][0]["attempt_base_sha"]="c"*40  # wrong: not base_sha
+ assert validate_record(saved)=="malformed_schema","wrong attempt_base_sha in history[0] must be rejected"
+ # attempt 2's baseline must equal history[0].head_sha — wrong value rejected
+ saved2=dict(store.read());saved2["attempt_base_sha"]="d"*40
+ assert validate_record(saved2)=="malformed_schema","wrong current run attempt_base_sha must be rejected"
+
+
+def test_contracts_enforce_attempt1_baseline_equals_base_sha(repo:Path)->None:
+ """When attempt=1 and attempt_base_sha is populated, it must equal base_sha."""
+ s,run,_=ready(repo);store=RunStore(repo,"run-1");saved=dict(store.read())
+ assert saved["attempt"]==1
+ # Correct: attempt_base_sha == base_sha
+ assert validate_record(saved) is None
+ # Wrong: attempt_base_sha != base_sha
+ saved["attempt_base_sha"]="e"*40
+ assert validate_record(saved)=="malformed_schema","attempt_base_sha != base_sha on attempt=1 must be rejected"
+
+
+def test_contracts_accept_legacy_history_entries_without_attempt_base_sha(repo:Path)->None:
+ """Legacy history entries lacking attempt_base_sha must remain accepted."""
+ s,run,candidate_sha=_do_attempt1_through_review(repo)
+ repaired=s.repair("run-1",act("spec-review"),board(repo,[]))
+ store=RunStore(repo,"run-1");saved=dict(store.read())
+ assert saved["attempt"]==2
+ # Remove attempt_base_sha from history entry (legacy compatibility)
+ saved["attempt_history"][0].pop("attempt_base_sha",None)
+ assert validate_record(saved) is None,"legacy history entry without attempt_base_sha must be valid"
+ # Remove from current run too
+ saved.pop("attempt_base_sha",None)
+ assert validate_record(saved) is None,"legacy run without attempt_base_sha must be valid"

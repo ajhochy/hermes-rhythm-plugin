@@ -398,6 +398,8 @@ def test_worker_runner_fails_terminally_when_run_attempt_advances_after_dispatch
     # "is the stage active" would wrongly let this stale attempt-1 worker
     # through -- the attempt number itself must also be revalidated.
     state = store.read()
+    # Simulate repair advancing attempt: history must be populated to satisfy contracts.
+    state["attempt_history"] = [{"attempt": 1, "worktree_path": state["worktree_path"], "head_sha": state["base_sha"]}]
     state["attempt"] = 2
     state["dispatches"] = {stage: {**info, "attempt": 2} for stage, info in state["dispatches"].items()}
     store.write_json("run.json", state)

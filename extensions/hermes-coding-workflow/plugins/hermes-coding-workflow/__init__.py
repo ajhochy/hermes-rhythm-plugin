@@ -546,7 +546,7 @@ def _terminal_allowed(run: dict[str, Any] | None, stage: str | None, args: dict[
             return False
         if not _is_exact_authoritative_repo(argv[2], run):
             return False
-        expected = {"design":{"approve-design"}, "plan":{"approve-plan"}, "red":{"check","dispatch-worker","worker-status"}, "green":{"check","commit","amend-scope","dispatch-worker","worker-status"}, "spec-review":{"review"}, "quality-review":{"review","dispatch-worker","worker-status"}, "verify":{"check","verify"}, "live":{"check"}, "complete":{"complete","dispatch-worker","worker-status"}}
+        expected = {"design":{"approve-design"}, "plan":{"approve-plan"}, "red":{"check","dispatch-worker","worker-status","force-repair"}, "green":{"check","commit","amend-scope","dispatch-worker","worker-status","force-repair"}, "spec-review":{"review"}, "quality-review":{"review","dispatch-worker","worker-status"}, "verify":{"check","verify"}, "live":{"check"}, "complete":{"complete","dispatch-worker","worker-status"}}
         if subcommand not in expected.get(stage, set()):
             return False
         if subcommand == "check":
@@ -569,6 +569,8 @@ def _terminal_allowed(run: dict[str, Any] | None, stage: str | None, args: dict[
                 return False
             revision = argv[9]
             return bool(argv[7]) and revision.isascii() and revision.isdigit() and int(revision) == run.get("revision") and re.fullmatch(r"[0-9a-f]{40}", argv[11]) is not None and argv[11] == run.get("head_sha")
+        if subcommand == "force-repair":
+            return len(argv) == 5 and argv[4] == stage
         if subcommand in _CLAUDE_WORKER_COMMANDS:
             if len(argv) < 5 or not _is_exact_authoritative_repo(argv[2], run) or argv[4] != stage:
                 return False

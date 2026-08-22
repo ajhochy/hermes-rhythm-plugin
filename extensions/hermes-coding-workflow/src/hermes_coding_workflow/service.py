@@ -6,7 +6,7 @@ from datetime import datetime,timezone
 from pathlib import Path
 from typing import Any
 from .adapters import GitAdapter,KanbanAdapter
-from .contracts import CLAUDE_BACKEND,CLAUDE_STAGES,CLAUDE_TIER_MODELS,PROFILES,SCHEMA_VERSION,STAGES,full_sha,valid_run_id,validate_design,validate_plan,validate_record,validate_review
+from .contracts import CLAUDE_BACKEND,CLAUDE_STAGES,CLAUDE_TIER_MODELS,PROFILES,SCHEMA_VERSION,STAGES,full_sha,valid_run_id,validate_design,validate_plan,validate_record,validate_review,validate_worker
 from . import process
 from .safety import open_nofollow_write_fd,redact,validate_controlled_worktree
 from .store import RunStore
@@ -409,30 +409,57 @@ class WorkflowService:
    stage_status_map={"red":"awaiting_red","green":"awaiting_green"}
    if run["status"]!=stage_status_map[stage] or run["stage_statuses"].get(stage)!="active":raise WorkflowError("force_repair_not_authorized")
    attempt=run["attempt"]
-   latest=s.latest_worker_attempt(stage,attempt)
-   if not latest or latest<MAX_WORKER_ATTEMPTS:raise WorkflowError("force_repair_not_authorized")
-   for wa in range(1,latest+1):
-    rec=s.read_worker(stage,attempt,wa)
-    if rec is None or rec.get("state")!="failed":raise WorkflowError("force_repair_not_authorized")
    internal=s.read("internal.json") if s._path("internal.json").exists() else {}
    existing_context=s.read("repair-context.json") if s._path("repair-context.json").exists() else None
-   if not _valid_repair_context(existing_context,run,internal):raise WorkflowError("force_repair_not_authorized")
-   source_review=existing_context["review"] if isinstance(existing_context,dict) else None
-   if not isinstance(source_review,dict):raise WorkflowError("force_repair_not_authorized")
-   force_base_sha=_attempt_base_sha(run)
-   if source_review.get("reviewed_sha")!=force_base_sha:raise WorkflowError("force_repair_not_authorized")
-   force_context={"schema_version":SCHEMA_VERSION,"kind":"repair_context","from_attempt":attempt,"source_stage":existing_context.get("source_stage","spec-review"),"review_sha256":full_sha_hash(source_review),"review":source_review}
+   # Detect context-write boundary first so worker binding check uses the right hash.
+   # If a prior intent's repair_context_sha256 matches the current repair-context.json,
+   # the new context was already written in a prior run that crashed — the workers were
+   # dispatched under the old context, so skip the context hash check for that replay.
+   prior_fi=internal.get("force_repair_intent")
+   _intent_matches=isinstance(prior_fi,dict) and prior_fi.get("status") not in {"completed",None}
+   _context_written=(_intent_matches and existing_context is not None and
+                     full_sha_hash(existing_context)==prior_fi.get("repair_context_sha256"))
+   latest=s.latest_worker_attempt(stage,attempt)
+   # Require exactly MAX_WORKER_ATTEMPTS — not more, not fewer
+   if not latest or latest!=MAX_WORKER_ATTEMPTS:raise WorkflowError("force_repair_not_authorized")
+   dispatch=run["dispatches"].get(stage) or {}
+   # Context hash for binding: use existing_context only when context has not yet been
+   # overwritten by a prior crash (in _context_written replay, workers hold the old hash).
+   ctx_hash=None if _context_written else full_sha_hash(existing_context)
+   for wa in range(1,MAX_WORKER_ATTEMPTS+1):
+    rec=s.read_worker(stage,attempt,wa)
+    # Schema-valid, correct bindings, terminal failed, no succeeded/queued/running
+    if rec is None or not validate_worker(rec):raise WorkflowError("force_repair_not_authorized")
+    if (rec.get("run_id")!=rid or rec.get("stage")!=stage or rec.get("attempt")!=attempt or
+        rec.get("worker_attempt")!=wa or rec.get("task_id")!=run["kanban_task_ids"].get(stage) or
+        rec.get("profile")!=PROFILES[stage] or rec.get("worktree_path")!=run["worktree_path"] or
+        rec.get("brief_hash")!=dispatch.get("brief_hash") or rec.get("state")!="failed" or
+        (ctx_hash is not None and rec.get("repair_context_sha256")!=ctx_hash)):raise WorkflowError("force_repair_not_authorized")
    if (self.repo/".worktrees").is_symlink() or (self.repo/".hermes").is_symlink():raise WorkflowError("path_scope_violation")
+   force_base_sha=_attempt_base_sha(run)
    old=Path(run["worktree_path"]);new_attempt=attempt+1;branch=f"hcw/{rid}/attempt-{new_attempt}";worktree=self.repo/".worktrees"/f"hcw-{rid}-{new_attempt}"
    if worktree.is_symlink():raise WorkflowError("path_scope_violation")
    k=board or self._boards.get(rid) or KanbanAdapter(self.repo,run["kanban_board"],home=Path(internal["kanban_home"]) if isinstance(internal.get("kanban_home"),str) else None)
+   if _context_written:
+    source_review=existing_context.get("review") if isinstance(existing_context,dict) else None
+    if not isinstance(source_review,dict):raise WorkflowError("force_repair_not_authorized")
+    if source_review.get("reviewed_sha")!=force_base_sha:raise WorkflowError("force_repair_not_authorized")
+    force_context=existing_context
+   else:
+    if not _valid_repair_context(existing_context,run,internal):raise WorkflowError("force_repair_not_authorized")
+    source_review=existing_context["review"] if isinstance(existing_context,dict) else None
+    if not isinstance(source_review,dict):raise WorkflowError("force_repair_not_authorized")
+    if source_review.get("reviewed_sha")!=force_base_sha:raise WorkflowError("force_repair_not_authorized")
+    force_context={"schema_version":SCHEMA_VERSION,"kind":"repair_context","from_attempt":attempt,"source_stage":existing_context.get("source_stage","spec-review"),"review_sha256":full_sha_hash(source_review),"review":source_review}
+   # Persist intent (with new context hash) before any mutations
    force_intent={"operation":"force_repair","status":"pending","from_attempt":attempt,"attempt":new_attempt,"branch":branch,"worktree_path":str(worktree),"base_sha":force_base_sha,"board":run["kanban_board"],"repair_context_sha256":full_sha_hash(force_context)}
-   prior_fi=internal.get("force_repair_intent")
-   if isinstance(prior_fi,dict) and prior_fi.get("status") not in {"completed",None}:
+   if _intent_matches:
     if any(prior_fi.get(key)!=value for key,value in force_intent.items() if key!="status"):raise WorkflowError("force_repair_failed")
    else:
     internal["force_repair_intent"]=force_intent;RunStore._atomic(s._path("internal.json"),internal)
-   RunStore._atomic(s._path("repair-context.json"),force_context)
+   # Write new repair-context only if not already past that boundary
+   if not _context_written:
+    RunStore._atomic(s._path("repair-context.json"),force_context)
    try:
     if worktree.exists():
      top=subprocess.run(["git","-C",str(worktree),"rev-parse","--show-toplevel"],text=True,capture_output=True);whead=subprocess.run(["git","-C",str(worktree),"rev-parse","HEAD"],text=True,capture_output=True);cbranch=subprocess.run(["git","-C",str(worktree),"branch","--show-current"],text=True,capture_output=True)

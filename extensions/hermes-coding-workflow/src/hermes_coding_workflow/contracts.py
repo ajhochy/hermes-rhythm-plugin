@@ -97,8 +97,24 @@ def validate_record(record: Mapping[str, Any]) -> str | None:
     if (set(record) - allowed_extra) != required[kind] or record.get("schema_version") != SCHEMA_VERSION: return "malformed_schema"
     if kind == "run":
         statuses=record.get("stage_statuses")
-        good = valid_run_id(record.get("id")) and isinstance(record.get("revision"), int) and record["revision"] >= 0 and _text(record.get("package_id"), 120) and _text(record.get("goal")) and full_sha(record.get("base_sha")) and full_sha(record.get("head_sha")) and isinstance(record.get("scope"), list) and bool(record["scope"]) and isinstance(record.get("attempt"), int) and record["attempt"] >= 1 and isinstance(record.get("attempt_history"), list) and all(_valid_attempt_history_item(x) for x in record["attempt_history"]) and isinstance(record.get("kanban_task_ids"), Mapping) and set(record["kanban_task_ids"]) == set(STAGES) and all(_text(v,160) for v in record["kanban_task_ids"].values()) and record.get("stage_profiles") == PROFILES and isinstance(record.get("dispatches"),Mapping) and set(record["dispatches"]) == set(STAGES) and all(_dispatch(stage, value) for stage, value in record["dispatches"].items()) and isinstance(statuses,Mapping) and set(statuses)==set(STAGES) and all(value in {"pending","active","completed","blocked"} for value in statuses.values()) and record.get("status") in {"awaiting_design","awaiting_plan","awaiting_red","awaiting_green","awaiting_spec_review","awaiting_quality_review","awaiting_verify","awaiting_live","verified","completed","repairing","blocked_setup"} and ("attempt_base_sha" not in record or full_sha(record["attempt_base_sha"]))
-        return None if good else "malformed_schema"
+        cur_attempt = record.get("attempt", 0)
+        history = record.get("attempt_history", [])
+        good = valid_run_id(record.get("id")) and isinstance(record.get("revision"), int) and record["revision"] >= 0 and _text(record.get("package_id"), 120) and _text(record.get("goal")) and full_sha(record.get("base_sha")) and full_sha(record.get("head_sha")) and isinstance(record.get("scope"), list) and bool(record["scope"]) and isinstance(cur_attempt, int) and cur_attempt >= 1 and isinstance(history, list) and all(_valid_attempt_history_item(x) for x in history) and isinstance(record.get("kanban_task_ids"), Mapping) and set(record["kanban_task_ids"]) == set(STAGES) and all(_text(v,160) for v in record["kanban_task_ids"].values()) and record.get("stage_profiles") == PROFILES and isinstance(record.get("dispatches"),Mapping) and set(record["dispatches"]) == set(STAGES) and all(_dispatch(stage, value) for stage, value in record["dispatches"].items()) and isinstance(statuses,Mapping) and set(statuses)==set(STAGES) and all(value in {"pending","active","completed","blocked"} for value in statuses.values()) and record.get("status") in {"awaiting_design","awaiting_plan","awaiting_red","awaiting_green","awaiting_spec_review","awaiting_quality_review","awaiting_verify","awaiting_live","verified","completed","repairing","blocked_setup"} and ("attempt_base_sha" not in record or full_sha(record["attempt_base_sha"]))
+        if not good: return "malformed_schema"
+        # Enforce sequential unique attempt history: exactly attempt-1 entries, attempts 1..attempt-1
+        if len(history) != cur_attempt - 1: return "malformed_schema"
+        if history and [item.get("attempt") for item in history] != list(range(1, cur_attempt)): return "malformed_schema"
+        # Chain rule for attempt_base_sha (when populated; absent = legacy, skip)
+        for i, entry in enumerate(history):
+            if "attempt_base_sha" not in entry: continue
+            expected_sha = record["base_sha"] if i == 0 else history[i - 1].get("head_sha")
+            if entry["attempt_base_sha"] != expected_sha: return "malformed_schema"
+        if "attempt_base_sha" in record:
+            if cur_attempt == 1:
+                if record["attempt_base_sha"] != record["base_sha"]: return "malformed_schema"
+            elif history:
+                if record["attempt_base_sha"] != history[-1].get("head_sha"): return "malformed_schema"
+        return None
     if kind == "evidence": return None if valid_run_id(record.get("run_id")) and record.get("type") in {"red","green","full","security","live"} and _actor(record.get("actor")) and full_sha(record.get("commit_sha")) and _argv(record.get("command")) and isinstance(record.get("exit_code"), int) and _text(record.get("artifact_path"),512) and isinstance(record.get("artifact_sha256"),str) and bool(re.fullmatch(r"[0-9a-f]{64}",record["artifact_sha256"])) else "malformed_schema"
     if kind == "review": return None if valid_run_id(record.get("run_id")) and _actor(record.get("reviewer")) and validate_review({k: record[k] for k in ("reviewed_sha","decision","findings","dispositions")}) else "malformed_schema"
     if kind == "verification": return None if valid_run_id(record.get("run_id")) and full_sha(record.get("candidate_sha")) and record.get("status") in {"passed","deterministic_passed"} and isinstance(record.get("evidence_ids"),list) else "malformed_schema"

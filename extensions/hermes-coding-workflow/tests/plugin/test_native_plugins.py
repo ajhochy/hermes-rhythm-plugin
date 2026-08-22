@@ -960,6 +960,80 @@ def test_dispatch_worker_blocked_once_its_bound_stage_is_no_longer_active(workfl
     assert decision and decision["action"] == "block"
 
 
+@pytest.mark.parametrize("stage,profile,task", [
+    ("red", "dev-contract", "task-red"),
+    ("green", "dev-builder", "task-green"),
+])
+def test_force_repair_permitted_for_red_and_green_with_exact_args(workflow, monkeypatch, stage, profile, task):
+    """force-repair <repo> <run-id> <matching-stage> is the only allowed form."""
+    plugin = load_plugin("hermes-coding-workflow")
+    repo, _, state = workflow
+    state["stage_statuses"] = {n: ("active" if n == stage else "pending") for n in state["stage_statuses"]}
+    state["status"] = f"awaiting_{stage}"
+    (repo / ".hermes" / "workflows" / "run-test" / "run.json").write_text(json.dumps(state))
+    monkeypatch.delenv("HCW_RUN_ID")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task)
+    monkeypatch.setenv("HERMES_PROFILE", profile)
+    launcher = (ROOT / "plugins" / "hermes-coding-workflow" / "runtime" / "bin" / "hcw").resolve()
+    exact = f"{launcher} force-repair {repo.resolve()} run-test {stage}"
+    assert plugin._pre_tool_call(tool_name="terminal", args={"command": exact}) is None
+
+
+@pytest.mark.parametrize("stage,profile,task", [
+    ("red", "dev-contract", "task-red"),
+    ("green", "dev-builder", "task-green"),
+])
+def test_force_repair_rejects_trailing_duplicate_and_alternative_args(workflow, monkeypatch, stage, profile, task):
+    """No trailing, duplicate, or alternative arguments are accepted."""
+    plugin = load_plugin("hermes-coding-workflow")
+    repo, _, state = workflow
+    state["stage_statuses"] = {n: ("active" if n == stage else "pending") for n in state["stage_statuses"]}
+    state["status"] = f"awaiting_{stage}"
+    (repo / ".hermes" / "workflows" / "run-test" / "run.json").write_text(json.dumps(state))
+    monkeypatch.delenv("HCW_RUN_ID")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task)
+    monkeypatch.setenv("HERMES_PROFILE", profile)
+    launcher = (ROOT / "plugins" / "hermes-coding-workflow" / "runtime" / "bin" / "hcw").resolve()
+    exact = f"{launcher} force-repair {repo.resolve()} run-test {stage}"
+    other_stage = "green" if stage == "red" else "red"
+    for bad in (
+        f"{exact} extra",                                              # trailing arg
+        f"{exact} {stage}",                                           # duplicate stage
+        f"{launcher} force-repair {repo.resolve()} run-test",         # missing stage
+        f"{launcher} force-repair {repo.resolve()} run-test {other_stage}",  # wrong stage
+        f"{launcher} force-repair {repo.resolve()} run-test {stage} --force",  # flag arg
+        f"HCW_RUN_ID=run-test {exact}",                               # env-prefix injection
+        f"{launcher} force-repair {repo.resolve()} run-test design",  # non-red/green stage
+    ):
+        decision = plugin._pre_tool_call(tool_name="terminal", args={"command": bad})
+        assert decision and decision["action"] == "block", f"must block: {bad!r}"
+
+
+@pytest.mark.parametrize("stage,profile,task", [
+    ("design", "dev-planner", "task-design"),
+    ("plan", "dev-planner", "task-plan"),
+    ("spec-review", "dev-spec-reviewer", "task-spec"),
+    ("quality-review", "dev-quality-reviewer", "task-quality"),
+    ("verify", "dev-verifier", "task-verify"),
+    ("live", "dev-verifier", "task-live"),
+    ("complete", "dev-recorder", "task-complete"),
+])
+def test_force_repair_blocked_for_all_non_red_green_stages(workflow, monkeypatch, stage, profile, task):
+    """force-repair must never be permitted outside an active RED or GREEN stage."""
+    plugin = load_plugin("hermes-coding-workflow")
+    repo, _, state = workflow
+    state["stage_statuses"] = {n: ("active" if n == stage else "pending") for n in state["stage_statuses"]}
+    (repo / ".hermes" / "workflows" / "run-test" / "run.json").write_text(json.dumps(state))
+    monkeypatch.delenv("HCW_RUN_ID")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task)
+    monkeypatch.setenv("HERMES_PROFILE", profile)
+    launcher = (ROOT / "plugins" / "hermes-coding-workflow" / "runtime" / "bin" / "hcw").resolve()
+    for attempt_stage in ("red", "green"):
+        cmd = f"{launcher} force-repair {repo.resolve()} run-test {attempt_stage}"
+        decision = plugin._pre_tool_call(tool_name="terminal", args={"command": cmd})
+        assert decision and decision["action"] == "block", f"stage={stage} must block force-repair for {attempt_stage}"
+
+
 def test_installer_scans_real_packages_and_doctor_is_clean(tmp_path):
     hermes = shutil.which("hermes")
     assert hermes, "mandatory native-package test requires Hermes"
