@@ -1,6 +1,6 @@
 """Hermes v0.20 and git argv-only adapters."""
 from __future__ import annotations
-import hashlib, json, os, re, subprocess
+import hashlib, json, os, re, subprocess, unicodedata
 from pathlib import Path
 from typing import Callable, Sequence
 from .contracts import STAGES, full_sha
@@ -43,7 +43,9 @@ class KanbanAdapter:
    raise
  def _card_title(self,stage:str,goal:str)->str:
   actions={"design":"Design","plan":"Plan","red":"Write failing tests","green":"Implement","spec-review":"Review requirements","quality-review":"Review code quality","verify":"Verify","live":"Test live","complete":"Complete"}
-  subject=re.sub(r"\s+"," ",goal).strip(" .")[:100] or "requested change"
+  normalized=unicodedata.normalize("NFKC",goal) if isinstance(goal,str) else ""
+  visible="".join(" " if unicodedata.category(char).startswith("C") else char for char in normalized)
+  subject=re.sub(r"\s+"," ",visible).strip(" .")[:100] or "requested change"
   return f"{actions.get(stage,'Work on')}: {subject}"
  def graph(self,run_id:str,branch:str,workspace:Path,profiles:dict[str,str],*,attempt:int=1,scope:list[str]|None=None,goal:str="unspecified",base_sha:str="") -> dict[str,str]:
   made={};previous=None;self.last_briefs={}

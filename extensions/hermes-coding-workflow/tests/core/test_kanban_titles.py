@@ -47,7 +47,13 @@ def test_graph_uses_plain_language_titles_and_keeps_ids_in_metadata(tmp_path: Pa
 
 def test_plain_language_title_is_single_line_and_bounded(tmp_path: Path) -> None:
     adapter = KanbanAdapter(tmp_path, "plain-titles", lambda argv, cwd: subprocess.CompletedProcess(argv, 0, "{}", ""))
-    title = adapter._card_title("green", "  A long\n\t user-visible   outcome " + "x" * 200)
-    assert title.startswith("Implement: A long user-visible outcome ")
+    title = adapter._card_title("green", "  A long\n\t user-visible\x1b[2J\x00 outcome\u202e " + "x" * 200)
+    assert title.startswith("Implement: A long user-visible [2J outcome ")
     assert "\n" not in title and "\t" not in title
+    assert "\x1b" not in title and "\x00" not in title and "\u202e" not in title
     assert len(title) <= 111
+
+
+def test_plain_language_title_handles_non_string_goal(tmp_path: Path) -> None:
+    adapter = KanbanAdapter(tmp_path, "plain-titles", lambda argv, cwd: subprocess.CompletedProcess(argv, 0, "{}", ""))
+    assert adapter._card_title("green", None) == "Implement: requested change"  # type: ignore[arg-type]
