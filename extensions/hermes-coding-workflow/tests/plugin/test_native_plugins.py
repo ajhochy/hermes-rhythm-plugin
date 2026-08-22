@@ -269,12 +269,12 @@ def test_stage_worker_bootstrap_derives_registered_run_and_guides_only_its_activ
     authorized_commands = {
         "design": f"approve-design {repo} run-test --json {worktree / '.hermes' / 'hcw-inputs' / 'approved-design.input.json'}",
         "plan": f"approve-plan {repo} run-test --json {worktree / '.hermes' / 'hcw-inputs' / 'approved-plan.input.json'}",
-        "red": f"check {repo} run-test red -- pytest",
-        "green": f"check {repo} run-test green -- pytest",
+        "red": f"check {repo} run-test --timeout 600 red -- pytest",
+        "green": f"check {repo} run-test --timeout 600 green -- pytest",
         "spec-review": f"review {repo} run-test --json {worktree / '.hermes' / 'hcw-inputs' / 'spec-review.input.json'}",
         "quality-review": f"review {repo} run-test --json {worktree / '.hermes' / 'hcw-inputs' / 'quality-review.input.json'}",
-        "verify": f"check {repo} run-test full -- pytest",
-        "live": f"check {repo} run-test live -- pytest",
+        "verify": f"check {repo} run-test --timeout 600 full -- pytest",
+        "live": f"check {repo} run-test --timeout 600 live -- pytest",
         "complete": f"complete {repo} run-test",
     }
     assert plugin._pre_tool_call(

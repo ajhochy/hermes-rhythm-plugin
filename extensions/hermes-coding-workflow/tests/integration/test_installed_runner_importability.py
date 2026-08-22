@@ -113,6 +113,9 @@ def test_dispatched_worker_reaches_terminal_state_from_an_installed_runtime_site
         if "show" in argv:
             ident = argv[argv.index("show") + 1]
             return subprocess.CompletedProcess(argv, 0, json.dumps({"task": {"id": ident, "status": statuses.get(ident, "todo")}}), "")
+        if "promote" in argv:
+            statuses[argv[argv.index("promote") + 1]] = "ready"
+            return subprocess.CompletedProcess(argv, 0, "", "")
         if "complete" in argv:
             statuses[argv[argv.index("complete") + 1]] = "done"
         return subprocess.CompletedProcess(argv, 0, "", "")

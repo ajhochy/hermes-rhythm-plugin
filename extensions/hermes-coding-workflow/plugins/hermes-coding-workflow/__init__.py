@@ -549,7 +549,16 @@ def _terminal_allowed(run: dict[str, Any] | None, stage: str | None, args: dict[
         if subcommand not in expected.get(stage, set()):
             return False
         if subcommand == "check":
-            return len(argv) >= 5 and (argv[4] == {"red":"red","green":"green","verify":"full","live":"live"}.get(stage) or (stage == "verify" and argv[4] == "security"))
+            check_index = 4
+            if len(argv) > 5 and argv[4] == "--timeout":
+                if not argv[5].isdigit() or int(argv[5]) <= 0:
+                    return False
+                check_index = 6
+            if len(argv) <= check_index + 2 or argv[check_index + 1] != "--":
+                return False
+            check_type = argv[check_index]
+            expected_check = {"red":"red","green":"green","verify":"full","live":"live"}.get(stage) if stage is not None else None
+            return check_type == expected_check or (stage == "verify" and check_type == "security")
         if subcommand in _CLAUDE_WORKER_COMMANDS:
             return len(argv) == 5 and _is_exact_authoritative_repo(argv[2], run) and argv[4] == stage
         if subcommand in {"approve-design", "approve-plan", "review"}:
