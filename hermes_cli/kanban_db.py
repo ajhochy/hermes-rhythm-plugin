@@ -86,7 +86,7 @@ import logging
 import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
@@ -1141,6 +1141,9 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Structured creation provenance (JSON-decoded dict), ``{}`` when the
+    # column is NULL. Never infer identity from ``title``.
+    provenance: Optional[dict] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1234,6 +1237,9 @@ class Task:
                 int(row["block_recurrences"])
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
+            ),
+            provenance=_decode_provenance_blob(
+                row["provenance"] if "provenance" in keys else None
             ),
         )
 
@@ -1422,7 +1428,16 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Structured creation provenance, JSON object or NULL. See
+    -- PROVENANCE_ORIGINS / encode_provenance. This is the ONLY authority for
+    -- "who made this card"; nothing may infer identity from the title.
+    --   {"origin": "user"|"intake"|"decomposer"|"workflow",
+    --    "root_id": <canonical root task id>,       # decomposer children
+    --    "run_id", "stage", "attempt", "package_id", # workflow stages
+    --    "parent_run": <run id this run was spawned from>}
+    -- NULL = legacy / hand-created card, treated as origin="user".
+    provenance           TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -2679,6 +2694,12 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
 
+    if "provenance" not in cols:
+        # Structured creation provenance (JSON). Legacy rows get NULL, which
+        # ``decode_provenance`` reads as ``origin="user"`` — i.e. existing
+        # hand-made cards stay decomposable, which is the correct default.
+        _add_column_if_missing(conn, "tasks", "provenance", "provenance TEXT")
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -3155,6 +3176,234 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+# ---------------------------------------------------------------------------
+# Provenance, decomposition eligibility, and workflow depth
+# ---------------------------------------------------------------------------
+# The runaway-recursion incident (285 cards, 84 active, 8 nested `.worktrees`)
+# had one shape: the auto-decomposer could not tell a user's request from a
+# machine-generated workflow stage, so a BLOCKED HCW stage that got routed to
+# `triage` for a human decision was decomposed into a fresh task graph, whose
+# children were routed back to the HCW orchestrator profile, which started
+# another HCW run inside the first one's worktree.
+#
+# The fix is structural identity, not heuristics. Every creation path stamps
+# `tasks.provenance`; the decomposer consults ONE predicate
+# (`decompose_eligibility`) that only user/intake roots can pass.
+
+#: Recognised ``provenance.origin`` values.
+#:   user       - a human created this from the CLI, dashboard, or chat.
+#:   intake     - an external request (webhook, GitHub, email) landed here.
+#:   decomposer - the auto-decomposer created it as a child of a root.
+#:   workflow   - a workflow engine (HCW) created it as a lifecycle stage.
+PROVENANCE_ORIGINS = ("user", "intake", "decomposer", "workflow")
+
+#: Origins whose cards represent an ORIGINAL request and may be decomposed.
+#: ``None``/missing provenance (legacy rows, hand-made cards) reads as "user".
+DECOMPOSABLE_ORIGINS = ("user", "intake")
+
+#: Idempotency-key namespaces owned by workflow engines. A card carrying one
+#: is a machine-generated stage even if its ``provenance`` column is NULL —
+#: which happens when an older engine runtime created it. Belt and braces for
+#: the window between deploying this guard and deploying the stamping side.
+WORKFLOW_KEY_NAMESPACES = ("hcw:",)
+
+#: Directory name that marks a workflow-controlled git worktree root.
+WORKFLOW_WORKTREE_DIR = ".worktrees"
+
+#: Maximum number of nested ``.worktrees`` segments allowed in a workspace
+#: path. The intended lifecycle is exactly one Kanban-owned root workspace
+#: with ONE workflow-controlled attempt worktree beneath it, i.e. a single
+#: ``.worktrees/<attempt>`` segment. Two or more means a workflow bootstrapped
+#: inside another workflow's worktree.
+MAX_WORKFLOW_WORKTREE_DEPTH = 1
+
+
+#: Parent statuses that SATISFY a dependency edge for gating purposes.
+#:
+#: Deliberately excludes ``archived``. Treating an archived parent as
+#: satisfied was one of the incident's amplifiers: cleaning up a runaway
+#: graph archived parents, which silently released their surviving
+#: descendants into ``ready`` and the dispatcher spawned them. An archive is
+#: "this card is out of the way", never "this work succeeded".
+#:
+#: Consequence: archiving a parent leaves descendants gated in ``todo``
+#: forever. That is the safe direction (no unexpected dispatch), and there
+#: are two intentional exits: :func:`cancel_subtree` for the atomic
+#: whole-branch cancellation, and ``promote --force`` for a one-off manual
+#: override. ``board_diagnostics`` reports anything stranded this way.
+DEPENDENCY_SATISFIED_STATUSES = ("done",)
+
+
+def _decode_provenance_blob(raw: Any) -> dict:
+    """Parse a ``tasks.provenance`` cell into a dict. Never raises."""
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return dict(raw)
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return {}
+    return dict(parsed) if isinstance(parsed, dict) else {}
+
+
+def encode_provenance(
+    *,
+    origin: str,
+    root_id: Optional[str] = None,
+    run_id: Optional[str] = None,
+    stage: Optional[str] = None,
+    attempt: Optional[int] = None,
+    package_id: Optional[str] = None,
+    parent_run: Optional[str] = None,
+) -> str:
+    """Build the JSON blob stored in ``tasks.provenance``.
+
+    Keys are omitted when unset so the stored object stays small and a
+    round-trip is stable (the HCW side hashes these bodies).
+    """
+    if origin not in PROVENANCE_ORIGINS:
+        raise ValueError(
+            f"provenance origin must be one of {list(PROVENANCE_ORIGINS)}, got {origin!r}"
+        )
+    payload: dict[str, Any] = {"origin": origin}
+    for key, value in (
+        ("root_id", root_id), ("run_id", run_id), ("stage", stage),
+        ("package_id", package_id), ("parent_run", parent_run),
+    ):
+        if value:
+            payload[key] = str(value)
+    if attempt is not None:
+        payload["attempt"] = int(attempt)
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def decode_provenance(value: Any) -> dict:
+    """Normalise any provenance carrier (row cell, dict, Task) to a dict.
+
+    Missing/unparseable provenance normalises to ``{"origin": "user"}`` so a
+    legacy or hand-made card behaves exactly as it did before this column
+    existed.
+    """
+    if isinstance(value, Task):
+        raw = value.provenance
+    else:
+        raw = value
+    data = _decode_provenance_blob(raw)
+    if data.get("origin") not in PROVENANCE_ORIGINS:
+        data["origin"] = "user"
+    return data
+
+
+def task_provenance(conn: sqlite3.Connection, task_id: str) -> dict:
+    """Return the decoded provenance for ``task_id`` (``{}`` when unknown)."""
+    row = conn.execute(
+        "SELECT provenance FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if row is None:
+        return {}
+    return decode_provenance(row["provenance"])
+
+
+def is_workflow_key(idempotency_key: Optional[str]) -> bool:
+    """Whether an idempotency key belongs to a workflow-engine namespace."""
+    if not idempotency_key:
+        return False
+    return any(
+        str(idempotency_key).startswith(ns) for ns in WORKFLOW_KEY_NAMESPACES
+    )
+
+
+def workspace_worktree_depth(workspace_path: Optional[str]) -> int:
+    """Count nested workflow-worktree segments in a workspace path."""
+    if not workspace_path:
+        return 0
+    try:
+        parts = PurePosixPath(str(workspace_path).replace("\\", "/")).parts
+    except Exception:
+        return 0
+    return sum(1 for part in parts if part == WORKFLOW_WORKTREE_DIR)
+
+
+def check_workspace_depth(workspace_path: Optional[str]) -> None:
+    """Raise ``ValueError('workspace_depth_exceeded: ...')`` when a path nests
+    workflow worktrees deeper than :data:`MAX_WORKFLOW_WORKTREE_DEPTH`.
+
+    Called from ``create_task`` BEFORE the insert txn opens, so a depth
+    violation never leaves a card or a directory behind.
+    """
+    depth = workspace_worktree_depth(workspace_path)
+    if depth > MAX_WORKFLOW_WORKTREE_DEPTH:
+        raise ValueError(
+            f"workspace_depth_exceeded: {depth} nested "
+            f"{WORKFLOW_WORKTREE_DIR!r} segments exceeds the maximum of "
+            f"{MAX_WORKFLOW_WORKTREE_DEPTH} ({workspace_path})"
+        )
+
+
+def decompose_eligibility(
+    conn: sqlite3.Connection, task_id: str,
+) -> tuple[bool, str]:
+    """Return ``(eligible, reason)`` for auto/manual decomposition.
+
+    The single authority for requirement "only root requests may be
+    decomposed". Every rejection reason is a stable machine code so the
+    dashboard, CLI, and diagnostics all speak the same language.
+    """
+    row = conn.execute(
+        "SELECT id, status, workspace_path, idempotency_key, provenance "
+        "FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return False, "unknown_task"
+    if row["status"] != "triage":
+        return False, "not_in_triage"
+
+    prov = decode_provenance(row["provenance"])
+    origin = prov.get("origin")
+    # A workflow stage is never a new problem to solve. Check the explicit
+    # structured identity first, then the key namespace as a fallback for
+    # cards created by an engine runtime older than the stamping change.
+    if origin == "workflow" or prov.get("run_id"):
+        return False, "workflow_stage"
+    if is_workflow_key(row["idempotency_key"]):
+        return False, "workflow_stage"
+    if origin == "decomposer":
+        return False, "decomposer_child"
+    if origin not in DECOMPOSABLE_ORIGINS:
+        return False, "machine_generated"
+
+    # A card living inside a workflow-controlled worktree belongs to that
+    # workflow's run, whatever its provenance claims.
+    if workspace_worktree_depth(row["workspace_path"]) > 0:
+        return False, "inside_workflow_worktree"
+    if workspace_worktree_depth(row["workspace_path"]) > MAX_WORKFLOW_WORKTREE_DEPTH:
+        return False, "workspace_depth_exceeded"
+
+    # `block_loop_detected` is the ONE transition that exists to force human
+    # attention: a task re-blocked for the same cause past the recurrence
+    # limit is parked in triage deliberately. Decomposing it converts a
+    # bounded repair into unbounded fan-out — the incident's core mistake.
+    looped = conn.execute(
+        "SELECT 1 FROM task_events WHERE task_id = ? AND kind = "
+        "'block_loop_detected' LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if looped is not None:
+        return False, "block_loop_routed"
+
+    # Decomposition is a one-shot transition. A root that already owns
+    # children has been decomposed; re-running it duplicates the graph.
+    kids = conn.execute(
+        "SELECT 1 FROM task_links WHERE parent_id = ? LIMIT 1", (task_id,)
+    ).fetchone()
+    if kids is not None:
+        return False, "already_decomposed"
+
+    return True, "eligible"
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -3183,6 +3432,7 @@ def create_task(
     board: Optional[str] = None,
     project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
+    provenance: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -3235,6 +3485,20 @@ def create_task(
         raise ValueError(
             f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}"
         )
+    # Structured provenance: normalise and reject an unknown origin outright
+    # rather than silently storing a blob the guards can't read.
+    if provenance is not None:
+        decoded = _decode_provenance_blob(provenance)
+        if decoded.get("origin") not in PROVENANCE_ORIGINS:
+            raise ValueError(
+                "provenance.origin must be one of "
+                f"{list(PROVENANCE_ORIGINS)}, got {decoded.get('origin')!r}"
+            )
+        provenance = json.dumps(decoded, sort_keys=True, separators=(",", ":"))
+    # Bounded workflow depth, checked BEFORE the idempotency lookup and
+    # before any write txn opens: a depth violation must never leave a card
+    # or a directory behind.
+    check_workspace_depth(workspace_path)
     if workspace_kind not in VALID_WORKSPACE_KINDS:
         raise ValueError(
             f"workspace_kind must be one of {sorted(VALID_WORKSPACE_KINDS)}, "
@@ -3497,8 +3761,8 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, provenance
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3524,6 +3788,7 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        provenance,
                     ),
                 )
                 for pid in parents:
@@ -4562,7 +4827,9 @@ def recompute_ready(
                 "WHERE l.child_id = ?",
                 (task_id,),
             ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
+            if all(
+                p["status"] in DEPENDENCY_SATISFIED_STATUSES for p in parents
+            ):
                 resume_status = _resume_status_from_events(conn, task_id)
                 if cur_status == "blocked":
                     # Don't auto-recover tasks that have hit the
@@ -4609,7 +4876,7 @@ def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
         "SELECT 1 FROM task_links l "
         "JOIN tasks p ON p.id = l.parent_id "
         "WHERE l.child_id = ? "
-        "AND p.status NOT IN ('done', 'archived') LIMIT 1",
+        "AND p.status NOT IN ('done') LIMIT 1",
         (task_id,),
     ).fetchone() is None
 
@@ -4641,7 +4908,7 @@ def claim_task(
         undone = conn.execute(
             "SELECT 1 FROM task_links l "
             "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
+            "WHERE l.child_id = ? AND p.status NOT IN ('done') LIMIT 1",
             (task_id,),
         ).fetchone()
         if undone:
@@ -6813,7 +7080,7 @@ def promote_task(
         ).fetchall()
         unsatisfied = [
             p["id"] for p in parents
-            if p["status"] not in ("done", "archived")
+            if p["status"] not in DEPENDENCY_SATISFIED_STATUSES
         ]
         if unsatisfied:
             return False, (
@@ -6885,7 +7152,7 @@ def _landing_status_after_parents(conn: sqlite3.Connection, task_id: str) -> str
         "SELECT 1 FROM task_links l "
         "JOIN tasks p ON p.id = l.parent_id "
         "WHERE l.child_id = ? "
-        "AND p.status NOT IN ('done', 'archived') LIMIT 1",
+        "AND p.status NOT IN ('done') LIMIT 1",
         (task_id,),
     ).fetchone()
     return "todo" if undone_parents else "ready"
@@ -7420,11 +7687,21 @@ def decompose_triage_task(
                 child_ws_path = root_ws_path
             else:
                 child_ws_path = None
+            # Machine-generated: stamp structured provenance so this child can
+            # never itself be decomposed, and so diagnostics can attribute it
+            # to its canonical root. `created_by` is free text and is NOT an
+            # identity signal.
+            child_provenance = encode_provenance(
+                origin="decomposer", root_id=task_id,
+            )
+            # Inherited paths are already depth-checked on the root, but a
+            # per-child override is caller-supplied: re-check before insert.
+            check_workspace_depth(child_ws_path)
             conn.execute(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "
-                " workspace_path, tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
+                " workspace_path, tenant, created_at, created_by, provenance) "
+                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
@@ -7435,6 +7712,7 @@ def decompose_triage_task(
                     tenant,
                     now,
                     (author or "decomposer"),
+                    child_provenance,
                 ),
             )
             _append_event(
@@ -7533,14 +7811,372 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
             summary="task archived with run still active",
         )
         _append_event(conn, task_id, "archived", None, run_id=run_id)
-    # ``archived`` parents no longer block children, same as ``done``.
-    # Promote newly-unblocked dependents immediately instead of waiting
-    # for a later dispatcher tick.
+    # NOTE: archiving deliberately does NOT release descendants — see
+    # DEPENDENCY_SATISFIED_STATUSES. ``recompute_ready`` is still called so a
+    # sibling whose OWN parents are genuinely ``done`` isn't left waiting on a
+    # dispatcher tick, but this task's own children stay gated in ``todo``.
+    # Use :func:`cancel_subtree` to take a whole branch out atomically.
     recompute_ready(conn)
     # Reap the workspace on archive too — tasks archived without ever
     # completing previously kept their scratch dir / worktree forever.
     _cleanup_workspace(conn, task_id)
     return True
+
+
+# ---------------------------------------------------------------------------
+# Board-level (semantic) diagnostics
+# ---------------------------------------------------------------------------
+# ``kanban_diagnostics`` runs PER-TASK rules: local structural checks over one
+# card's events and runs. That is why ``hermes kanban diagnostics --json``
+# returned ``[]`` while the board held 285 cards and 49 five-deep worktrees —
+# every individual card was locally well-formed. The pathology was in the
+# GRAPH: recursion, duplicated canonical identity, contaminated workflow
+# identity, unbounded fan-out. Those need a board-wide pass.
+
+#: Statuses that count as "actively consuming the board".
+ACTIVE_STATUSES = ("ready", "running", "review")
+
+#: Statuses past which a card can no longer be a live canonical root.
+TERMINAL_STATUSES = ("done", "archived")
+
+
+@dataclass
+class BoardDiagnostic:
+    """One board-wide semantic finding.
+
+    ``kind`` is the stable machine code, ``task_ids`` / ``run_ids`` are the
+    concrete identities an operator needs to act, and ``detail`` states the
+    actionable reason in one sentence.
+    """
+
+    kind: str
+    severity: str
+    title: str
+    detail: str
+    task_ids: list[str] = field(default_factory=list)
+    run_ids: list[str] = field(default_factory=list)
+
+    def as_dict(self) -> dict:
+        return {
+            "kind": self.kind,
+            "severity": self.severity,
+            "title": self.title,
+            "detail": self.detail,
+            "task_ids": list(self.task_ids),
+            "run_ids": list(self.run_ids),
+        }
+
+
+def _workflow_root_of(path: Optional[str]) -> Optional[str]:
+    """Return the repo path above the FIRST ``.worktrees`` segment."""
+    if not path:
+        return None
+    parts = PurePosixPath(str(path).replace("\\", "/")).parts
+    if WORKFLOW_WORKTREE_DIR not in parts:
+        return None
+    return str(PurePosixPath(*parts[: parts.index(WORKFLOW_WORKTREE_DIR)]))
+
+
+def _brief_scope(body: Optional[str]) -> Optional[tuple]:
+    """Extract the declared mutation scope from an HCW card brief body."""
+    if not body:
+        return None
+    try:
+        parsed = json.loads(body)
+    except Exception:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    scope = parsed.get("scope")
+    if not isinstance(scope, list):
+        return None
+    return tuple(sorted(str(x) for x in scope))
+
+
+def board_diagnostics(
+    conn: sqlite3.Connection,
+    *,
+    max_in_progress: Optional[int] = None,
+) -> list[BoardDiagnostic]:
+    """Semantic, graph-wide diagnostics for one board.
+
+    Detects the failure classes the per-task rules structurally cannot see.
+    Read-only. Every finding carries concrete task and run ids.
+    """
+    out: list[BoardDiagnostic] = []
+    rows = conn.execute(
+        "SELECT id, title, status, body, workspace_path, branch_name, "
+        "       idempotency_key, provenance, assignee "
+        "FROM tasks"
+    ).fetchall()
+    tasks = {r["id"]: r for r in rows}
+    prov = {r["id"]: decode_provenance(r["provenance"]) for r in rows}
+    links = conn.execute("SELECT parent_id, child_id FROM task_links").fetchall()
+    children: dict[str, list[str]] = {}
+    for link in links:
+        children.setdefault(link["parent_id"], []).append(link["child_id"])
+
+    def _run_of(tid: str) -> Optional[str]:
+        return prov.get(tid, {}).get("run_id")
+
+    # 1. An HCW stage that owns or launches another HCW run. This is the
+    #    recursion itself: a machine-generated stage parenting a card that
+    #    belongs to a DIFFERENT workflow run.
+    for tid, row in tasks.items():
+        if prov[tid].get("origin") != "workflow":
+            continue
+        mine = _run_of(tid)
+        nested = [
+            kid for kid in children.get(tid, [])
+            if kid in prov and prov[kid].get("origin") == "workflow"
+            and _run_of(kid) and _run_of(kid) != mine
+        ]
+        if nested:
+            out.append(BoardDiagnostic(
+                kind="workflow_recursion",
+                severity="critical",
+                title="Workflow stage owns another workflow run",
+                detail=(
+                    f"Stage {tid} (run {mine}, stage "
+                    f"{prov[tid].get('stage')}) is the parent of "
+                    f"{', '.join(nested)}, which belong to a different run. "
+                    "A stage must never bootstrap a workflow. Cancel the "
+                    "nested subtree and route recovery to the canonical run."
+                ),
+                task_ids=[tid, *nested],
+                run_ids=[r for r in {mine, *(_run_of(k) for k in nested)} if r],
+            ))
+
+    # 2. An HCW stage that was decomposed. The decomposer must never touch a
+    #    stage; a stage with decomposer children means the guard was bypassed
+    #    or predates this fix.
+    for tid in tasks:
+        if prov[tid].get("origin") != "workflow":
+            continue
+        kids = [
+            k for k in children.get(tid, [])
+            if k in prov and prov[k].get("origin") == "decomposer"
+        ]
+        if kids:
+            out.append(BoardDiagnostic(
+                kind="decomposed_workflow_stage",
+                severity="critical",
+                title="Workflow stage was auto-decomposed",
+                detail=(
+                    f"Stage {tid} (run {_run_of(tid)}, stage "
+                    f"{prov[tid].get('stage')}) has decomposer children "
+                    f"{', '.join(kids)}. A blocked stage is a repair for its "
+                    "own run, not a new problem to fan out."
+                ),
+                task_ids=[tid, *kids],
+                run_ids=[r for r in [_run_of(tid)] if r],
+            ))
+
+    # 3. Multiple live roots sharing one canonical idempotency identity.
+    by_key: dict[str, list[str]] = {}
+    for tid, row in tasks.items():
+        key = row["idempotency_key"]
+        if not key or row["status"] in TERMINAL_STATUSES:
+            continue
+        by_key.setdefault(key, []).append(tid)
+    for key, ids in by_key.items():
+        if len(ids) > 1:
+            out.append(BoardDiagnostic(
+                kind="duplicate_canonical_root",
+                severity="critical",
+                title="Duplicate canonical root",
+                detail=(
+                    f"{len(ids)} live cards share idempotency key {key!r}: "
+                    f"{', '.join(sorted(ids))}. Intake, retries, and gateway "
+                    "restarts must converge on ONE root. Archive the "
+                    "duplicates and keep the earliest."
+                ),
+                task_ids=sorted(ids),
+            ))
+
+    # 4. Workspace nesting above the allowed workflow depth.
+    for tid, row in tasks.items():
+        if row["status"] in TERMINAL_STATUSES:
+            continue
+        depth = workspace_worktree_depth(row["workspace_path"])
+        if depth > MAX_WORKFLOW_WORKTREE_DEPTH:
+            out.append(BoardDiagnostic(
+                kind="workspace_depth_exceeded",
+                severity="critical",
+                title="Workflow worktree nested too deep",
+                detail=(
+                    f"{tid} has {depth} nested {WORKFLOW_WORKTREE_DIR!r} "
+                    f"segments (max {MAX_WORKFLOW_WORKTREE_DEPTH}): "
+                    f"{row['workspace_path']}. A workflow bootstrapped inside "
+                    "another workflow's attempt worktree."
+                ),
+                task_ids=[tid],
+                run_ids=[r for r in [_run_of(tid)] if r],
+            ))
+
+    # 5. Stages of one run whose workspace root or branch disagree — the
+    #    identity-contamination shape (a replacement run authoring files
+    #    outside its own permitted worktree).
+    per_run: dict[str, list[str]] = {}
+    for tid in tasks:
+        run = _run_of(tid)
+        if run:
+            per_run.setdefault(run, []).append(tid)
+    for run, ids in per_run.items():
+        roots = {
+            _workflow_root_of(tasks[t]["workspace_path"]) for t in ids
+        } - {None}
+        branches = {tasks[t]["branch_name"] for t in ids} - {None}
+        scopes = {sc for sc in (_brief_scope(tasks[t]["body"]) for t in ids)
+                  if sc is not None}
+        if len(roots) > 1 or len(branches) > 1:
+            out.append(BoardDiagnostic(
+                kind="workflow_workspace_mismatch",
+                severity="critical",
+                title="Workflow stages disagree on workspace or branch",
+                detail=(
+                    f"Run {run} spans repo roots {sorted(roots)} and branches "
+                    f"{sorted(branches)} across {', '.join(sorted(ids))}. Every "
+                    "stage of a run must reference the same authoritative "
+                    "worktree and branch."
+                ),
+                task_ids=sorted(ids),
+                run_ids=[run],
+            ))
+        if len(scopes) > 1:
+            out.append(BoardDiagnostic(
+                kind="workflow_scope_conflict",
+                severity="error",
+                title="Workflow stages disagree on mutation scope",
+                detail=(
+                    f"Run {run} declares conflicting mutation scopes "
+                    f"{sorted(scopes)} across {', '.join(sorted(ids))}. A "
+                    "stage whose scope excludes the run's plan paths will fail "
+                    "closed on every attempt."
+                ),
+                task_ids=sorted(ids),
+                run_ids=[run],
+            ))
+
+    # 6. Ready/running descendants of an archived or cancelled parent — the
+    #    cleanup-releases-survivors shape.
+    for link in links:
+        parent, child = link["parent_id"], link["child_id"]
+        if parent not in tasks or child not in tasks:
+            continue
+        if tasks[parent]["status"] != "archived":
+            continue
+        if tasks[child]["status"] not in ACTIVE_STATUSES:
+            continue
+        out.append(BoardDiagnostic(
+            kind="orphaned_gated_descendant",
+            severity="error",
+            title="Active descendant of an archived parent",
+            detail=(
+                f"{child} is {tasks[child]['status']} while its parent "
+                f"{parent} is archived. An archive is not a success — use "
+                "`hermes kanban cancel-subtree` to take the branch out "
+                "atomically, or re-open the parent."
+            ),
+            task_ids=[parent, child],
+        ))
+
+    # 7. Active fan-out above the configured board cap.
+    if max_in_progress is None:
+        max_in_progress = configured_max_in_progress()
+    if max_in_progress:
+        active = [
+            t for t, r in tasks.items() if r["status"] in ("running",)
+        ]
+        if len(active) > int(max_in_progress):
+            out.append(BoardDiagnostic(
+                kind="fanout_exceeded",
+                severity="error",
+                title="Active workers exceed the configured cap",
+                detail=(
+                    f"{len(active)} running cards against "
+                    f"kanban.max_in_progress={max_in_progress}: "
+                    f"{', '.join(sorted(active))}."
+                ),
+                task_ids=sorted(active),
+            ))
+    return out
+
+
+def descendant_closure(conn: sqlite3.Connection, task_id: str) -> list[str]:
+    """Return ``task_id`` plus every transitive descendant, parents first.
+
+    Breadth-first over ``task_links``; a diamond or a (defensively tolerated)
+    cycle visits each id once.
+    """
+    seen = {task_id}
+    order = [task_id]
+    frontier = [task_id]
+    while frontier:
+        rows = conn.execute(
+            "SELECT child_id FROM task_links WHERE parent_id IN ("
+            + ",".join("?" * len(frontier)) + ")",
+            frontier,
+        ).fetchall()
+        frontier = []
+        for row in rows:
+            kid = row["child_id"]
+            if kid in seen:
+                continue
+            seen.add(kid)
+            order.append(kid)
+            frontier.append(kid)
+    return order
+
+
+def cancel_subtree(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: str = "",
+    actor: Optional[str] = None,
+) -> int:
+    """Atomically archive ``task_id`` and its whole descendant closure.
+
+    The intentional counterpart to the gating rule in
+    :data:`DEPENDENCY_SATISFIED_STATUSES`: because an archived parent no
+    longer satisfies its children, "cancel this branch" needs an operation
+    that takes the branch out in ONE transaction. Partially archiving a graph
+    can therefore never leave a runnable descendant behind.
+
+    Returns the number of tasks archived (already-archived ones are skipped
+    and not counted).
+    """
+    ids = descendant_closure(conn, task_id)
+    archived: list[str] = []
+    with write_txn(conn):
+        for tid in ids:
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'archived', claim_lock = NULL, "
+                "    claim_expires = NULL, worker_pid = NULL "
+                "WHERE id = ? AND status != 'archived'",
+                (tid,),
+            )
+            if cur.rowcount != 1:
+                continue
+            run_id = _end_run(
+                conn, tid,
+                outcome="reclaimed", status="reclaimed",
+                summary="subtree cancelled",
+            )
+            _append_event(
+                conn, tid, "archived",
+                {
+                    "subtree_root": task_id,
+                    "reason": (reason or "subtree cancelled")[:500],
+                    "actor": actor,
+                },
+                run_id=run_id,
+            )
+            archived.append(tid)
+    for tid in archived:
+        _cleanup_workspace(conn, tid)
+    return len(archived)
 
 
 def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:

@@ -349,6 +349,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_create.add_argument("--idempotency-key", default=None,
                           help="Dedup key. If a non-archived task with this key exists, "
                                "its id is returned instead of creating a duplicate.")
+    p_create.add_argument(
+        "--provenance", default=None, metavar="JSON",
+        help="Structured creation provenance as a JSON object, e.g. "
+             "'{\"origin\":\"workflow\",\"run_id\":\"r1\",\"stage\":\"red\"}'. "
+             "origin must be one of user/intake/decomposer/workflow. This is "
+             "the ONLY identity signal the decomposition guards consult — only "
+             "user/intake roots may be decomposed. Omit for hand-made cards "
+             "(they read as origin=user).")
     p_create.add_argument("--max-runtime", default=None,
                           help="Per-task runtime cap. Accepts seconds (300) or "
                                "durations (90s, 30m, 2h, 1d). When exceeded, "
@@ -748,6 +756,16 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Permanently delete already-archived task ids from the board",
     )
 
+    p_cancel = sub.add_parser(
+        "cancel-subtree",
+        help="Atomically archive a task AND its whole descendant closure",
+    )
+    p_cancel.add_argument("task_id")
+    p_cancel.add_argument("--reason", default="", help="Recorded on every archived card")
+    p_cancel.add_argument("--dry-run", action="store_true",
+                          help="Print the closure without archiving anything")
+    p_cancel.add_argument("--json", action="store_true", help="Machine-readable result")
+
     # --- tail ---
     p_tail = sub.add_parser("tail", help="Follow a task's event stream")
     p_tail.add_argument("task_id")
@@ -1140,6 +1158,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "reopen-review":  _cmd_reopen_review,
             "promote":  _cmd_promote,
             "archive":  _cmd_archive,
+            "cancel-subtree": _cmd_cancel_subtree,
             "tail":     _cmd_tail,
             "dispatch": _cmd_dispatch,
             "daemon":   _cmd_daemon,
@@ -1591,6 +1610,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
+            provenance=getattr(args, "provenance", None),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
@@ -2021,6 +2041,24 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                     "assignee": r["assignee"],
                 }
 
+        # Board-level SEMANTIC diagnostics. The per-task rules above are local
+        # structural checks, which is why `diagnostics --json` returned [] on a
+        # board holding 285 recursively-generated cards: every individual card
+        # was well-formed. Recursion, duplicated canonical identity,
+        # contaminated workflow identity and runaway fan-out only exist in the
+        # graph. Suppressed in single-task mode, which is per-task by contract.
+        board_diags = (
+            [] if getattr(args, "task", None)
+            else kb.board_diagnostics(conn)
+        )
+        sev = getattr(args, "severity", None)
+        if sev:
+            board_diags = [
+                d for d in board_diags
+                if kd.SEVERITY_ORDER.index(d.severity)
+                >= kd.SEVERITY_ORDER.index(sev)
+            ]
+
     if getattr(args, "json", False):
         out_json = [
             {
@@ -2030,17 +2068,34 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
             }
             for tid, dl in diags_by_task.items()
         ]
+        if board_diags:
+            out_json.append({
+                "scope": "board",
+                "diagnostics": [d.as_dict() for d in board_diags],
+            })
         print(json.dumps(out_json, indent=2, ensure_ascii=False))
         return 0
 
-    if not diags_by_task:
+    if not diags_by_task and not board_diags:
         print("No active diagnostics on this board.")
         return 0
 
     # Human-readable summary: grouped by task, severity-marked, with
     # suggested actions inline.
     sev_marker = {"warning": "⚠", "error": "!!", "critical": "!!!"}
+    if board_diags:
+        print(f"{len(board_diags)} board-level diagnostic(s):\n")
+        for d in board_diags:
+            print(f"  {sev_marker.get(d.severity, '?')} [{d.severity}] {d.kind}: {d.title}")
+            print(f"       {d.detail}")
+            if d.task_ids:
+                print(f"       tasks: {', '.join(d.task_ids)}")
+            if d.run_ids:
+                print(f"       runs:  {', '.join(d.run_ids)}")
+        print()
     total = sum(len(dl) for dl in diags_by_task.values())
+    if not diags_by_task:
+        return 0
     print(
         f"{total} active diagnostic(s) across "
         f"{len(diags_by_task)} task(s):\n"
@@ -2603,6 +2658,40 @@ def _cmd_archive(args: argparse.Namespace) -> int:
             else:
                 print(f"Archived {tid}")
     return 0 if not failed else 1
+
+
+def _cmd_cancel_subtree(args: argparse.Namespace) -> int:
+    """Take a whole branch of the graph out in ONE transaction.
+
+    Archiving a parent deliberately does NOT release its children (see
+    kanban_db.DEPENDENCY_SATISFIED_STATUSES), so cancelling a branch needs an
+    atomic closure operation. Partially archiving a graph can therefore never
+    strand a runnable descendant that the dispatcher then picks up.
+    """
+    with kb.connect_closing() as conn:
+        if kb.get_task(conn, args.task_id) is None:
+            print(f"no such task: {args.task_id}", file=sys.stderr)
+            return 1
+        closure = kb.descendant_closure(conn, args.task_id)
+        if getattr(args, "dry_run", False):
+            payload = {"task_id": args.task_id, "closure": closure,
+                       "dry_run": True, "archived": 0}
+        else:
+            n = kb.cancel_subtree(
+                conn, args.task_id,
+                reason=getattr(args, "reason", "") or "",
+                actor=_profile_author(),
+            )
+            payload = {"task_id": args.task_id, "closure": closure,
+                       "dry_run": False, "archived": n}
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+    verb = "Would archive" if payload["dry_run"] else "Archived"
+    print(f"{verb} {len(closure)} task(s) in the closure of {args.task_id}:")
+    for tid in closure:
+        print(f"  {tid}")
+    return 0
 
 
 def _cmd_tail(args: argparse.Namespace) -> int:
