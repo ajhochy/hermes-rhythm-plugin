@@ -417,4 +417,29 @@ describe('accepted Rhythm workspace package', () => {
     expect(receive).not.toHaveBeenCalled()
     view.unmount()
   })
+
+  it('mounts every approved destination in compact and expanded failure states', async () => {
+    const cases: Array<[string, () => React.ReactNode]> = [
+      ['rhythm-dashboard-screen', () => <DashboardScreen />],
+      ['rhythm-tasks-screen', () => <TasksScreen />],
+      ['rhythm-planner-screen', () => <PlannerScreen />],
+      ['rhythm-rhythms-screen', () => <RhythmsScreen />],
+      ['rhythm-projects-screen', () => <ProjectsScreen />],
+      ['rhythm-messages-screen', () => <MessagesScreen />],
+      ['rhythm-facilities-screen', () => <FacilitiesScreen />],
+      ['rhythm-automations-screen', () => <AutomationsScreen />],
+      ['rhythm-integrations-screen', () => <IntegrationsScreen />],
+      ['rhythm-artifacts-screen', () => <ArtifactsScreen artifactsGateway={{ list: async () => { throw new Error('bounded fixture failure') } }} />],
+    ]
+    for (const viewport of ['compact', 'expanded'] as const) {
+      for (const [testId, node] of cases) {
+        const view = renderScreen(node(), createGateway(restFor(new Error('bounded fixture failure'))), { ...host, viewport })
+        const root = await screen.findByTestId(testId)
+        expect(root.getAttribute('data-rhythm-viewport')).toBe(viewport)
+        await screen.findByRole('alert')
+        expect(root.textContent).not.toContain('bounded fixture failure')
+        view.unmount()
+      }
+    }
+  })
 })
