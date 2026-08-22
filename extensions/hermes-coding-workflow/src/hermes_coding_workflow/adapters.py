@@ -60,6 +60,11 @@ class KanbanAdapter:
   task=shown.get("task")
   if not isinstance(task,dict) or not isinstance(task.get("status"),str):raise RuntimeError("kanban_invalid_task")
   if task["status"]=="done":return
+  if task["status"] not in {"ready","running"}:
+   promote_args=("promote",task_id,"--allow-triage") if task["status"]=="triage" else ("promote",task_id)
+   self.call(*promote_args,json_output=False);shown=self.call("show",task_id);task=shown.get("task")
+   if not isinstance(task,dict) or task.get("status") not in {"ready","running","done"}:raise RuntimeError("kanban_invalid_task")
+   if task["status"]=="done":return
   summary=f"HCW stage {stage} accepted"
   self.call("complete",task_id,"--result",summary,"--summary",summary,json_output=False)
  def delete(self,task_id:str)->None:

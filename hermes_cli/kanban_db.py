@@ -6775,6 +6775,7 @@ def promote_task(
     actor: str,
     reason: Optional[str] = None,
     force: bool = False,
+    allow_triage: bool = False,
     dry_run: bool = False,
 ) -> tuple[bool, Optional[str]]:
     """Manually promote a `todo` or `blocked` task to `ready`.
@@ -6784,8 +6785,10 @@ def promote_task(
     entry. Refuses to promote if any parent dep is not in a terminal
     state (`done`/`archived`) unless ``force=True``. Does NOT change
     assignee or claim state. Returns ``(True, None)`` on success and
-    ``(False, reason)`` if refused. ``dry_run=True`` validates the
-    promotion would succeed without mutating state.
+    ``(False, reason)`` if refused. ``allow_triage=True`` permits an explicit
+    status-only recovery from ``triage`` while retaining the normal parent
+    dependency gate. ``dry_run=True`` validates the promotion would succeed
+    without mutating state.
     """
     row = conn.execute(
         "SELECT status FROM tasks WHERE id = ?", (task_id,)
@@ -6794,10 +6797,11 @@ def promote_task(
         return False, f"task {task_id} not found"
 
     cur_status = row["status"]
-    if cur_status not in ("todo", "blocked"):
+    allowed_statuses = ("todo", "blocked", "triage") if allow_triage else ("todo", "blocked")
+    if cur_status not in allowed_statuses:
         return False, (
             f"task {task_id} is {cur_status!r}; promote only applies to "
-            f"'todo' or 'blocked'"
+            f"'todo' or 'blocked'" + (" (or 'triage' with --allow-triage)" if not allow_triage else "")
         )
 
     if not force:
@@ -6821,10 +6825,10 @@ def promote_task(
         return True, None
 
     with write_txn(conn):
+        placeholders = ", ".join("?" for _ in allowed_statuses)
         upd = conn.execute(
-            "UPDATE tasks SET status = 'ready' "
-            "WHERE id = ? AND status IN ('todo', 'blocked')",
-            (task_id,),
+            f"UPDATE tasks SET status = 'ready' WHERE id = ? AND status IN ({placeholders})",
+            (task_id, *allowed_statuses),
         )
         if upd.rowcount != 1:
             return False, f"task {task_id} status changed during promotion"
@@ -6832,7 +6836,7 @@ def promote_task(
             conn,
             task_id,
             "promoted_manual",
-            {"actor": actor, "reason": reason, "forced": force},
+            {"actor": actor, "reason": reason, "forced": force, "allow_triage": allow_triage},
         )
 
     return True, None

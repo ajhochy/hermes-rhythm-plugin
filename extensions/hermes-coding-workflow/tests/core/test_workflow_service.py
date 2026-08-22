@@ -21,11 +21,28 @@ def board(repo:Path,calls:list[tuple[str,...]],home:Path|None=None,fail_complete
    stage=argv[argv.index("create")+1].split(": ")[-1];ident="task-"+stage;statuses[ident]="todo";return subprocess.CompletedProcess(argv,0,json.dumps({"id":ident}) if "--json" in argv else "","")
   if "show" in argv:
    ident=argv[argv.index("show")+1];return subprocess.CompletedProcess(argv,0,json.dumps({"task":{"id":ident,"status":statuses.get(ident,"todo")}}),"")
+  if "promote" in argv:
+   statuses[argv[argv.index("promote")+1]]="ready";return subprocess.CompletedProcess(argv,0,"","")
   if "complete" in argv:
    if fail_complete and not failed:failed=True;return subprocess.CompletedProcess(argv,1,"","temporary")
    statuses[argv[argv.index("complete")+1]]="done"
   return subprocess.CompletedProcess(argv,0,"","")
  return KanbanAdapter(repo,"hcw-test",run,home=home)
+
+def test_kanban_complete_promotes_triage_before_completion(repo:Path)->None:
+ calls=[];status="triage"
+ def runner(argv,cwd):
+  nonlocal status;calls.append(tuple(argv))
+  if "show" in argv:return subprocess.CompletedProcess(argv,0,json.dumps({"task":{"id":"task-red","status":status}}),"")
+  if "promote" in argv:status="ready";return subprocess.CompletedProcess(argv,0,"","")
+  if "complete" in argv:
+   if status!="ready":return subprocess.CompletedProcess(argv,1,"","not ready")
+   status="done";return subprocess.CompletedProcess(argv,0,"","")
+  return subprocess.CompletedProcess(argv,0,"","")
+ KanbanAdapter(repo,"hcw-test",runner).complete("task-red","red")
+ assert status=="done" and ["promote" in call for call in calls].count(True)==1
+ assert any("promote" in call and "--allow-triage" in call for call in calls)
+
 def act(stage:str)->ActorContext:return ActorContext(PROFILES[stage],"task-"+stage)
 def payloads():
  command=[sys.executable,"-c","import pathlib; raise SystemExit(0 if pathlib.Path('app.txt').read_text() == 'new\\n' else 1)"]
