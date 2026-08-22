@@ -1,13 +1,13 @@
 from __future__ import annotations
-import fcntl, hashlib, json, os, tempfile
+import fcntl, hashlib, json, os
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 from .contracts import valid_run_id, validate_record
-from .safety import digest_json, redact
+from .safety import atomic_write_bytes, digest_json, redact
 class RevisionConflict(RuntimeError): pass
 class RunStore:
- _NAMES={"run.json","evidence.jsonl","reviews.json","verification.json","handoff.json","approved-design.json","plan.json","internal.json"}
+ _NAMES={"run.json","evidence.jsonl","reviews.json","verification.json","handoff.json","approved-design.json","plan.json","internal.json","repair-context.json","scope-amendments.json"}
  def __init__(self,repo:Path,run_id:str)->None:
   self.repo=repo.resolve()
   if not valid_run_id(run_id):raise ValueError("invalid_run_id")
@@ -35,6 +35,23 @@ class RunStore:
  def write_json(self,name:str,record:dict[str,Any])->None:
   if validate_record(record):raise ValueError("malformed_schema")
   self._atomic(self._path(name),record)
+ def worker_dir(self)->Path:
+  d=self.root/"workers"
+  if d.exists() and d.is_symlink():raise ValueError("path_scope_violation")
+  d.mkdir(exist_ok=True)
+  if d.is_symlink() or d.resolve().parent!=self.root.resolve():raise ValueError("path_scope_violation")
+  return d
+ def worker_path(self,stage:str,attempt:int,worker_attempt:int)->Path:
+  return self.worker_dir()/f"{stage}-{attempt}-{worker_attempt}.json"
+ def read_worker(self,stage:str,attempt:int,worker_attempt:int)->dict[str,Any]|None:
+  path=self.worker_path(stage,attempt,worker_attempt)
+  return json.loads(path.read_text()) if path.is_file() and not path.is_symlink() else None
+ def latest_worker_attempt(self,stage:str,attempt:int)->int:
+  prefix=f"{stage}-{attempt}-";nums=[int(p.stem[len(prefix):]) for p in self.worker_dir().glob(prefix+"*.json") if p.stem[len(prefix):].isdigit()]
+  return max(nums) if nums else 0
+ def write_worker(self,stage:str,attempt:int,worker_attempt:int,record:dict[str,Any])->None:
+  if validate_record(record):raise ValueError("malformed_schema")
+  self._atomic(self.worker_path(stage,attempt,worker_attempt),record)
  def append_evidence(self,record:dict[str,Any],artifact:Path)->dict[str,Any]:
   with self.locked():return self._append_evidence_locked(record,artifact)
  def _append_evidence_locked(self,record:dict[str,Any],artifact:Path)->dict[str,Any]:
@@ -61,9 +78,4 @@ class RunStore:
   return out
  @staticmethod
  def _atomic(path:Path,record:dict[str,Any])->None:
-  fd,temp=tempfile.mkstemp(prefix=".tmp-",dir=path.parent)
-  try:
-   with os.fdopen(fd,"w") as f:f.write(json.dumps(record,sort_keys=True,separators=(",",":"))+"\n");f.flush();os.fsync(f.fileno())
-   os.replace(temp,path)
-  finally:
-   if os.path.exists(temp):os.unlink(temp)
+  atomic_write_bytes(path,(json.dumps(record,sort_keys=True,separators=(",",":"))+"\n").encode())
