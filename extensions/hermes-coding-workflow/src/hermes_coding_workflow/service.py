@@ -301,6 +301,7 @@ class WorkflowService:
     raise WorkflowError("check_timeout") from exc
    must_fail=typ=="red"
    if (must_fail and r.returncode==0) or (not must_fail and r.returncode!=0):
+    self._record_check_failure(s,run_id=rid,attempt=run.get("attempt",1),typ=typ,argv=argv,returncode=r.returncode,stdout=r.stdout,stderr=r.stderr,reason="unexpected_check_exit")
     if typ in {"red","green"}:self._record_worker_retry_authorization(s,run,typ,"unexpected_check_exit",head)
     raise WorkflowError("unexpected_check_exit")
    if typ=="red" and (g.head()!=head or any(not self._test_path(run,p) for p in g.paths(head))):
@@ -323,6 +324,22 @@ class WorkflowService:
    elif typ in {"red","green"}:self._bump(s,run)
    if typ in {"red","green","live"}:self._reconcile(s,run)
    return saved
+ def _record_check_failure(self,s:RunStore,*,run_id:str,attempt:int,typ:str,argv:list[str],returncode:int,stdout:str,stderr:str,reason:str)->None:
+  """Append bounded diagnostics for a check that did not meet its gate.
+
+  `check` captured both streams and then threw them away, so a stage that
+  failed its own authoritative gate left nothing to inspect -- the operator
+  saw only `unexpected_check_exit`. Tails are capped at 4 KiB each so a
+  runaway log can never bloat the run store. Purely observational: any
+  failure to write is swallowed, because diagnostics must never change
+  whether a check passes.
+  """
+  try:
+   cap=4096
+   record={"schema_version":SCHEMA_VERSION,"kind":"check_failure","created_at":now(),"run_id":run_id,"attempt":attempt,"type":typ,"argv":list(argv),"exit_code":int(returncode),"reason":reason,"stdout_tail":(stdout or "")[-cap:],"stderr_tail":(stderr or "")[-cap:]}
+   path=s._path("check-failures.jsonl")
+   with open(path,"a",encoding="utf-8") as handle:handle.write(json.dumps(record,sort_keys=True,separators=(",",":"))+"\n")
+  except Exception:pass
  def _test_path(self,run:dict[str,Any],path:str)->bool:
   return bool(__import__("re").search(r"(?:^|/)(?:tests?/|test_|.*(?:test|spec)\\.)",path)) and any(fnmatch.fnmatch(path,p) for p in run["scope"])
  def commit(self,rid:str,actor:ActorContext,message:str)->dict[str,Any]:

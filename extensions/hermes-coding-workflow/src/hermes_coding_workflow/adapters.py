@@ -19,7 +19,15 @@ class GitAdapter:
   return value
  def paths(self,base:str)->set[str]:
   raw=(self.call("diff","-z","--name-only",f"{base}..HEAD"),self.call("diff","-z","--name-only"),self.call("diff","--cached","-z","--name-only"),self.call("ls-files","-z","--others","--exclude-standard"))
-  return {str(safe_relative(self.repo,p)) for group in raw for p in group.split("\0") if p and not p.startswith(".hermes/workflows/") and p != ".hermes/hcw-run.json"}
+  # HCW's own control plane is not product code. `.hermes/workflows/` holds the
+  # run store, `.hermes/hcw-run.json` the attempt locator, and
+  # `.hermes/hcw-inputs/` the stage approval payloads -- whose exact path,
+  # filename and symlink-freeness the enforcement plugin already pins via
+  # `_stage_payload_write_allowed`, and which a stage has no legal alternative
+  # location for. Counting them as mutations made every RED gate fail with
+  # `red_mutation_violation` on files the design/plan stages were REQUIRED to
+  # write. Nothing else under `.hermes/` is exempt.
+  return {str(safe_relative(self.repo,p)) for group in raw for p in group.split("\0") if p and not p.startswith(".hermes/workflows/") and not p.startswith(".hermes/hcw-inputs/") and p != ".hermes/hcw-run.json"}
  def dirty(self)->bool:return bool(self.paths(self.head()))
 class KanbanAdapter:
  def __init__(self,repo:Path,board:str,runner:Runner=_run,home:Path|None=None)->None:
