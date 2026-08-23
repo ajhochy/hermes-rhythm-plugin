@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -229,8 +230,10 @@ def spawn_async_diagnostic(
     script = (
         f"echo '=== shutdown diagnostic @ {signal_name} ==='; "
         "echo '--- date ---'; date -u +%Y-%m-%dT%H:%M:%SZ; "
-        "echo '--- ps auxf (top 60 by cpu) ---'; "
-        "ps auxf --sort=-pcpu 2>/dev/null | head -60; "
+        "echo '--- ps (top 60 by cpu) ---'; "
+        # GNU ps first, then the BSD/macOS spelling. Both are best-effort:
+        # without the fallback the section was simply empty on macOS.
+        "{ ps auxf --sort=-pcpu 2>/dev/null || ps -Ao user,pid,ppid,pcpu,pmem,stat,etime,command -r 2>/dev/null; } | head -60; "
         "echo '--- pstree of self ---'; "
         f"pstree -plau {os.getpid()} 2>/dev/null | head -40 || true; "
         "echo '--- /proc/loadavg ---'; "
@@ -248,6 +251,25 @@ def spawn_async_diagnostic(
     except OSError:
         return None
 
+    # ``timeout(1)`` is GNU coreutils and is NOT present on macOS (nor on a
+    # bare BusyBox image without it), so hardcoding it made this function
+    # return None on every Mac -- the gateway silently produced no shutdown
+    # forensics at all, and the unit test failed on any non-Linux dev box.
+    # Prefer the real binary (``gtimeout`` is the Homebrew coreutils name),
+    # and fall back to a pure-bash watchdog that keeps the same guarantee:
+    # a wedged ``ps`` is still SIGKILLed within ``timeout_seconds``.
+    timeout_bin = shutil.which("timeout") or shutil.which("gtimeout")
+    seconds = f"{timeout_seconds:.0f}"
+    if timeout_bin:
+        argv = [timeout_bin, seconds, "bash", "-c", script]
+    else:
+        argv = [
+            "bash", "-c",
+            f"({script}) & __diag=$!; "
+            f"(sleep {seconds}; kill -9 $__diag 2>/dev/null) & __wd=$!; "
+            "wait $__diag 2>/dev/null; kill $__wd 2>/dev/null; exit 0",
+        ]
+
     try:
         # Detach from our process group so the subprocess survives even
         # if systemd kills our cgroup with KillMode=control-group (which
@@ -255,7 +277,7 @@ def spawn_async_diagnostic(
         # start_new_session, a SIGKILL on our cgroup takes the diag down
         # before it can flush.
         proc = subprocess.Popen(
-            ["timeout", f"{timeout_seconds:.0f}", "bash", "-c", script],
+            argv,
             stdout=fd,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,

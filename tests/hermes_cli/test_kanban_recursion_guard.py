@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+import tests.conftest as _conftest
+
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_decompose as decomp
 
@@ -231,16 +233,20 @@ def test_concurrency_and_promotion_keys_are_registered_in_the_schema():
 
 
 def _home_with_profiles(monkeypatch, *profiles):
-    import os, sys, tempfile
+    """Fresh HERMES_HOME with the named profiles installed.
+
+    No sys.modules purge: ``kanban_home()`` reads HERMES_HOME on every call,
+    so monkeypatching the env is enough. Purging and re-importing would swap
+    the module object for the rest of the session and break later tests that
+    hold a reference to this one (see tests/conftest.reimported_hermes_cli).
+    """
+    import os, tempfile
     home = tempfile.mkdtemp(prefix="kanban_recursion_guard_")
     for prof in (*profiles, "default"):
         os.makedirs(os.path.join(home, "profiles", prof), exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", home)
-    for mod in list(sys.modules):
-        if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
-            del sys.modules[mod]
-    from hermes_cli import kanban_db
-    return kanban_db
+    kb.init_db()
+    return kb
 
 
 def test_global_cap_is_enforced_atomically_across_dispatch(monkeypatch):

@@ -9,14 +9,17 @@ the Host header at the application layer rejects the attack.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import pytest
 
-_repo = str(Path(__file__).resolve().parents[1])
-if _repo not in sys.path:
-    sys.path.insert(0, _repo)
+# NOTE: deliberately no sys.path munging here. tests/conftest.py already puts
+# the PROJECT ROOT on sys.path. This file used to insert ``parents[1]`` --
+# which is the ``tests/`` directory, not the repo root -- and ``tests/``
+# contains packages whose names collide with real importable ones (``acp``,
+# ``acp_adapter``, ``state``, ``skills``, ``dashboard``, ...). Once ``tests/``
+# was on sys.path, a later ``import acp`` anywhere in the session resolved to
+# ``tests/acp`` and blew up with "No module named 'acp.schema'". That is why
+# test_kanban_review_surfaces failed only in a full run.
+# tests/hermes_cli/test_sys_path_hygiene.py guards against a repeat.
 
 
 class TestHostHeaderValidator:
