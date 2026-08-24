@@ -3391,9 +3391,13 @@ def check_stage_prerequisites(
         return False, f"missing_{parent_stage}_parent"
 
     for parent in parents:
+        # A dispatcher-completed run ends as 'done'; 'completed' only appears
+        # when complete_task synthesises a run for an unclaimed task. Accept
+        # both -- filtering on 'completed' alone refused every real card.
         for run in conn.execute(
-            "SELECT metadata FROM task_runs WHERE task_id = ? AND status = 'completed' "
-            "ORDER BY id DESC", (parent["id"],),
+            "SELECT metadata FROM task_runs WHERE task_id = ? "
+            "AND status IN ('done', 'completed') ORDER BY id DESC",
+            (parent["id"],),
         ).fetchall():
             meta = run["metadata"]
             if not meta:

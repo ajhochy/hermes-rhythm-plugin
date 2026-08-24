@@ -405,3 +405,31 @@ def test_dispatch_refuses_an_implement_card_missing_its_contract_artifact(kanban
     assert imp not in [s[0] for s in res.spawned]
     with kb.connect_closing() as conn:
         assert kb.get_task(conn, imp).status != "running"
+
+
+def test_prerequisite_reads_metadata_from_a_DISPATCHER_run_not_just_a_synthetic_one(kanban_home):
+    """Regression (found live 2026-08-24).
+
+    The gate filtered task_runs on status='completed'. A card completed via the
+    real dispatcher path (claim -> run -> complete) ends its run as 'done', not
+    'completed' -- 'completed' only appears when complete_task synthesises a run
+    for an unclaimed task, which is what the original unit test did. So the gate
+    passed in tests and refused EVERY real implement card. Exercise the claimed
+    path explicitly.
+    """
+    with kb.connect_closing() as conn:
+        con = kb.create_task(
+            conn, title="contract", assignee="opus-contract",
+            provenance=kb.encode_provenance(origin="decomposer", root_id="r", stage="contract"))
+        # the dispatcher claims first -- this is what makes the run 'done'
+        assert kb.claim_task(conn, con, ttl_seconds=600)
+        kb.complete_task(conn, con, result="authored",
+                         metadata={"contract_path": "docs/ai/contracts/issue-73.json"})
+        statuses = [r["status"] for r in conn.execute(
+            "SELECT status FROM task_runs WHERE task_id=?", (con,))]
+        assert "done" in statuses, statuses
+        imp = kb.create_task(
+            conn, title="implement", assignee="codex-builder", parents=[con],
+            provenance=kb.encode_provenance(origin="decomposer", root_id="r", stage="implement"))
+        ok, reason = kb.check_stage_prerequisites(conn, imp)
+    assert ok, f"gate must accept a dispatcher-completed contract run: {reason}"
