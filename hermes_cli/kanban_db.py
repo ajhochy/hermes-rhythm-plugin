@@ -3351,6 +3351,62 @@ CROSS_MODEL_STAGE_PAIRS = {
 }
 
 
+#: Stage prerequisites: ``{child_stage: (parent_stage, required_metadata_key)}``.
+#:
+#: `acceptance-contract` must produce `docs/ai/contracts/<slug>.json` -- the
+#: machine-readable mandate that turns the coder's job from "do what the prose
+#: says" into "make these tests pass". That was requested in the skill and
+#: skipped by live workers twice, so it is now a gate: the contract card reports
+#: the artifact path in its completion metadata, and an implement card whose
+#: contract parent did not report one is refused BEFORE it is claimed.
+STAGE_PREREQUISITES = {
+    "implement": ("contract", "contract_path"),
+}
+
+
+def check_stage_prerequisites(
+    conn: sqlite3.Connection, task_id: str,
+) -> tuple[bool, str]:
+    """Return ``(ok, reason)`` for this card's upstream-artifact requirements."""
+    row = conn.execute(
+        "SELECT id, provenance FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if row is None:
+        return False, "unknown_task"
+    stage = decode_provenance(row["provenance"]).get("stage")
+    spec = STAGE_PREREQUISITES.get(stage or "")
+    if spec is None:
+        return True, "no_prerequisite"
+    parent_stage, required_key = spec
+
+    parents = [
+        r for r in conn.execute(
+            "SELECT t.id, t.provenance FROM tasks t "
+            "JOIN task_links l ON l.parent_id = t.id WHERE l.child_id = ?",
+            (task_id,),
+        ).fetchall()
+        if decode_provenance(r["provenance"]).get("stage") == parent_stage
+    ]
+    if not parents:
+        return False, f"missing_{parent_stage}_parent"
+
+    for parent in parents:
+        for run in conn.execute(
+            "SELECT metadata FROM task_runs WHERE task_id = ? AND status = 'completed' "
+            "ORDER BY id DESC", (parent["id"],),
+        ).fetchall():
+            meta = run["metadata"]
+            if not meta:
+                continue
+            try:
+                parsed = json.loads(meta) if isinstance(meta, str) else dict(meta)
+            except Exception:
+                continue
+            if str(parsed.get(required_key) or "").strip():
+                return True, "prerequisite_met"
+    return False, f"{parent_stage}_artifact_missing"
+
+
 def check_cross_model_review(
     conn: sqlite3.Connection, task_id: str,
 ) -> tuple[bool, str]:
@@ -8902,6 +8958,10 @@ class DispatchResult:
     #: hold at dispatch: a self-review that runs and *then* trips a diagnostic
     #: has already produced a worthless approval.
     skipped_cross_model: list[str] = field(default_factory=list)
+    #: Cards refused because a required upstream artifact was never reported
+    #: (see STAGE_PREREQUISITES) -- e.g. an implement card whose contract parent
+    #: did not produce docs/ai/contracts/<slug>.json.
+    skipped_missing_prerequisite: list[str] = field(default_factory=list)
     """Ready task ids skipped because their assignee names a control-plane
     lane (a Claude Code terminal like ``orion-cc``) rather than a Hermes
     profile. Expected steady-state on multi-lane setups; NOT an
@@ -11077,6 +11137,12 @@ def _dispatch_once_locked(
             if not _xm_ok:
                 result.skipped_cross_model.append(row["id"])
                 continue
+        # Upstream-artifact gate: refuse before the claim so a coder never runs
+        # without the contract it is supposed to be held to.
+        _pq_ok, _pq_why = check_stage_prerequisites(conn, row["id"])
+        if not _pq_ok:
+            result.skipped_missing_prerequisite.append(row["id"])
+            continue
         # Per-profile concurrency cap (#21582): even if there's global
         # headroom, refuse to spawn for an assignee that's already at
         # its in-flight cap. Prevents one profile's local model / API

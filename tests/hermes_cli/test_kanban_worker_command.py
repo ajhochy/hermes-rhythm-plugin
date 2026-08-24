@@ -333,3 +333,75 @@ def test_an_exhausted_repair_card_can_never_be_decomposed(kanban_home):
 def test_repair_ceiling_matches_the_existing_block_recurrence_limit(kanban_home):
     """One number, not two that can drift."""
     assert kb.REPAIR_ROUND_LIMIT == kb.BLOCK_RECURRENCE_LIMIT
+
+
+# --------------------------------------------------------------------------
+# stage prerequisites — the contract ARTIFACT, enforced not requested
+# --------------------------------------------------------------------------
+# `acceptance-contract` is supposed to produce docs/ai/contracts/<slug>.json --
+# the machine-readable mandate the coder is held to ("make these tests pass"
+# rather than "do what the prose says"). It was asked for in the skill twice and
+# skipped twice by live workers. Prose is not enforcement. The contract card must
+# now report the artifact path in its completion metadata, and an implement card
+# whose contract parent did not is refused BEFORE it is claimed.
+
+def _mk_contract_chain(conn, *, with_artifact: bool):
+    con = kb.create_task(
+        conn, title="contract", assignee="opus-contract",
+        provenance=kb.encode_provenance(origin="decomposer", root_id="r", stage="contract"))
+    meta = {"contract_path": "docs/ai/contracts/x.json"} if with_artifact else {"note": "forgot"}
+    kb.complete_task(conn, con, result="test authored", metadata=meta)
+    imp = kb.create_task(
+        conn, title="implement", assignee="codex-builder", parents=[con],
+        provenance=kb.encode_provenance(origin="decomposer", root_id="r", stage="implement"))
+    return con, imp
+
+
+def test_implement_is_allowed_when_the_contract_reported_its_artifact(kanban_home):
+    with kb.connect_closing() as conn:
+        _con, imp = _mk_contract_chain(conn, with_artifact=True)
+        ok, reason = kb.check_stage_prerequisites(conn, imp)
+    assert ok, reason
+
+
+def test_implement_is_refused_when_the_contract_artifact_is_missing(kanban_home):
+    with kb.connect_closing() as conn:
+        _con, imp = _mk_contract_chain(conn, with_artifact=False)
+        ok, reason = kb.check_stage_prerequisites(conn, imp)
+    assert not ok
+    assert reason == "contract_artifact_missing"
+
+
+def test_implement_with_no_contract_parent_at_all_is_refused(kanban_home):
+    """The planner must never emit an implement card without a contract."""
+    with kb.connect_closing() as conn:
+        imp = kb.create_task(
+            conn, title="implement", assignee="codex-builder",
+            provenance=kb.encode_provenance(origin="decomposer", root_id="r", stage="implement"))
+        ok, reason = kb.check_stage_prerequisites(conn, imp)
+    assert not ok
+    assert reason == "missing_contract_parent"
+
+
+def test_other_stages_have_no_prerequisite(kanban_home):
+    with kb.connect_closing() as conn:
+        for stage in ("contract", "review", "manual-smoke", "record", "plan"):
+            tid = kb.create_task(
+                conn, title=stage, assignee="opus-reviewer",
+                provenance=kb.encode_provenance(origin="decomposer", root_id="r", stage=stage))
+            ok, _ = kb.check_stage_prerequisites(conn, tid)
+            assert ok, stage
+
+
+def test_dispatch_refuses_an_implement_card_missing_its_contract_artifact(kanban_home, monkeypatch):
+    monkeypatch.setattr(kb, "_load_kanban_config", lambda: {"worker_command": {
+        "opus-contract": ["claude", "-p"], "codex-builder": ["codex", "exec"]}})
+    with kb.connect_closing() as conn:
+        _con, imp = _mk_contract_chain(conn, with_artifact=False)
+    with kb.connect_closing() as conn:
+        kb.recompute_ready(conn)
+        res = kb.dispatch_once(conn, spawn_fn=lambda *a, **k: 777)
+    assert imp in getattr(res, "skipped_missing_prerequisite", []), res
+    assert imp not in [s[0] for s in res.spawned]
+    with kb.connect_closing() as conn:
+        assert kb.get_task(conn, imp).status != "running"
