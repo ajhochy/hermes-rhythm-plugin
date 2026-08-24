@@ -2387,6 +2387,20 @@ DEFAULT_CONFIG = {
         # assignee to any installed profile. When unset, falls back to the
         # default profile. A task never ends up with assignee=None.
         "default_assignee": "",
+        # Assignee -> argv template for a NON-Hermes worker. When the
+        # dispatcher claims a card whose assignee appears here, it launches
+        # that command instead of `hermes -p <profile> chat -q ...`. The
+        # template supports {task_id} / {workspace} / {board} / {assignee};
+        # the worker inherits the same HERMES_KANBAN_* env and cwd, and
+        # reports terminal state back through the `hermes kanban` CLI.
+        #
+        # This is what lets a card drive the agent-stack chain on a chosen
+        # HOST (Claude Code, Codex, ...) rather than a Hermes agent session.
+        # Because the BOARD picks the host via the assignee, cross-model
+        # review ("this model wrote it, the other reviews it") becomes an
+        # invariant of the graph instead of an instruction a model can
+        # ignore. Empty (the default) preserves the Hermes-worker behaviour.
+        "worker_command": {},
         # Board-wide concurrency cap. When set to a positive int, the
         # dispatcher never has more than N workers running at once across
         # every profile. Unset (None) falls back to the memory-derived

@@ -3234,6 +3234,197 @@ MAX_WORKFLOW_WORKTREE_DEPTH = 1
 DEPENDENCY_SATISFIED_STATUSES = ("done",)
 
 
+# ---------------------------------------------------------------------------
+# Non-Hermes workers: kanban.worker_command
+# ---------------------------------------------------------------------------
+# The dispatcher's worker was hardcoded to `hermes -p <profile> chat -q ...`,
+# so the only way to do work on a card was a Hermes agent session -- one full
+# system-prompt bootstrap per card, and no way to drive an external coding
+# workflow (Claude Code, Codex) from the board.
+#
+# `kanban.worker_command` maps an ASSIGNEE to an argv template. Because the
+# BOARD picks the host, "this model wrote it, the other model reviews it" is an
+# invariant of the graph rather than an instruction. That distinction is
+# load-bearing: a model asked nicely will not comply reliably (an HCW planner
+# stage pinned a command its card body explicitly and repeatedly forbade, then
+# did it again on the next attempt).
+
+#: Placeholders substituted into a worker_command argv template.
+WORKER_COMMAND_PLACEHOLDERS = ("task_id", "workspace", "board", "assignee")
+
+#: Host label used when an assignee has no worker_command override -- i.e. the
+#: card runs as a normal Hermes agent session.
+DEFAULT_WORKER_HOST = "hermes"
+
+
+def _load_kanban_config() -> dict:
+    """Read the ``kanban`` config section, ``{}`` on any failure.
+
+    Module-level indirection so tests can patch one seam instead of the whole
+    config loader.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = (load_config_readonly() or {}).get("kanban")
+    except Exception:
+        return {}
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def worker_command_for(assignee: Optional[str]) -> Optional[list[str]]:
+    """Return the argv template configured for ``assignee``, else ``None``.
+
+    Fails CLOSED on a malformed template: a non-list, an empty list, a blank
+    executable, or any non-string member returns ``None`` so the dispatcher
+    falls back to the Hermes worker rather than spawning something arbitrary
+    from half-valid config.
+    """
+    if not assignee:
+        return None
+    table = _load_kanban_config().get("worker_command")
+    if not isinstance(table, dict):
+        return None
+    template = table.get(str(assignee))
+    if not isinstance(template, list) or not template:
+        return None
+    if not all(isinstance(part, str) for part in template):
+        return None
+    if not str(template[0]).strip():
+        return None
+    return list(template)
+
+
+def render_worker_command(
+    template: Iterable[str],
+    *,
+    task_id: str,
+    workspace: str,
+    board: str,
+    assignee: str,
+) -> list[str]:
+    """Substitute the supported placeholders into an argv template.
+
+    Uses explicit token replacement rather than ``str.format`` so a literal
+    brace in a command (``sh -c 'echo {foo}'``) is left alone instead of
+    raising ``KeyError``.
+    """
+    values = {
+        "task_id": task_id, "workspace": workspace,
+        "board": board, "assignee": assignee,
+    }
+    out: list[str] = []
+    for part in template:
+        rendered = str(part)
+        for key in WORKER_COMMAND_PLACEHOLDERS:
+            rendered = rendered.replace("{" + key + "}", str(values[key] or ""))
+        out.append(rendered)
+    return out
+
+
+def worker_host_for(assignee: Optional[str]) -> str:
+    """Return the host label that runs ``assignee``'s cards.
+
+    Derived from the configured command's executable basename -- the command
+    IS the host, so there is exactly one source of truth and no second config
+    table to drift. ``"hermes"`` when no override is configured.
+    """
+    template = worker_command_for(assignee)
+    if not template:
+        return DEFAULT_WORKER_HOST
+    return PurePosixPath(str(template[0]).replace("\\", "/")).name or DEFAULT_WORKER_HOST
+
+
+#: Stage pairs that MUST run on different hosts, as ``{child: parent}``.
+#:
+#: ``review`` after ``implement`` -- a model must not review its own diff.
+#:
+#: ``implement`` after ``contract`` -- `acceptance-contract` authors a test that
+#: must fail before implementation. If the same model then writes the code, it
+#: can satisfy the spec by weakening the spec; `coding-agent` names this exact
+#: failure mode ("I'll make the contract test pass by mocking the thing it
+#: checks"). A different host removes the ABILITY rather than warning about the
+#: temptation: an edit to a test it does not own lands in the diff the reviewer
+#: reads.
+CROSS_MODEL_STAGE_PAIRS = {
+    "review": "implement",
+    "implement": "contract",
+}
+
+
+def check_cross_model_review(
+    conn: sqlite3.Connection, task_id: str,
+) -> tuple[bool, str]:
+    """Return ``(ok, reason)`` for the cross-model authorship invariant.
+
+    A card whose stage appears in :data:`CROSS_MODEL_STAGE_PAIRS` must not run
+    on the same host as the parent stage whose work it checks or builds on.
+    Cards with no such parent are unconstrained -- the rule is about
+    authorship boundaries, not about every edge in the graph.
+    """
+    row = conn.execute(
+        "SELECT id, assignee, provenance FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if row is None:
+        return False, "unknown_task"
+    stage = decode_provenance(row["provenance"]).get("stage")
+    author_stage = CROSS_MODEL_STAGE_PAIRS.get(stage or "")
+    if author_stage is None:
+        return True, "unconstrained_stage"
+    own_host = worker_host_for(row["assignee"])
+    for parent in conn.execute(
+        "SELECT t.id, t.assignee, t.provenance FROM tasks t "
+        "JOIN task_links l ON l.parent_id = t.id WHERE l.child_id = ?",
+        (task_id,),
+    ).fetchall():
+        if decode_provenance(parent["provenance"]).get("stage") != author_stage:
+            continue
+        if worker_host_for(parent["assignee"]) == own_host:
+            return False, "same_host_as_author"
+    return True, "cross_model"
+
+
+#: Coder->reviewer repair rounds allowed on ONE card before it blocks for a
+#: human. Deliberately the SAME number as BLOCK_RECURRENCE_LIMIT so there is
+#: one ceiling, not two that can drift apart.
+REPAIR_ROUND_LIMIT = BLOCK_RECURRENCE_LIMIT
+
+
+def repair_round(conn: sqlite3.Connection, task_id: str) -> int:
+    """How many repair rounds this card has already been through.
+
+    Reads ``block_recurrences`` -- the counter the block/unblock machinery
+    itself maintains -- rather than a parallel tally that could disagree with
+    the routing decision. Each reviewer rejection is one round. Counting
+    transitions on the SAME card is the point: a loop that creates a card per
+    iteration is the runaway fan-out this subsystem exists to prevent.
+    """
+    row = conn.execute(
+        "SELECT block_recurrences FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if row is None or row["block_recurrences"] is None:
+        return 0
+    return int(row["block_recurrences"])
+
+
+def repair_budget_exhausted(
+    conn: sqlite3.Connection, task_id: str, ceiling: Optional[int] = None,
+) -> bool:
+    """Whether ``task_id`` has used up its repair rounds.
+
+    At the ceiling the caller must block ONE card with a concise actionable
+    reason. It must not create another card, re-plan, or re-decompose.
+    """
+    limit = REPAIR_ROUND_LIMIT if ceiling is None else int(ceiling)
+    if repair_round(conn, task_id) >= limit:
+        return True
+    # The machinery routes an over-limit card to `triage` and records
+    # `block_loop_detected`. Honour that even if the counter was later reset.
+    return conn.execute(
+        "SELECT 1 FROM task_events WHERE task_id = ? AND "
+        "kind = 'block_loop_detected' LIMIT 1", (task_id,),
+    ).fetchone() is not None
+
+
 def _decode_provenance_blob(raw: Any) -> dict:
     """Parse a ``tasks.provenance`` cell into a dict. Never raises."""
     if not raw:
@@ -8081,6 +8272,37 @@ def board_diagnostics(
             task_ids=[parent, child],
         ))
 
+    # 7. A review card running on the same host as the implementer it
+    #    reviews. The cross-model invariant is the whole point of routing by
+    #    assignee: a model reviewing its own output is not a review.
+    for tid in tasks:
+        if prov[tid].get("stage") != "review":
+            continue
+        if tasks[tid]["status"] in TERMINAL_STATUSES:
+            continue
+        ok, why = check_cross_model_review(conn, tid)
+        if ok:
+            continue
+        parents = [
+            p_id for p_id in (
+                r["parent_id"] for r in links if r["child_id"] == tid
+            )
+            if p_id in prov and prov[p_id].get("stage") == "implement"
+        ]
+        out.append(BoardDiagnostic(
+            kind="cross_model_review_violation",
+            severity="critical",
+            title="Review card runs on the author's own host",
+            detail=(
+                f"{tid} (assignee {tasks[tid]['assignee']}, host "
+                f"{worker_host_for(tasks[tid]['assignee'])}) reviews "
+                f"{', '.join(parents) or 'an implement card'} on the SAME host "
+                f"({why}). Reassign the review to a different host so a "
+                "different model reads the diff."
+            ),
+            task_ids=[tid, *parents],
+        ))
+
     # 7. Active fan-out above the configured board cap.
     if max_in_progress is None:
         max_in_progress = configured_max_in_progress()
@@ -8675,6 +8897,11 @@ class DispatchResult:
     operator can see when the dispatcher is acting on the fallback rule
     rather than on explicit per-task assignments."""
     skipped_nonspawnable: list[str] = field(default_factory=list)
+    #: ``stage=review`` cards refused because their host matches the
+    #: ``stage=implement`` parent they review. The cross-model invariant has to
+    #: hold at dispatch: a self-review that runs and *then* trips a diagnostic
+    #: has already produced a worthless approval.
+    skipped_cross_model: list[str] = field(default_factory=list)
     """Ready task ids skipped because their assignee names a control-plane
     lane (a Claude Code terminal like ``orion-cc``) rather than a Hermes
     profile. Expected steady-state on multi-lane setups; NOT an
@@ -10674,7 +10901,9 @@ def _dispatch_once_locked(
             spawn_budget = 1
 
     ready_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
+        # `provenance` is selected so the cross-model review gate below can
+        # test the stage without a per-row follow-up query.
+        "SELECT id, assignee, provenance FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -10738,6 +10967,14 @@ def _dispatch_once_locked(
     # Normalize default_assignee once: empty/whitespace string → None so the
     # rest of the loop can use ``if default_assignee:`` as a single check.
     # We also resolve profile_exists once here for the same reason.
+    # Read the worker_command table ONCE per tick, not once per ready row --
+    # each read hits load_config_readonly, and the ready loop can be long.
+    try:
+        _wc_table = _load_kanban_config().get("worker_command") or {}
+        if not isinstance(_wc_table, dict):
+            _wc_table = {}
+    except Exception:
+        _wc_table = {}
     _default_assignee = (default_assignee or "").strip() or None
     _default_assignee_resolved = False
     if _default_assignee:
@@ -10812,7 +11049,14 @@ def _dispatch_once_locked(
             from hermes_cli.profiles import profile_exists  # local import: avoids cycle
         except Exception:
             profile_exists = None  # type: ignore[assignment]
-        if profile_exists is not None and not profile_exists(row_assignee):
+        # A worker_command assignee (codex-builder, opus-reviewer, ...) is a
+        # HOST selector, not a Hermes profile -- no profile will ever exist for
+        # it, so the profile_exists gate must not reject it.
+        if (
+            profile_exists is not None
+            and row_assignee not in _wc_table
+            and not profile_exists(row_assignee)
+        ):
             # Bucket separately from skipped_unassigned: the operator
             # cannot fix this by assigning a profile (the assignee IS the
             # intended owner — a terminal lane). Health telemetry uses
@@ -10821,6 +11065,18 @@ def _dispatch_once_locked(
             # of human-pulled work.
             result.skipped_nonspawnable.append(row["id"])
             continue
+        # Cross-model review gate: never let a model review its own host's
+        # work. Refused BEFORE the claim, so no worker ever starts. Only
+        # review-stage cards can fail this, so skip the query for everything
+        # else rather than paying it on every ready row.
+        # Gate on the PAIR TABLE, never a literal stage name: adding a pair to
+        # CROSS_MODEL_STAGE_PAIRS must be enough to enforce it here. A hardcoded
+        # "review" let implement<-contract violations spawn unchecked.
+        if _wc_table and decode_provenance(row["provenance"]).get("stage") in CROSS_MODEL_STAGE_PAIRS:
+            _xm_ok, _xm_why = check_cross_model_review(conn, row["id"])
+            if not _xm_ok:
+                result.skipped_cross_model.append(row["id"])
+                continue
         # Per-profile concurrency cap (#21582): even if there's global
         # headroom, refuse to spawn for an assignee that's already at
         # its in-flight cap. Prevents one profile's local model / API
@@ -11478,6 +11734,22 @@ def _default_spawn(
     # older hermes builds on PATH that predate the flag's precedence.
     env.pop("HERMES_TUI", None)
 
+    # kanban.worker_command: launch a NON-Hermes worker (Claude Code, Codex, ...)
+    # for this assignee instead of a Hermes chat session. Everything above --
+    # the HERMES_KANBAN_* env, cwd=workspace, the rotated per-task log, the
+    # claim/PID bookkeeping below -- is shared, because write-back happens
+    # through the `hermes kanban` CLI which resolves the board from that env.
+    _override = worker_command_for(task.assignee)
+    if _override:
+        cmd = render_worker_command(
+            _override,
+            task_id=task.id,
+            workspace=workspace or "",
+            board=resolved_board,
+            assignee=task.assignee or "",
+        )
+        return _finish_spawn(cmd, task, workspace, board, env)
+
     cmd = [
         *_resolve_hermes_argv(),
         "-p", profile_arg,
@@ -11524,6 +11796,24 @@ def _default_spawn(
         # turn, prints text, exits rc=0, and the dispatcher records a
         # protocol violation (incident 2026-06-09 t_d9cbe312).
         cmd.append("-Q")
+    return _finish_spawn(cmd, task, workspace, board, env)
+
+
+def _finish_spawn(
+    cmd: list,
+    task: "Task",
+    workspace: str,
+    board: Optional[str],
+    env: dict,
+) -> Optional[int]:
+    """Launch ``cmd`` detached, logging to the board's per-task log.
+
+    Shared tail for both worker kinds -- the Hermes chat worker and a
+    ``kanban.worker_command`` host (Claude Code, Codex, ...). Keeping one
+    implementation means the log path, rotation, detachment, cwd and PID
+    bookkeeping cannot drift between them.
+    """
+    import subprocess
     # Redirect output to a per-task log under <board-root>/logs/.
     # Anchored at the board root (not the shared kanban root), so
     # `hermes kanban log` on a specific board reads its own file and
@@ -11550,8 +11840,9 @@ def _default_spawn(
     except FileNotFoundError:
         log_f.close()
         raise RuntimeError(
-            "`hermes` executable not found on PATH. "
-            "Install Hermes Agent or activate its venv before running the kanban dispatcher."
+            f"worker executable not found on PATH: {cmd[0]!r}. For a Hermes "
+            "worker, install Hermes Agent or activate its venv. For a "
+            "kanban.worker_command assignee, fix the configured argv[0]."
         )
     # NOTE: we intentionally do NOT close log_f here — we want Popen's
     # child process to keep writing after this function returns.  The
