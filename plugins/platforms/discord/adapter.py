@@ -3037,6 +3037,9 @@ class DiscordAdapter(BasePlatformAdapter):
         """Reduce command payloads to the semantic fields Hermes manages."""
         contexts = payload.get("contexts")
         integration_types = payload.get("integration_types")
+        integration_types_sorted = (
+            sorted(int(i) for i in integration_types) if integration_types else None
+        )
         return {
             "type": int(payload.get("type", 1) or 1),
             "name": str(payload.get("name", "") or ""),
@@ -3047,8 +3050,13 @@ class DiscordAdapter(BasePlatformAdapter):
             "dm_permission": bool(payload.get("dm_permission", True)),
             "nsfw": bool(payload.get("nsfw", False)),
             "contexts": sorted(int(c) for c in contexts) if contexts else None,
+            # Discord returns [0, 1] (its semantic default) server-side even
+            # when discord.py omits integration_types (None) locally; treat
+            # them as equal so unchanged commands don't false-diff.
             "integration_types": (
-                sorted(int(i) for i in integration_types) if integration_types else None
+                None
+                if integration_types_sorted == [0, 1]
+                else integration_types_sorted
             ),
             "options": [
                 self._canonicalize_app_command_option(item)
@@ -3146,21 +3154,50 @@ class DiscordAdapter(BasePlatformAdapter):
             (int(payload.get("type", 1) or 1), str(payload.get("name", "") or "").lower()): payload
             for payload in desired_payloads
         }
-        existing_commands = await tree.fetch_commands()
-        existing_by_key = {
-            (
-                int(getattr(getattr(command, "type", None), "value", getattr(command, "type", 1)) or 1),
-                str(command.name or "").lower(),
-            ): command
-            for command in existing_commands
-        }
+        http = self._client.http
+
+        # Prefer the raw REST payload: discord.py's AppCommand parsing loses
+        # information (e.g. integration_types=[0, 1] collapses to [0]), which
+        # false-diffs unchanged commands into a recreate loop on every startup.
+        # Only fall back to tree.fetch_commands() + AppCommand conversion for
+        # older clients or test doubles that don't expose the raw endpoint.
+        raw_existing_commands = None
+        get_global_commands = getattr(http, "get_global_commands", None)
+        if callable(get_global_commands):
+            try:
+                result = await get_global_commands(app_id)
+            except (AttributeError, NotImplementedError):
+                result = None
+            if isinstance(result, list):
+                raw_existing_commands = result
+
+        if raw_existing_commands is not None:
+            existing_by_key = {
+                (int(payload.get("type", 1) or 1), str(payload.get("name", "") or "").lower()): {
+                    "id": int(payload["id"]),
+                    "payload": payload,
+                }
+                for payload in raw_existing_commands
+                if isinstance(payload, dict) and payload.get("id") is not None
+            }
+        else:
+            existing_commands = await tree.fetch_commands()
+            existing_by_key = {
+                (
+                    int(getattr(getattr(command, "type", None), "value", getattr(command, "type", 1)) or 1),
+                    str(command.name or "").lower(),
+                ): {
+                    "id": command.id,
+                    "payload": self._existing_command_to_payload(command),
+                }
+                for command in existing_commands
+            }
 
         unchanged = 0
         updated = 0
         recreated = 0
         created = 0
         deleted = 0
-        http = self._client.http
         mutation_count = 0
 
         async def mutate(call, *args):
@@ -3181,7 +3218,7 @@ class DiscordAdapter(BasePlatformAdapter):
         obsolete_keys = set(existing_by_key.keys()) - set(desired_by_key.keys())
         for key in obsolete_keys:
             current = existing_by_key.pop(key)
-            await mutate(http.delete_global_command, app_id, current.id)
+            await mutate(http.delete_global_command, app_id, current["id"])
             deleted += 1
 
         for key, desired in desired_by_key.items():
@@ -3191,7 +3228,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 created += 1
                 continue
 
-            current_existing_payload = self._existing_command_to_payload(current)
+            current_id = current["id"]
+            current_existing_payload = current["payload"]
             current_payload = self._canonicalize_app_command_payload(current_existing_payload)
             desired_payload = self._canonicalize_app_command_payload(desired)
             if current_payload == desired_payload:
@@ -3199,12 +3237,12 @@ class DiscordAdapter(BasePlatformAdapter):
                 continue
 
             if self._patchable_app_command_payload(current_existing_payload) == self._patchable_app_command_payload(desired):
-                await mutate(http.delete_global_command, app_id, current.id)
+                await mutate(http.delete_global_command, app_id, current_id)
                 await mutate(http.upsert_global_command, app_id, desired)
                 recreated += 1
                 continue
 
-            await mutate(http.edit_global_command, app_id, current.id, desired)
+            await mutate(http.edit_global_command, app_id, current_id, desired)
             updated += 1
 
         return {

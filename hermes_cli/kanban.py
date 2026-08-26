@@ -349,6 +349,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_create.add_argument("--idempotency-key", default=None,
                           help="Dedup key. If a non-archived task with this key exists, "
                                "its id is returned instead of creating a duplicate.")
+    p_create.add_argument(
+        "--provenance", default=None, metavar="JSON",
+        help="Structured creation provenance as a JSON object, e.g. "
+             "'{\"origin\":\"workflow\",\"run_id\":\"r1\",\"stage\":\"red\"}'. "
+             "origin must be one of user/intake/decomposer/workflow. This is "
+             "the ONLY identity signal the decomposition guards consult — only "
+             "user/intake roots may be decomposed. Omit for hand-made cards "
+             "(they read as origin=user).")
     p_create.add_argument("--max-runtime", default=None,
                           help="Per-task runtime cap. Accepts seconds (300) or "
                                "durations (90s, 30m, 2h, 1d). When exceeded, "
@@ -721,6 +729,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Promote even if parent dependencies are not yet done/archived",
     )
     p_promote.add_argument(
+        "--allow-triage",
+        action="store_true",
+        help="Permit triage -> ready without changing the task specification; parent checks still apply",
+    )
+    p_promote.add_argument(
         "--dry-run",
         action="store_true",
         help="Validate the promotion without mutating state",
@@ -742,6 +755,16 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         default=None,
         help="Permanently delete already-archived task ids from the board",
     )
+
+    p_cancel = sub.add_parser(
+        "cancel-subtree",
+        help="Atomically archive a task AND its whole descendant closure",
+    )
+    p_cancel.add_argument("task_id")
+    p_cancel.add_argument("--reason", default="", help="Recorded on every archived card")
+    p_cancel.add_argument("--dry-run", action="store_true",
+                          help="Print the closure without archiving anything")
+    p_cancel.add_argument("--json", action="store_true", help="Machine-readable result")
 
     # --- tail ---
     p_tail = sub.add_parser("tail", help="Follow a task's event stream")
@@ -814,12 +837,32 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_nsub.add_argument("task_id")
     p_nsub.add_argument("--platform", required=True)
     p_nsub.add_argument("--chat-id", required=True)
-    p_nsub.add_argument("--chat-type", default="", help="dm / group / channel (used by wake routing)")
     p_nsub.add_argument("--thread-id", default=None)
     p_nsub.add_argument("--user-id", default=None)
+    p_nsub.add_argument("--user-id-alt", default=None)
+    p_nsub.add_argument(
+        "--chat-type",
+        choices=("dm", "group", "channel", "thread"),
+        default=None,
+        help="Originating source chat_type, recorded so the active-wake "
+             "delivery modes resolve the operator's real session. Omit to "
+             "leave an existing sub unchanged (new subs default to 'dm').",
+    )
     p_nsub.add_argument(
         "--notifier-profile", default=None,
         help="Profile gateway that owns/delivers this subscription (default: active profile)",
+    )
+    p_nsub.add_argument(
+        "--delivery-mode",
+        # Single source of truth shared with the DB/watcher enum.
+        choices=kb._NOTIFY_DELIVERY_MODES,
+        default=None,
+        help="How the kanban-notifier reacts to terminal events for this "
+             "subscription: 'notify' (passive message only; default), "
+             "'notify+wake' (message AND wake the destination gateway agent so "
+             "it reads the full board context and replies in its own voice), or "
+             "'wake' (wake the agent only, no passive message). Omit to leave an "
+             "existing subscription's mode unchanged (new subs default to 'notify').",
     )
 
     p_nlist = sub.add_parser(
@@ -1115,6 +1158,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "reopen-review":  _cmd_reopen_review,
             "promote":  _cmd_promote,
             "archive":  _cmd_archive,
+            "cancel-subtree": _cmd_cancel_subtree,
             "tail":     _cmd_tail,
             "dispatch": _cmd_dispatch,
             "daemon":   _cmd_daemon,
@@ -1566,6 +1610,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
+            provenance=getattr(args, "provenance", None),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
@@ -1996,6 +2041,24 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                     "assignee": r["assignee"],
                 }
 
+        # Board-level SEMANTIC diagnostics. The per-task rules above are local
+        # structural checks, which is why `diagnostics --json` returned [] on a
+        # board holding 285 recursively-generated cards: every individual card
+        # was well-formed. Recursion, duplicated canonical identity,
+        # contaminated workflow identity and runaway fan-out only exist in the
+        # graph. Suppressed in single-task mode, which is per-task by contract.
+        board_diags = (
+            [] if getattr(args, "task", None)
+            else kb.board_diagnostics(conn)
+        )
+        sev = getattr(args, "severity", None)
+        if sev:
+            board_diags = [
+                d for d in board_diags
+                if kd.SEVERITY_ORDER.index(d.severity)
+                >= kd.SEVERITY_ORDER.index(sev)
+            ]
+
     if getattr(args, "json", False):
         out_json = [
             {
@@ -2005,17 +2068,34 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
             }
             for tid, dl in diags_by_task.items()
         ]
+        if board_diags:
+            out_json.append({
+                "scope": "board",
+                "diagnostics": [d.as_dict() for d in board_diags],
+            })
         print(json.dumps(out_json, indent=2, ensure_ascii=False))
         return 0
 
-    if not diags_by_task:
+    if not diags_by_task and not board_diags:
         print("No active diagnostics on this board.")
         return 0
 
     # Human-readable summary: grouped by task, severity-marked, with
     # suggested actions inline.
     sev_marker = {"warning": "⚠", "error": "!!", "critical": "!!!"}
+    if board_diags:
+        print(f"{len(board_diags)} board-level diagnostic(s):\n")
+        for d in board_diags:
+            print(f"  {sev_marker.get(d.severity, '?')} [{d.severity}] {d.kind}: {d.title}")
+            print(f"       {d.detail}")
+            if d.task_ids:
+                print(f"       tasks: {', '.join(d.task_ids)}")
+            if d.run_ids:
+                print(f"       runs:  {', '.join(d.run_ids)}")
+        print()
     total = sum(len(dl) for dl in diags_by_task.values())
+    if not diags_by_task:
+        return 0
     print(
         f"{total} active diagnostic(s) across "
         f"{len(diags_by_task)} task(s):\n"
@@ -2521,6 +2601,7 @@ def _cmd_promote(args: argparse.Namespace) -> int:
                 actor=author,
                 reason=reason,
                 force=bool(args.force),
+                allow_triage=bool(getattr(args, "allow_triage", False)),
                 dry_run=bool(args.dry_run),
             )
             results.append({
@@ -2528,6 +2609,7 @@ def _cmd_promote(args: argparse.Namespace) -> int:
                 "promoted": ok,
                 "dry_run": bool(args.dry_run),
                 "forced": bool(args.force),
+                "allow_triage": bool(getattr(args, "allow_triage", False)),
                 "reason": reason,
                 "error": err,
             })
@@ -2578,6 +2660,40 @@ def _cmd_archive(args: argparse.Namespace) -> int:
     return 0 if not failed else 1
 
 
+def _cmd_cancel_subtree(args: argparse.Namespace) -> int:
+    """Take a whole branch of the graph out in ONE transaction.
+
+    Archiving a parent deliberately does NOT release its children (see
+    kanban_db.DEPENDENCY_SATISFIED_STATUSES), so cancelling a branch needs an
+    atomic closure operation. Partially archiving a graph can therefore never
+    strand a runnable descendant that the dispatcher then picks up.
+    """
+    with kb.connect_closing() as conn:
+        if kb.get_task(conn, args.task_id) is None:
+            print(f"no such task: {args.task_id}", file=sys.stderr)
+            return 1
+        closure = kb.descendant_closure(conn, args.task_id)
+        if getattr(args, "dry_run", False):
+            payload = {"task_id": args.task_id, "closure": closure,
+                       "dry_run": True, "archived": 0}
+        else:
+            n = kb.cancel_subtree(
+                conn, args.task_id,
+                reason=getattr(args, "reason", "") or "",
+                actor=_profile_author(),
+            )
+            payload = {"task_id": args.task_id, "closure": closure,
+                       "dry_run": False, "archived": n}
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+    verb = "Would archive" if payload["dry_run"] else "Archived"
+    print(f"{verb} {len(closure)} task(s) in the closure of {args.task_id}:")
+    for tid in closure:
+        print(f"  {tid}")
+    return 0
+
+
 def _cmd_tail(args: argparse.Namespace) -> int:
     last_id = 0
     print(f"Tailing events for {args.task_id}. Ctrl-C to stop.")
@@ -2623,6 +2739,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             _kanban_cfg.get("max_in_progress_per_profile")
         )
         max_in_progress = _coerce_positive_int(_kanban_cfg.get("max_in_progress"))
+        # Memory-derived default when unset (OOF-30/OOF-77) — same
+        # fallback the gateway-embedded dispatcher applies, so behaviour
+        # matches regardless of which path runs the tick.
+        max_in_progress = kb.resolve_max_in_progress(max_in_progress)
         # CLI --max overrides config kanban.max_spawn when both are present;
         # CLI is the more explicit signal so it wins.
         cli_max = getattr(args, "max", None)
@@ -2923,7 +3043,9 @@ def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
             platform=args.platform, chat_id=args.chat_id,
             chat_type=args.chat_type,
             thread_id=args.thread_id, user_id=args.user_id,
+            user_id_alt=getattr(args, "user_id_alt", None),
             notifier_profile=args.notifier_profile or _profile_author(),
+            delivery_mode=getattr(args, "delivery_mode", None),
         )
     print(f"Subscribed {args.platform}:{args.chat_id}"
           + (f":{args.thread_id}" if args.thread_id else "")
@@ -2943,8 +3065,13 @@ def _cmd_notify_list(args: argparse.Namespace) -> int:
     for s in subs:
         thr = f":{s['thread_id']}" if s.get("thread_id") else ""
         owner = f"  owner={s['notifier_profile']}" if s.get("notifier_profile") else ""
+        dmode = s.get("delivery_mode") or "notify"
+        mode = "" if dmode == "notify" else f"  mode={dmode}"
+        ctype = s.get("chat_type") or "dm"
+        ct = "" if ctype == "dm" else f"  chat_type={ctype}"
+        uid_alt = f"  user_id_alt={s['user_id_alt']}" if s.get("user_id_alt") else ""
         print(f"  {s['task_id']:10s}  {s['platform']}:{s['chat_id']}{thr}"
-              f"  (since event {s['last_event_id']}){owner}")
+              f"  (since event {s['last_event_id']}){owner}{ct}{uid_alt}{mode}")
     return 0
 
 
@@ -3190,9 +3317,20 @@ def _cmd_gc(args: argparse.Namespace) -> int:
     removed_ws = 0
     with kb.connect_closing() as conn:
         rows = conn.execute(
-            "SELECT id, workspace_kind, workspace_path FROM tasks WHERE status = 'archived'"
+            "SELECT id, workspace_kind, workspace_path, branch_name FROM tasks "
+            "WHERE status = 'archived'"
         ).fetchall()
     for row in rows:
+        if row["workspace_kind"] == "worktree":
+            # Backstop for worktrees that escaped the completion/archive hook
+            # (e.g. tasks archived before that hook existed). Same safety
+            # predicate: only clean, fully-pushed worktrees are removed.
+            wt_path = row["workspace_path"]
+            if wt_path and Path(wt_path).is_dir():
+                kb._cleanup_worktree_workspace(row["id"], wt_path, row["branch_name"])
+                if not Path(wt_path).is_dir():
+                    removed_ws += 1
+            continue
         if row["workspace_kind"] != "scratch":
             continue
         path = Path(row["workspace_path"] or (scratch_root / row["id"]))

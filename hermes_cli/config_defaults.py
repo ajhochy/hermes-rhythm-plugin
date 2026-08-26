@@ -2387,6 +2387,28 @@ DEFAULT_CONFIG = {
         # assignee to any installed profile. When unset, falls back to the
         # default profile. A task never ends up with assignee=None.
         "default_assignee": "",
+        # Assignee -> argv template for a NON-Hermes worker. When the
+        # dispatcher claims a card whose assignee appears here, it launches
+        # that command instead of `hermes -p <profile> chat -q ...`. The
+        # template supports {task_id} / {workspace} / {board} / {assignee};
+        # the worker inherits the same HERMES_KANBAN_* env and cwd, and
+        # reports terminal state back through the `hermes kanban` CLI.
+        #
+        # This is what lets a card drive the agent-stack chain on a chosen
+        # HOST (Claude Code, Codex, ...) rather than a Hermes agent session.
+        # Because the BOARD picks the host via the assignee, cross-model
+        # review ("this model wrote it, the other reviews it") becomes an
+        # invariant of the graph instead of an instruction a model can
+        # ignore. Empty (the default) preserves the Hermes-worker behaviour.
+        "worker_command": {},
+        # Board-wide concurrency cap. When set to a positive int, the
+        # dispatcher never has more than N workers running at once across
+        # every profile. Unset (None) falls back to the memory-derived
+        # default (see kanban_db.resolve_max_in_progress). Documented in
+        # the user guide; it was read at runtime by both dispatch paths but
+        # missing from this schema, so config.yaml accepted it with an
+        # "unrecognized key" warning and it could not be validated.
+        "max_in_progress": None,
         # Per-profile concurrency cap (#21582). When set to a positive int,
         # no single profile can have more than N workers running at once,
         # even if the global max_in_progress / max_spawn caps would allow
@@ -2401,6 +2423,11 @@ DEFAULT_CONFIG = {
         # decomposition is manual via `hermes kanban decompose <id>` or
         # the dashboard's Decompose button.
         "auto_decompose": True,
+        # After the decomposer produces children with no unmet parent
+        # dependency, auto-promote them to ``ready``. False keeps them in
+        # ``todo`` for manual promotion. Read by the decomposer and the
+        # dashboard settings API; also missing from this schema until now.
+        "auto_promote_children": True,
         # Max triage tasks to decompose per dispatcher tick. Prevents a
         # large bulk-load of triage tasks from spending a burst of aux
         # LLM calls in one tick. Excess tasks defer to the next tick.
