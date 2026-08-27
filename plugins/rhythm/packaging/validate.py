@@ -21,6 +21,41 @@ class PackagingGateError(ValueError):
     """Raised when a deterministic package invariant is not met."""
 
 
+def validate_vendored_workspace_ui(vendor: Path, canonical: Path) -> None:
+    """Require a vendored workspace-ui package to be a byte-exact published copy.
+
+    ``canonical`` is deliberately caller-supplied so this remains a local,
+    reusable release check: it never assumes a checkout location or mutates
+    either tree.  The package manifest and every file below ``dist/`` are the
+    complete published payload.
+    """
+    def published_files(root: Path) -> dict[str, Path]:
+        if root.is_symlink() or not root.is_dir():
+            raise PackagingGateError("workspace-ui package must be a real directory")
+        package = root / "package.json"
+        dist = root / "dist"
+        if package.is_symlink() or dist.is_symlink() or not package.is_file() or not dist.is_dir():
+            raise PackagingGateError("workspace-ui package must contain package.json and dist")
+        if any(path.is_symlink() for path in dist.rglob("*")):
+            raise PackagingGateError("workspace-ui package must not contain symlinks")
+        files = {"package.json": package}
+        files.update({path.relative_to(root).as_posix(): path for path in dist.rglob("*") if path.is_file()})
+        return files
+
+    vendor_files = published_files(vendor)
+    canonical_files = published_files(canonical)
+    if set(vendor_files) != set(canonical_files):
+        raise PackagingGateError("workspace-ui published file-set mismatch")
+    for relative in sorted(vendor_files):
+        if vendor_files[relative].read_bytes() != canonical_files[relative].read_bytes():
+            raise PackagingGateError(f"workspace-ui byte mismatch: {relative}")
+    package = json.loads(vendor_files["package.json"].read_text(encoding="utf-8"))
+    peers = package.get("peerDependencies")
+    expected_peers = {"react": "^18.3.1 || ^19.2.0", "react-dom": "^18.3.1 || ^19.2.0"}
+    if peers != expected_peers:
+        raise PackagingGateError("workspace-ui must retain React 18/19 external peers")
+
+
 def load_packaging_manifest(repo_root: Path) -> dict[str, Any]:
     """Load the declarative M9 package plan without discovering any files."""
     path = repo_root / "plugins/rhythm/packaging/package-manifest.json"

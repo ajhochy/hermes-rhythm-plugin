@@ -13,6 +13,7 @@
         "/dashboard/summary"
       ],
       "allowed_write_confirmation": null,
+      "allowed_write_confirmations": {"operations": [], "confirmation_endpoint": "/workspace-operations/confirmation", "evidence": {"suite": "receipt-contract", "test_file": "tests/plugins/test_rhythm_m5_contract.py", "tests": ["test_m5_operation_requires_bound_confirmation_and_exact_payload", "test_m5_duplicate_receipts_allow_exactly_one_mutation"], "result": "pass"}},
       "responsive_a11y": {
         "suite": "desktop-mounted",
         "test": "mounts every approved destination in compact and expanded failure states",
@@ -30,14 +31,8 @@
       "canonical_reads": [
         "/tasks"
       ],
-      "allowed_write_confirmation": {
-        "operation": "tasks.complete",
-        "evidence": {
-          "suite": "desktop-mounted",
-          "test": "mounts the actual TasksScreen adapter: local confirm then one bound operation, with no token or broad writes",
-          "result": "pass"
-        }
-      },
+      "allowed_write_confirmation": {"operation": "tasks.complete", "evidence": {"suite": "desktop-mounted", "test": "mounts the actual TasksScreen adapter: local confirm then one bound operation, with no token or broad writes", "result": "pass"}},
+      "allowed_write_confirmations": {"operations": ["tasks.complete", "tasks.reschedule"], "confirmation_endpoint": "/tasks/{task_id}/confirmation", "evidence": {"suite": "receipt-contract", "test_file": "tests/plugins/test_rhythm_backend.py", "test": "test_task_confirmation_is_owner_profile_payload_bound_one_time_and_never_transports_before_issue", "result": "pass"}},
       "responsive_a11y": {
         "suite": "desktop-mounted",
         "test": "mounts every approved destination in compact and expanded failure states",
@@ -55,14 +50,8 @@
       "canonical_reads": [
         "/planner/weeks/2026-08-17"
       ],
-      "allowed_write_confirmation": {
-        "operation": "planner.update-task",
-        "evidence": {
-          "suite": "desktop-mounted",
-          "test": "mounts Planner: the visible confirmation and operation carry one identical generation",
-          "result": "pass"
-        }
-      },
+      "allowed_write_confirmation": {"operation": "planner.update-task", "evidence": {"suite": "desktop-mounted", "test": "mounts Planner: the visible confirmation and operation carry one identical generation", "result": "pass"}},
+      "allowed_write_confirmations": {"operations": ["planner.schedule-project-step", "planner.schedule-task", "planner.update-project-step", "planner.update-task"], "confirmation_endpoint": "/workspace-operations/confirmation", "evidence": {"suite": "receipt-contract", "test_file": "tests/plugins/test_rhythm_m5_contract.py", "tests": ["test_m5_operation_requires_bound_confirmation_and_exact_payload", "test_m5_duplicate_receipts_allow_exactly_one_mutation"], "result": "pass"}},
       "responsive_a11y": {
         "suite": "desktop-mounted",
         "test": "mounts every approved destination in compact and expanded failure states",
@@ -80,15 +69,8 @@
       "canonical_reads": [
         "/recurring-rules"
       ],
-      "allowed_write_confirmation": {
-        "operation": "rhythms.update-rule",
-        "evidence": {
-          "suite": "shared-react18-react19",
-          "test_file": "tests/rhythms.screen.test.ts",
-          "test": "requires one exact host confirmation before a permitted rule update and never writes when cancelled",
-          "result": "pass"
-        }
-      },
+      "allowed_write_confirmation": {"operation": "rhythms.update-rule", "evidence": {"suite": "shared-react18-react19", "test_file": "tests/rhythms.screen.test.ts", "test": "requires one exact host confirmation before a permitted rule update and never writes when cancelled", "result": "pass"}},
+      "allowed_write_confirmations": {"operations": ["rhythms.create-rule", "rhythms.create-step", "rhythms.delete-rule", "rhythms.update-rule", "rhythms.update-step"], "confirmation_endpoint": "/workspace-operations/confirmation", "evidence": {"suite": "receipt-contract", "test_file": "tests/plugins/test_rhythm_m5_contract.py", "tests": ["test_m5_operation_requires_bound_confirmation_and_exact_payload", "test_m5_duplicate_receipts_allow_exactly_one_mutation"], "result": "pass"}},
       "responsive_a11y": {
         "suite": "desktop-mounted",
         "test": "mounts every approved destination in compact and expanded failure states",
@@ -107,15 +89,8 @@
         "/project-templates",
         "/project-instances"
       ],
-      "allowed_write_confirmation": {
-        "operation": "projects.update-template",
-        "evidence": {
-          "suite": "shared-react18-react19",
-          "test_file": "tests/projects.screen.test.ts",
-          "test": "uses the exact narrow Projects capability and one foreground confirmation before a project-step mutation",
-          "result": "pass"
-        }
-      },
+      "allowed_write_confirmation": {"operation": "projects.update-template", "evidence": {"suite": "shared-react18-react19", "test_file": "tests/projects.screen.test.ts", "test": "uses the exact narrow Projects capability and one foreground confirmation before a project-step mutation", "result": "pass"}},
+      "allowed_write_confirmations": {"operations": ["projects.create-instance", "projects.create-milestone", "projects.create-step", "projects.create-template", "projects.delete-step", "projects.delete-template", "projects.update-step", "projects.update-template", "projects.update-template-step"], "confirmation_endpoint": "/workspace-operations/confirmation", "evidence": {"suite": "receipt-contract", "test_file": "tests/plugins/test_rhythm_m5_contract.py", "tests": ["test_m5_operation_requires_bound_confirmation_and_exact_payload", "test_m5_duplicate_receipts_allow_exactly_one_mutation"], "result": "pass"}},
       "responsive_a11y": {
         "suite": "desktop-mounted",
         "test": "mounts every approved destination in compact and expanded failure states",
@@ -134,15 +109,8 @@
         "/message-threads",
         "/users"
       ],
-      "allowed_write_confirmation": {
-        "operation": "messages.mark-read",
-        "evidence": {
-          "suite": "shared-react18-react19",
-          "test_file": "tests/messages.screen.test.ts",
-          "test": "opens a thread, marks it read, and shows the transcript and participants",
-          "result": "pass"
-        }
-      },
+      "allowed_write_confirmation": {"operation": "messages.mark-read", "evidence": {"suite": "shared-react18-react19", "test_file": "tests/messages.screen.test.ts", "test": "opens a thread, marks it read, and shows the transcript and participants", "result": "pass"}},
+      "allowed_write_confirmations": {"operations": ["messages.mark-read", "messages.mark-unread"], "confirmation_endpoint": "/workspace-operations/confirmation", "evidence": {"suite": "receipt-contract", "test_file": "tests/plugins/test_rhythm_m5_contract.py", "tests": ["test_m5_operation_requires_bound_confirmation_and_exact_payload", "test_m5_duplicate_receipts_allow_exactly_one_mutation"], "result": "pass"}},
       "responsive_a11y": {
         "suite": "desktop-mounted",
         "test": "mounts every approved destination in compact and expanded failure states",
@@ -161,15 +129,8 @@
         "/facilities",
         "/facilities/reservations"
       ],
-      "allowed_write_confirmation": {
-        "operation": "facilities.update-reservation",
-        "evidence": {
-          "suite": "shared-react18-react19",
-          "test_file": "tests/facilities.screen.test.ts",
-          "test": "binds facility writes to the exact foreground confirmation payload before mutation",
-          "result": "pass"
-        }
-      },
+      "allowed_write_confirmation": {"operation": "facilities.update-reservation", "evidence": {"suite": "shared-react18-react19", "test_file": "tests/facilities.screen.test.ts", "test": "binds facility writes to the exact foreground confirmation payload before mutation", "result": "pass"}},
+      "allowed_write_confirmations": {"operations": ["facilities.create-facility", "facilities.create-reservation", "facilities.delete-facility", "facilities.delete-group", "facilities.delete-reservation", "facilities.delete-reservations", "facilities.delete-series", "facilities.update-facility", "facilities.update-group", "facilities.update-reservation"], "confirmation_endpoint": "/workspace-operations/confirmation", "evidence": {"suite": "receipt-contract", "test_file": "tests/plugins/test_rhythm_m5_contract.py", "tests": ["test_m5_operation_requires_bound_confirmation_and_exact_payload", "test_m5_duplicate_receipts_allow_exactly_one_mutation"], "result": "pass"}},
       "responsive_a11y": {
         "suite": "desktop-mounted",
         "test": "mounts every approved destination in compact and expanded failure states",
@@ -189,6 +150,7 @@
         "/automations/rules"
       ],
       "allowed_write_confirmation": null,
+      "allowed_write_confirmations": {"operations": [], "confirmation_endpoint": "/workspace-operations/confirmation", "evidence": {"suite": "receipt-contract", "test_file": "tests/plugins/test_rhythm_m5_contract.py", "tests": ["test_m5_operation_requires_bound_confirmation_and_exact_payload", "test_m5_duplicate_receipts_allow_exactly_one_mutation"], "result": "pass"}},
       "responsive_a11y": {
         "suite": "desktop-mounted",
         "test": "mounts every approved destination in compact and expanded failure states",
@@ -209,6 +171,7 @@
         "/integrations/sync"
       ],
       "allowed_write_confirmation": null,
+      "allowed_write_confirmations": {"operations": [], "confirmation_endpoint": "/workspace-operations/confirmation", "evidence": {"suite": "receipt-contract", "test_file": "tests/plugins/test_rhythm_m5_contract.py", "tests": ["test_m5_operation_requires_bound_confirmation_and_exact_payload", "test_m5_duplicate_receipts_allow_exactly_one_mutation"], "result": "pass"}},
       "responsive_a11y": {
         "suite": "desktop-mounted",
         "test": "mounts every approved destination in compact and expanded failure states",
@@ -227,6 +190,7 @@
         "/artifacts"
       ],
       "allowed_write_confirmation": null,
+      "allowed_write_confirmations": {"operations": [], "confirmation_endpoint": "/workspace-operations/confirmation", "evidence": {"suite": "receipt-contract", "test_file": "tests/plugins/test_rhythm_m5_contract.py", "tests": ["test_m5_operation_requires_bound_confirmation_and_exact_payload", "test_m5_duplicate_receipts_allow_exactly_one_mutation"], "result": "pass"}},
       "responsive_a11y": {
         "suite": "desktop-mounted",
         "test": "mounts every approved destination in compact and expanded failure states",
