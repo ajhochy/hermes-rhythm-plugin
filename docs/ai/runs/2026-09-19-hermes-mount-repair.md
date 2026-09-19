@@ -2,9 +2,9 @@
 date: 2026-09-19
 repo: hermes-rhythm-plugin
 branch: mega/2026-09-18-rhythm-plugin-finish
-pr: null
+pr: 17
 issues: []
-status: repairing
+status: partial
 tags: [run, hermes-rhythm-plugin]
 ---
 
