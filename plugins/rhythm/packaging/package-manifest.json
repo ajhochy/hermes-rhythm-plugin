@@ -41,6 +41,7 @@
       "dashboard/dist/index.js",
       "packaging/package-manifest.json",
       "packaging/RELEASE-GATE.md",
+      "packaging/LIVE-GATE.md",
       "plugin.yaml"
     ],
     "skills": [
@@ -52,6 +53,7 @@
       "dashboard/dist/index.js",
       "packaging/package-manifest.json",
       "packaging/RELEASE-GATE.md",
+      "packaging/LIVE-GATE.md",
       "plugin.yaml",
       "skills/rhythm/SKILL.md"
     ]

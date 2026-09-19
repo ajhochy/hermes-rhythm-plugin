@@ -15,6 +15,30 @@ from typing import Any, Callable
 
 
 PACKAGING_DIR = Path(__file__).resolve().parent
+BUNDLE_EXTERNALS = ("@hermes/plugin-sdk", "react", "react-dom", "react/jsx-runtime", "react-dom/client")
+
+
+def bundle_imports(source: str) -> set[str]:
+    """Read the static/dynamic literal imports emitted by the bundler."""
+    pattern = r"(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s*)['\"]([^'\"]+)['\"]"
+    return set(re.findall(pattern, source))
+
+
+def _validate_bundle_source(source: str) -> None:
+    if re.search(r"sourceMappingURL|sourceURL|\.env\b|jsxDEV|jsx-dev-runtime", source):
+        raise PackagingGateError("source map, environment reference, or development JSX found in bundle")
+    embedded_react = re.compile(
+        r"react\.(?:production|development|transitional\.element|element)|"
+        r"\b(?:const|let|var)\s+React\s*=|function\s+createElement\s*\(|"
+        r"__SECRET_INTERNALS|__CLIENT_INTERNALS|__SERVER_INTERNALS", re.I,
+    )
+    if embedded_react.search(source):
+        raise PackagingGateError("embedded React runtime found in desktop artifact or dashboard bundle")
+    imports = bundle_imports(source)
+    if any(name.startswith(".") for name in imports):
+        raise PackagingGateError("relative import found in the single desktop artifact or dashboard bundle")
+    if imports - set(BUNDLE_EXTERNALS):
+        raise PackagingGateError(f"unexpected bundle imports: {sorted(imports - set(BUNDLE_EXTERNALS))!r}")
 
 
 class PackagingGateError(ValueError):
@@ -59,12 +83,7 @@ def _ensure_single_desktop_artifact(
     if artifacts != [entry]:
         raise PackagingGateError(f"unexpected desktop artifact set: {artifacts!r}; expected [{entry!r}]")
     source = read_source(entry)
-    relative_import = re.compile(r"(?:import|export)\s+(?:[^;]*?\s+from\s+)?['\"]\.{1,2}/")
-    if relative_import.search(source) or re.search(r"import\s*\(\s*['\"]\.{1,2}/", source):
-        raise PackagingGateError("relative import found in the single desktop artifact")
-    embedded_react = re.compile(r"react\.(?:production|development)|\b(?:const|let|var)\s+React\s*=|function\s+createElement\s*\(", re.I)
-    if embedded_react.search(source):
-        raise PackagingGateError("embedded React runtime found in desktop artifact")
+    _validate_bundle_source(source)
 
 
 def _ensure_no_bundle_drift(root: Path, manifest: dict[str, Any]) -> None:
@@ -99,6 +118,7 @@ def validate_package_tree(root: Path, manifest: dict[str, Any], *, allow_install
                 f"license evidence does not satisfy {license_['spdx']}: {license_['path']}"
             )
     _ensure_no_bundle_drift(root, manifest)
+    _validate_bundle_source((root / "dashboard/dist/index.js").read_text(encoding="utf-8"))
     declared = set(_required_content(manifest)) | {desktop["entry"]}
     actual = {path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()}
     extra = actual - declared

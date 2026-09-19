@@ -16,7 +16,7 @@ from plugins.rhythm.packaging.cutover import (
 )
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_issue_14_c1_final_fixture_cutover_exercises_every_approved_destination_and_only_three_tools(tmp_path):

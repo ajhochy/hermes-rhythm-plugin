@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import time
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -69,7 +70,7 @@ _SECRET_MARKERS = ("bearer ", "token=", "api_key=", "secret=", "password=", "acc
 
 def _fixture_transport(calls: list[tuple[str, str]]):
     def transport(method: str, url: str, _headers: dict[str, str], _body: bytes | None, _timeout: float):
-        path = url.removeprefix("https://api.rhythm.app")
+        path = url.removeprefix("https://api.vcrcapps.com")
         calls.append((method, path))
         return 200, {}, {"fixture": "sanitized-canonical"}
 
@@ -187,16 +188,17 @@ def run_fixture_cutover(repo_root: Path, temporary_home: Path) -> dict[str, Any]
     """
     started = time.monotonic()
     temporary_home = temporary_home.resolve(strict=False)
-    package = temporary_home.parent / "rhythm-feature-pack"
-    feature_pack = build_feature_pack(repo_root, package)
-    statuses = [
-        install_feature_pack(feature_pack, temporary_home),
-        install_feature_pack(feature_pack, temporary_home, force_reinstall=True),
-        install_feature_pack(feature_pack, temporary_home, upgrade=True),
-        rollback_feature_pack(temporary_home),
-    ]
-    doctor = doctor_feature_pack(temporary_home, connection_probe=lambda: RuntimeError("Bearer [REDACTED]"))
-    statuses.append(uninstall_feature_pack(temporary_home))
+    with tempfile.TemporaryDirectory(prefix="rhythm-cutover-") as staging:
+        package = Path(staging) / "package"
+        feature_pack = build_feature_pack(repo_root, package)
+        statuses = [
+            install_feature_pack(feature_pack, temporary_home),
+            install_feature_pack(feature_pack, temporary_home, force_reinstall=True),
+            install_feature_pack(feature_pack, temporary_home, upgrade=True),
+            rollback_feature_pack(temporary_home),
+        ]
+        doctor = doctor_feature_pack(temporary_home, connection_probe=lambda: RuntimeError("Bearer [REDACTED]"))
+        statuses.append(uninstall_feature_pack(temporary_home))
     if doctor["tools"] != _NATIVE_TOOLS or "sanitized-fixture-token" in doctor["connection"].get("error", ""):
         raise CutoverError("doctor evidence is not exact or redacted")
 

@@ -7,6 +7,8 @@ import re
 import secrets
 from typing import Any
 
+from .client import APPROVED_ORIGIN
+
 _PROFILE_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 
@@ -34,6 +36,10 @@ def _load() -> dict[str, Any]:
 def connection() -> dict[str, Any] | None:
     data = _load().get("rhythm")
     if not isinstance(data, dict) or not isinstance(data.get("access_token"), str):
+        return None
+    # Never forward a legacy/unbound credential after changing the hosted pin.
+    # Reconnecting explicitly validates the token against the current origin.
+    if data.get("origin") != APPROVED_ORIGIN:
         return None
     return data
 
@@ -71,6 +77,7 @@ def save(access_token: str, identity: dict[str, str], workspace: dict[str, str])
         if not isinstance(data, dict):
             data = {}
         data["rhythm"] = {
+            "origin": APPROVED_ORIGIN,
             "access_token": access_token,
             "identity": identity,
             "workspace": workspace,

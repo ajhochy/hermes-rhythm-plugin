@@ -54,7 +54,7 @@ def _ok_transport(method, url, headers, body, timeout):
     if url == "https://oauth2.googleapis.com/token":
         assert method == "POST"
         return 200, {}, {"access_token": TOKEN}
-    assert url.startswith("https://api.rhythm.app/")
+    assert url.startswith("https://api.vcrcapps.com/")
     assert method == "GET"
     assert headers["Authorization"] == f"Bearer {TOKEN}"
     if url.endswith("/auth/me"):
@@ -557,7 +557,7 @@ def test_httpx_streaming_rejects_oversized_body_without_reading_tail(monkeypatch
 
     monkeypatch.setattr(httpx, "Client", mock_client)
     with pytest.raises(RhythmProtocolError, match="response_too_large"):
-        _httpx_transport("GET", "https://api.rhythm.app/auth/me", {}, None, 1.0)
+        _httpx_transport("GET", "https://api.vcrcapps.com/auth/me", {}, None, 1.0)
     assert stream.yielded == [0, 1]
 
 
@@ -583,7 +583,7 @@ def test_httpx_streaming_rejects_oversized_content_length_before_reading_body(mo
         lambda *args, **kwargs: real_client(*args, transport=transport, **kwargs),
     )
     with pytest.raises(RhythmProtocolError, match="response_too_large"):
-        _httpx_transport("GET", "https://api.rhythm.app/auth/me", {}, None, 1.0)
+        _httpx_transport("GET", "https://api.vcrcapps.com/auth/me", {}, None, 1.0)
 
 
 def test_httpx_streaming_enforces_decoded_size_bound(monkeypatch):
@@ -605,7 +605,7 @@ def test_httpx_streaming_enforces_decoded_size_bound(monkeypatch):
         lambda *args, **kwargs: real_client(*args, transport=transport, **kwargs),
     )
     with pytest.raises(RhythmProtocolError, match="response_too_large"):
-        _httpx_transport("GET", "https://api.rhythm.app/auth/me", {}, None, 1.0)
+        _httpx_transport("GET", "https://api.vcrcapps.com/auth/me", {}, None, 1.0)
 
 
 def test_pkce_expiry_replay_and_concurrent_exchange(api, monkeypatch):
@@ -754,3 +754,29 @@ def test_dashboard_manifest_discovers_mounts_api_and_serves_its_local_asset(rhyt
     )
     assert api.status_code == 200
     assert api.json() == {"status": "disconnected"}
+
+
+@pytest.mark.parametrize("origin", [None, "https://api.rhythm.app", "https://unapproved.example"])
+def test_legacy_or_other_origin_connection_is_not_reused(api, monkeypatch, origin):
+    from plugins.rhythm.backend import store
+
+    client, mod = api
+    record = {"access_token": TOKEN, "identity": {"id": "user-1"}, "workspace": {"id": "ws-1"}}
+    if origin is not None:
+        record["origin"] = origin
+    monkeypatch.setattr(store, "_load", lambda: {"rhythm": record})
+    calls = []
+    monkeypatch.setattr(mod, "request", lambda *args: calls.append(args))
+    assert client.get("/api/plugins/rhythm/connection").json() == {"connected": False}
+    assert store.approval_scope() is None
+    assert client.get("/api/plugins/rhythm/tasks").status_code == 401
+    assert calls == []
+
+
+def test_saved_connection_is_bound_to_the_one_approved_host(api, monkeypatch, rhythm_home):
+    client, mod = api
+    monkeypatch.setattr(mod, "request", _ok_transport)
+    assert client.put("/api/plugins/rhythm/connection", json={"access_token": TOKEN}).status_code == 200
+    saved = json.loads((rhythm_home / "auth.json").read_text())["rhythm"]
+    assert saved["origin"] == "https://api.vcrcapps.com"
+    assert len(saved["generation"]) >= 16

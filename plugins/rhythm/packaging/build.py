@@ -6,6 +6,7 @@ materializes an explicitly supplied staging directory from the source tree.
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import shutil
@@ -14,7 +15,7 @@ import tempfile
 from pathlib import Path
 from typing import Callable
 
-from .validate import PackagingGateError, load_packaging_manifest, validate_package_tree
+from .validate import BUNDLE_EXTERNALS, PackagingGateError, load_packaging_manifest, validate_package_tree
 
 
 def _copy_declared(source: Path, output: Path, manifest: dict) -> None:
@@ -29,7 +30,7 @@ def _copy_declared(source: Path, output: Path, manifest: dict) -> None:
 def _desktop_entry(source: Path, work: Path) -> Path:
     """Prepare the accepted workspace artifact as the bundle input.
 
-    Bun resolves and bundles the package's real ``lucide-react`` dependency;
+    The accepted vendor artifact already contains ``lucide-react``;
     React and the Hermes SDK remain explicit host externals.  The builder never
     substitutes a second or simplified screen implementation.
     """
@@ -56,30 +57,63 @@ def _desktop_entry(source: Path, work: Path) -> Path:
     return entry
 
 
+def _build_bundle(entry: Path, target: Path, work: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    metadata = work / "bundle-meta.json"
+    command = [
+        "bun", "build", str(entry), "--outfile", str(target), "--format=esm",
+        "--target=browser", "--minify", "--production", "--sourcemap=none",
+        "--env=disable", f"--metafile={metadata}",
+    ]
+    for external in BUNDLE_EXTERNALS:
+        command.extend(["--external", external])
+    # Run outside the checkout: Bun must never load a developer's .env/bunfig.
+    result = subprocess.run(command, cwd=work, capture_output=True, text=True, check=False)
+    if result.returncode:
+        raise PackagingGateError(f"feature-pack build failed: {result.stderr.strip()[:400]}")
+    graph = json.loads(metadata.read_text(encoding="utf-8"))
+    for name in graph["inputs"]:
+        if re.search(r"(?:^|/)node_modules/(?:react|react-dom)(?:/|$)", name):
+            raise PackagingGateError("embedded React runtime found in build graph")
+    for bundle in graph["outputs"].values():
+        for dependency in bundle.get("imports", []):
+            if not dependency.get("external") or dependency["path"] not in BUNDLE_EXTERNALS:
+                raise PackagingGateError("unexpected dependency in build graph")
+
+
 def _build_desktop(source: Path, output: Path, entry_relative: str) -> None:
     with tempfile.TemporaryDirectory(prefix="rhythm-build-") as temporary:
-        entry = _desktop_entry(source, Path(temporary))
-        target = output / entry_relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        command = [
-            "bun", "build", str(entry), "--outfile", str(target), "--format=esm", "--target=browser", "--minify", "--production",
-            "--external", "react", "--external", "react-dom", "--external", "react/*",
-            "--external", "@hermes/plugin-sdk",
-        ]
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
-        if result.returncode:
-            raise PackagingGateError(f"desktop feature-pack build failed: {result.stderr.strip()[:400]}")
+        work = Path(temporary)
+        entry = _desktop_entry(source, work)
+        _build_bundle(entry, output / entry_relative, work)
+
+
+def _build_dashboard(source: Path, output: Path) -> None:
+    with tempfile.TemporaryDirectory(prefix="rhythm-dashboard-build-") as temporary:
+        work = Path(temporary)
+        entry = work / "entry.js"
+        shutil.copyfile(source / "dashboard/src/index.js", entry)
+        _build_bundle(entry, output / "dashboard/dist/index.js", work)
 
 
 def build_feature_pack(repo_root: Path, output: Path) -> Path:
     """Build a closed Rhythm package into an empty caller-owned directory."""
+    repo_root = repo_root.resolve()
     source = repo_root / "plugins/rhythm"
+    # A typo must never turn the builder's cleanup into a source-tree deletion.
+    if output.is_symlink():
+        raise PackagingGateError("build output must not be a symlink")
+    output = output.resolve()
+    if output == repo_root or output in repo_root.parents or source == output or source in output.parents:
+        raise PackagingGateError("build output must be outside the plugin source tree")
     manifest = load_packaging_manifest(repo_root)
     if output.exists():
-        shutil.rmtree(output)
-    output.mkdir(parents=True)
+        if any(output.iterdir()):
+            raise PackagingGateError("build output must be empty; choose a fresh staging directory")
+    output.mkdir(parents=True, exist_ok=True)
     _copy_declared(source, output, manifest)
     _build_desktop(source, output, manifest["desktop"]["entry"])
+    _build_dashboard(source, output)
     validate_package_tree(output, manifest)
     return output
 
@@ -114,3 +148,14 @@ def build_macos_fixture(package: Path, root: Path) -> tuple[Path, Callable[[Path
         return json.loads(path.read_text(encoding="utf-8"))[relative]
 
     return app, list_asar, read_asar
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, required=True, help="Empty staging directory (never a Hermes home)")
+    args = parser.parse_args()
+    package = build_feature_pack(Path(__file__).resolve().parents[3], args.output)
+    for relative in ("desktop/dist/rhythm.mjs", "dashboard/dist/index.js"):
+        print(f"{relative}: {(package / relative).stat().st_size} bytes")
+    print("Allowed externals: " + ", ".join(BUNDLE_EXTERNALS))
+    print(f"Validated package: {package}")

@@ -42,7 +42,7 @@ def _transport(calls, *, mutation_result=None, identity="user-1", workspace="ws-
         "/project-instances": {"items": []},
     }
     def transport(method, url, headers, body, timeout):
-        path = url.removeprefix("https://api.rhythm.app")
+        path = url.removeprefix("https://api.vcrcapps.com")
         calls.append((method, path, json.loads(body) if body else None, headers))
         if path == "/auth/me": return 200, {}, {"id": identity}
         if path == "/workspaces/me": return 200, {}, {"id": workspace, "role": "owner"}
@@ -89,7 +89,7 @@ def test_m5_client_allows_the_pinned_planner_update_body_without_widening_m4():
         seen.append((method, url, json.loads(body)))
         return 200, {}, {"id": "task-1"}
     assert RhythmClient(TOKEN, transport=transport).call("PATCH", "/tasks/task-1", body={"notes": "Only the approved M5 body"}, m5=True) == {"id": "task-1"}
-    assert seen == [("PATCH", "https://api.rhythm.app/tasks/task-1", {"notes": "Only the approved M5 body"})]
+    assert seen == [("PATCH", "https://api.vcrcapps.com/tasks/task-1", {"notes": "Only the approved M5 body"})]
 
 
 @pytest.mark.parametrize("path", ["/planner/weeks/2026-08-17", "/rhythm-rules", "/project-templates", "/project-instances"])
@@ -299,7 +299,7 @@ def test_m5_mutation_response_is_canonical_readback_not_raw_mutation(api):
     client, mod = api
     calls = []
     def transport(method, url, headers, body, timeout):
-        path = url.removeprefix("https://api.rhythm.app")
+        path = url.removeprefix("https://api.vcrcapps.com")
         calls.append((method, path, json.loads(body) if body else None, headers))
         if path == "/auth/me": return 200, {}, {"id": "user-1"}
         if path == "/workspaces/me": return 200, {}, {"id": "ws-1", "role": "owner"}
@@ -325,7 +325,7 @@ def test_m5_reauthorizes_canonical_target_after_confirmation_before_mutation(api
     calls = []
     phase = {"changed": False}
     def transport(method, url, headers, body, timeout):
-        path = url.removeprefix("https://api.rhythm.app")
+        path = url.removeprefix("https://api.vcrcapps.com")
         calls.append((method, path, json.loads(body) if body else None, headers))
         if path == "/auth/me": return 200, {}, {"id": "user-1"}
         if path == "/workspaces/me": return 200, {}, {"id": "ws-1", "role": "owner"}
@@ -347,7 +347,7 @@ def test_m5_template_step_is_a_distinct_confirmed_semantic_operation_and_route(a
     client, mod = api
     calls = []
     def transport(method, url, headers, body, timeout):
-        path = url.removeprefix("https://api.rhythm.app")
+        path = url.removeprefix("https://api.vcrcapps.com")
         calls.append((method, path, json.loads(body) if body else None, headers))
         if path == "/auth/me": return 200, {}, {"id": "user-1"}
         if path == "/workspaces/me": return 200, {}, {"id": "ws-1", "role": "owner"}
@@ -368,7 +368,7 @@ def test_m5_instance_step_update_authorizes_and_reads_back_the_exact_step(api):
     client, mod = api
     calls = []
     def transport(method, url, headers, body, timeout):
-        path = url.removeprefix("https://api.rhythm.app")
+        path = url.removeprefix("https://api.vcrcapps.com")
         calls.append((method, path, json.loads(body) if body else None, headers))
         if path == "/auth/me": return 200, {}, {"id": "user-1"}
         if path == "/workspaces/me": return 200, {}, {"id": "ws-1", "role": "owner"}
@@ -396,7 +396,7 @@ def test_m5_project_creates_return_only_exact_canonical_entity_readbacks(api, op
     calls = []
     created_id = readback_path.rsplit("/", 1)[-1]
     def transport(method, url, headers, body, timeout):
-        path = url.removeprefix("https://api.rhythm.app")
+        path = url.removeprefix("https://api.vcrcapps.com")
         calls.append((method, path, json.loads(body) if body else None, headers))
         if path == "/auth/me": return 200, {}, {"id": "user-1"}
         if path == "/workspaces/me": return 200, {}, {"id": "ws-1", "role": "owner"}
@@ -423,7 +423,7 @@ def test_m5_project_creates_return_only_exact_canonical_entity_readbacks(api, op
 
 def test_m5_vendor_runtime_carries_template_step_operation_and_matching_capability_gates():
     """Catches the accepted runtime advertising a template-step operation behind instance-step gates."""
-    runtime = (Path(__file__).parents[2] / "plugins/rhythm/desktop/vendor/rhythm-workspace-ui/dist/index.js").read_text()
+    runtime = (Path(__file__).parents[3] / "plugins/rhythm/desktop/vendor/rhythm-workspace-ui/dist/index.js").read_text()
     assert '"projects.update-template-step"' in runtime
     assert 'requestOperation(editor.step ? "projects.update-template-step" : "projects.create-step"' in runtime
     assert 'can("projects.update-template-step")' in runtime

@@ -20,7 +20,7 @@ def _api(tmp_path, monkeypatch):
     client = TestClient(app)
     calls = []
     def transport(method, url, headers, body, timeout):
-        path = url.removeprefix("https://api.rhythm.app"); calls.append((method, path, json.loads(body) if body else None))
+        path = url.removeprefix("https://api.vcrcapps.com"); calls.append((method, path, json.loads(body) if body else None))
         if path == "/auth/me": return 200, {}, {"id": "user-1"}
         if path == "/workspaces/me": return 200, {}, {"id": "ws-1", "role": "owner"}
         if path == "/message-threads": return 200, {}, {"items": [{"id": "thread-1", "title": "Team", "type": "group", "participants": [{"id": "user-1", "name": "Hermes", "initials": "H"}], "messages": [], "lastMessage": "", "updatedAt": "2026-08-21T09:00:00Z", "unreadCount": 1}]}
@@ -65,7 +65,7 @@ def test_issue_10_c2_facility_receipt_has_one_pinned_mutation_and_canonical_read
     module = importlib.import_module("plugins.rhythm.dashboard.plugin_api")
     calls = []
     def transport(method, url, headers, body, timeout):
-        path = url.removeprefix("https://api.rhythm.app"); calls.append((method, path, json.loads(body) if body else None))
+        path = url.removeprefix("https://api.vcrcapps.com"); calls.append((method, path, json.loads(body) if body else None))
         if path == "/auth/me": return 200, {}, {"id": "user-1", "isFacilitiesManager": True}
         if path == "/workspaces/me": return 200, {}, {"id": "ws-1", "role": "owner"}
         if method == "POST" and path == "/facilities": return 200, {}, {"id": "room-2", "untrusted": "ignored"}
@@ -88,7 +88,7 @@ def test_m6_facility_update_and_delete_use_the_exact_shared_receipt_payload_and_
     deleted = {"value": False}
 
     def transport(method, url, headers, body, timeout):
-        path = url.removeprefix("https://api.rhythm.app")
+        path = url.removeprefix("https://api.vcrcapps.com")
         calls.append((method, path, json.loads(body) if body else None))
         if path == "/auth/me": return 200, {}, {"id": "user-1", "isFacilitiesManager": True}
         if path == "/workspaces/me": return 200, {}, {"id": "ws-1", "role": "owner"}
@@ -123,7 +123,7 @@ def test_m6_reservation_group_and_series_reauthorize_actual_targets_and_never_mu
     calls = []
 
     def transport(method, url, headers, body, timeout):
-        path = url.removeprefix("https://api.rhythm.app")
+        path = url.removeprefix("https://api.vcrcapps.com")
         calls.append((method, path, json.loads(body) if body else None))
         if path == "/auth/me": return 200, {}, {"id": "user-1", "isFacilitiesManager": False}
         if path == "/workspaces/me": return 200, {}, {"id": "ws-1", "role": "owner"}
@@ -152,7 +152,7 @@ def test_m6_bulk_delete_proves_every_submitted_id_absent_and_binds_workspace(tmp
     calls = []
 
     def transport(method, url, headers, body, timeout):
-        path = url.removeprefix("https://api.rhythm.app")
+        path = url.removeprefix("https://api.vcrcapps.com")
         calls.append((method, path, json.loads(body) if body else None))
         if path == "/auth/me": return 200, {}, {"id": "user-1", "isFacilitiesManager": True}
         if path == "/workspaces/me": return 200, {}, {"id": "ws-1", "role": "facilities_manager"}

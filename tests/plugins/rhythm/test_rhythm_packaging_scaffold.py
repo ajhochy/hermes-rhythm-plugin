@@ -29,7 +29,7 @@ from plugins.rhythm.packaging.lifecycle import (
 )
 
 
-REPO_ROOT = Path(__file__).parents[2]
+REPO_ROOT = Path(__file__).parents[3]
 
 
 def _write(root: Path, relative: str, content: str = "fixture") -> None:
@@ -49,7 +49,7 @@ def _write_complete_package(root: Path, manifest: dict) -> None:
         _write(root, relative)
     for relative in manifest["content"]["skills"]:
         _write(root, relative)
-    _write(root, manifest["desktop"]["entry"], "export { RhythmPlugin } from 'rhythm-host';\n")
+    _write(root, manifest["desktop"]["entry"], "export { RhythmPlugin } from '@hermes/plugin-sdk';\n")
     for license_ in manifest["licenses"]:
         _write(root, license_["path"], "MIT License\n" if license_["spdx"] == "MIT" else "ISC License\n")
     _write(root, manifest["provenance"]["path"], "Source: fixture\nRevision: fixture\nTransformation: none\n")
@@ -71,6 +71,7 @@ def test_manifest_is_deterministic_and_declares_the_unified_opt_in_tree():
         "dashboard/dist/index.js",
         "packaging/package-manifest.json",
         "packaging/RELEASE-GATE.md",
+        "packaging/LIVE-GATE.md",
         "plugin.yaml",
         "skills/rhythm/SKILL.md",
     ]
@@ -288,7 +289,7 @@ def test_macos_gate_inspects_app_asar_and_unpacked_payloads(tmp_path):
         app,
         manifest,
         list_asar=list_asar,
-        read_asar=lambda _, __: "export { RhythmPlugin } from 'rhythm-host';\n",
+        read_asar=lambda _, __: "export { RhythmPlugin } from '@hermes/plugin-sdk';\n",
     )
 
     assert seen == [asar]
@@ -390,3 +391,54 @@ def test_install_and_doctor_fixture_gate_rejects_credential_fields(field):
 def test_install_and_doctor_fixture_gate_allows_credential_labels_without_values(record):
     """Regression: redaction scanning rejects harmless labels instead of only leaked values."""
     validate_install_doctor_fixture({"records": [record]}, _manifest())
+
+
+@pytest.mark.parametrize("entry", ["desktop/dist/rhythm.mjs", "dashboard/dist/index.js"])
+@pytest.mark.parametrize("source", [
+    "import x from 'lucide-react'; export { x };",
+    "export { x } from 'https://unapproved.example/x.js';",
+    "import('node:fs');",
+    "export {}; //# sourceMappingURL=data:application/json;base64,e30=",
+    "export {}; //# sourceMappingURL=private.js.map",
+    "const config = '.env.local'; export { config };",
+    "import { jsxDEV } from 'react/jsx-dev-runtime';",
+    'const a = Symbol.for("react.transitional.element"); export { a };',
+])
+def test_package_gate_rejects_unsafe_code_in_either_bundle(tmp_path, entry, source):
+    manifest = _manifest()
+    _write_complete_package(tmp_path, manifest)
+    _write(tmp_path, entry, source)
+    with pytest.raises(PackagingGateError):
+        validate_package_tree(tmp_path, manifest)
+
+
+def test_build_rebuilds_both_bundles_with_only_host_imports_and_no_secret_sources(tmp_path, monkeypatch):
+    from plugins.rhythm.packaging.validate import BUNDLE_EXTERNALS, bundle_imports
+
+    sentinel = "must-not-enter-renderer-credential"
+    monkeypatch.setenv("RHYTHM_BUILD_SECRET", sentinel)
+    package = build_feature_pack(REPO_ROOT, tmp_path / "package")
+    desktop = (package / "desktop/dist/rhythm.mjs").read_text()
+    dashboard = (package / "dashboard/dist/index.js").read_text()
+    assert bundle_imports(desktop) == {"@hermes/plugin-sdk", "react", "react/jsx-runtime"}
+    assert bundle_imports(desktop) <= set(BUNDLE_EXTERNALS)
+    assert bundle_imports(dashboard) == set()
+    assert '__HERMES_PLUGINS__.register("rhythm"' in dashboard
+    assert dashboard != (REPO_ROOT / "plugins/rhythm/dashboard/src/index.js").read_text()
+    for source in (desktop, dashboard):
+        assert sentinel not in source
+        assert ".env" not in source
+        assert "sourceMappingURL" not in source
+        assert "jsxDEV" not in source
+    assert not list(package.rglob("*.map"))
+    assert not list(package.rglob(".env*"))
+
+
+def test_build_refuses_to_delete_existing_output_or_plugin_sources(tmp_path):
+    output = tmp_path / "package"
+    output.mkdir()
+    (output / "keep").write_text("untouched")
+    for forbidden in (output, REPO_ROOT, REPO_ROOT / "plugins/rhythm"):
+        with pytest.raises(PackagingGateError):
+            build_feature_pack(REPO_ROOT, forbidden)
+    assert (output / "keep").read_text() == "untouched"

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 from urllib.parse import parse_qsl, urljoin, urlparse
 
-APPROVED_ORIGIN = "https://api.rhythm.app"
+APPROVED_ORIGIN = "https://api.vcrcapps.com"
 GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 OAUTH_CLIENT_ID = "hermes-desktop"
 ALLOWED_OPERATIONS = {
