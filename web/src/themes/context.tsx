@@ -28,11 +28,18 @@ import type {
   ThemeSeriesColors,
   ThemeTypography,
 } from "./types";
-import { api } from "@/lib/api";
+import { api, HERMES_BASE_PATH } from "@/lib/api";
 
 /** LocalStorage key — pre-applied before the React tree mounts to avoid
  *  a visible flash of the default palette on theme-overridden installs. */
 const STORAGE_KEY = "hermes-dashboard-theme";
+
+/** Persist a theme selection locally so it can be applied before the server
+ * preference round-trip on the next page load. */
+export function persistThemeChoice(name: string): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(STORAGE_KEY, name);
+}
 
 /** LocalStorage key for the font override (independent of theme). Holds a
  *  font id from the catalog in `fonts.ts`, or the `THEME_DEFAULT_FONT_ID`
@@ -258,6 +265,7 @@ let _PREV_DYNAMIC_VAR_KEYS: Set<string> = new Set();
 /** ID for the injected <style> tag that carries a theme's customCSS.
  *  A single tag is reused + replaced on every theme switch. */
 const CUSTOM_CSS_STYLE_ID = "hermes-theme-custom-css";
+const CONTRIBUTED_STYLESHEET_ID = "hermes-contributed-theme-css";
 
 function applyCustomCSS(css: string | undefined) {
   if (typeof document === "undefined") return;
@@ -273,6 +281,39 @@ function applyCustomCSS(css: string | undefined) {
     document.head.appendChild(el);
   }
   el.textContent = css;
+}
+
+function contributedStylesheetUrl(path: string | undefined): string | undefined {
+  if (!path) return undefined;
+  if (
+    !path.startsWith("/dashboard-plugins/") ||
+    !path.toLowerCase().endsWith(".css") ||
+    path.includes("..")
+  ) {
+    return undefined;
+  }
+  return `${HERMES_BASE_PATH}${path}`;
+}
+
+function applyContributedStylesheet(path: string | undefined): string | undefined {
+  if (typeof document === "undefined") return undefined;
+  const url = contributedStylesheetUrl(path);
+  const current = document.getElementById(
+    CONTRIBUTED_STYLESHEET_ID,
+  ) as HTMLLinkElement | null;
+  if (!url) {
+    current?.remove();
+    return undefined;
+  }
+  if (current?.getAttribute("href") === url) return url;
+  current?.remove();
+  const link = document.createElement("link");
+  link.id = CONTRIBUTED_STYLESHEET_ID;
+  link.rel = "stylesheet";
+  link.href = url;
+  link.setAttribute("data-hermes-theme-stylesheet", "true");
+  document.head.appendChild(link);
+  return url;
 }
 
 function applyLayoutVariant(variant: ThemeLayoutVariant | undefined) {
@@ -344,9 +385,31 @@ function applyFontOverride(fontId: string | undefined) {
 // Apply a full theme to :root
 // ---------------------------------------------------------------------------
 
-function applyTheme(theme: DashboardTheme) {
+const THEME_INLINE_VARS = [
+  "--background", "--background-base", "--background-alpha",
+  "--midground", "--midground-base", "--midground-alpha",
+  "--foreground", "--foreground-base", "--foreground-alpha",
+  "--theme-font-sans", "--theme-font-mono", "--theme-font-display",
+  "--theme-base-size", "--theme-line-height", "--theme-letter-spacing",
+  "--radius", "--theme-radius", "--theme-spacing-mul", "--theme-density",
+  "--theme-terminal-background", "--theme-terminal-foreground",
+  ...ALL_OVERRIDE_VARS,
+  ...ALL_SERIES_VARS,
+];
+
+export interface ApplyThemeOptions {
+  name?: string;
+  stylesheet?: string;
+}
+
+export function applyTheme(
+  theme: DashboardTheme,
+  options: ApplyThemeOptions = {},
+) {
   if (typeof document === "undefined") return;
   const root = document.documentElement;
+  root.dataset.theme = options.name ?? theme.name;
+  const contributedStylesheet = applyContributedStylesheet(options.stylesheet);
 
   // Clear any overrides from a previous theme before applying the new set.
   for (const cssVar of ALL_OVERRIDE_VARS) {
@@ -363,6 +426,21 @@ function applyTheme(theme: DashboardTheme) {
   // etc. would bleed across theme switches.
   for (const prevKey of _PREV_DYNAMIC_VAR_KEYS) {
     root.style.removeProperty(prevKey);
+  }
+  _PREV_DYNAMIC_VAR_KEYS = new Set();
+
+  // A contributed theme owns its custom-property values in CSS so media
+  // queries (notably prefers-color-scheme) stay live. Clear inline values
+  // left by the previous typed theme; inline styles would otherwise outrank
+  // the plugin stylesheet.
+  if (contributedStylesheet) {
+    for (const cssVar of THEME_INLINE_VARS) {
+      root.style.removeProperty(cssVar);
+    }
+    applyCustomCSS(undefined);
+    applyLayoutVariant("standard");
+    applyFontOverride(_ACTIVE_FONT_OVERRIDE);
+    return;
   }
 
   const assetMap = assetVars(theme.assets);
@@ -417,7 +495,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     // Write the migrated name back so future reads converge on the new
     // key and we eventually retire the alias entry.
     if (migrated !== stored) {
-      window.localStorage.setItem(STORAGE_KEY, migrated);
+      persistThemeChoice(migrated);
     }
     return migrated;
   });
@@ -467,8 +545,12 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // which restores the theme's own font; setting it re-asserts the override.
   useEffect(() => {
     _ACTIVE_FONT_OVERRIDE = fontId;
-    applyTheme(resolveTheme(themeName));
-  }, [themeName, resolveTheme, fontId]);
+    const selected = availableThemes.find((entry) => entry.name === themeName);
+    applyTheme(resolveTheme(themeName), {
+      name: themeName,
+      stylesheet: selected?.stylesheet,
+    });
+  }, [themeName, resolveTheme, fontId, availableThemes]);
 
   // Load server-side themes (built-ins + user YAMLs) once on mount.
   useEffect(() => {
@@ -484,6 +566,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
               label: t.label,
               description: t.description,
               definition: t.definition,
+              stylesheet: t.stylesheet,
             })),
           );
           // Index any definitions the server shipped (user themes).
@@ -499,7 +582,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
           const migratedActive = migrateThemeName(resp.active);
           if (migratedActive !== themeName) {
             setThemeName(migratedActive);
-            window.localStorage.setItem(STORAGE_KEY, migratedActive);
+            persistThemeChoice(migratedActive);
           }
           // If the server is still persisting the stale key, push the
           // migrated value back so it converges too — otherwise every
@@ -550,9 +633,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       ]);
       const next = knownNames.has(name) ? name : "default";
       setThemeName(next);
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem(STORAGE_KEY, next);
-      }
+      persistThemeChoice(next);
       api.setTheme(next).catch(() => {});
     },
     [availableThemes, userThemeDefs],

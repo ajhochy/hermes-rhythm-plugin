@@ -17801,6 +17801,19 @@ async def get_dashboard_themes():
                 "definition": t,
             })
             seen.add(t["name"])
+        for plugin in _get_active_dashboard_plugins(config):
+            theme = plugin.get("_theme")
+            if not theme or theme["name"] in seen:
+                continue
+            plugin_name = urllib.parse.quote(plugin["name"], safe="")
+            stylesheet = urllib.parse.quote(theme["css"], safe="/")
+            themes.append({
+                "name": theme["name"],
+                "label": theme["label"],
+                "description": theme["description"],
+                "stylesheet": f"/dashboard-plugins/{plugin_name}/{stylesheet}",
+            })
+            seen.add(theme["name"])
         return {"themes": themes, "active": active}
 
     return await asyncio.to_thread(_run)
@@ -17910,6 +17923,53 @@ def _safe_plugin_api_relpath(api_field: Any, *, dashboard_dir: Path) -> Optional
     except ValueError:
         return None
     return api_field
+
+
+def _normalise_dashboard_plugin_theme(
+    value: Any,
+    *,
+    plugin_name: str,
+    dashboard_dir: Path,
+) -> Optional[Dict[str, str]]:
+    """Validate an optional dashboard-plugin theme declaration.
+
+    A dashboard manifest may declare either ``"theme": "theme.css"`` or a
+    mapping with ``css`` plus optional name/label/description metadata.  The
+    stylesheet must be a real relative CSS file inside the plugin's
+    ``dashboard/`` directory; external URLs and traversal never reach the
+    browser.
+    """
+    if isinstance(value, str):
+        source: Dict[str, Any] = {"css": value}
+    elif isinstance(value, dict):
+        source = value
+    else:
+        return None
+
+    raw_css = source.get("css")
+    safe_css = _safe_plugin_api_relpath(raw_css, dashboard_dir=dashboard_dir)
+    if safe_css is None or Path(safe_css).suffix.lower() != ".css":
+        return None
+    css_file = (dashboard_dir / safe_css).resolve()
+    if not css_file.is_file():
+        return None
+
+    raw_name = source.get("name", plugin_name)
+    if not isinstance(raw_name, str) or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", raw_name
+    ):
+        return None
+    label = source.get("label", raw_name)
+    description = source.get("description", "")
+    if not isinstance(label, str) or not isinstance(description, str):
+        return None
+
+    return {
+        "name": raw_name,
+        "label": label[:80],
+        "description": description[:240],
+        "css": Path(safe_css).as_posix(),
+    }
 
 
 def _safe_public_plugin_api_routes(value: Any, *, plugin_name: str) -> set[tuple[str, str]]:
@@ -18051,6 +18111,18 @@ def _discover_dashboard_plugins() -> list:
                         "not be mounted",
                         name, raw_api,
                     )
+                raw_theme = data.get("theme")
+                safe_theme = _normalise_dashboard_plugin_theme(
+                    raw_theme,
+                    plugin_name=name,
+                    dashboard_dir=dashboard_dir,
+                )
+                if raw_theme is not None and safe_theme is None:
+                    _log.warning(
+                        "Plugin %s: refusing invalid dashboard theme declaration "
+                        "(css must be a relative .css file inside dashboard/)",
+                        name,
+                    )
                 plugins.append({
                     "name": name,
                     "label": data.get("label", name),
@@ -18065,6 +18137,7 @@ def _discover_dashboard_plugins() -> list:
                     "source": source,
                     "_dir": str(dashboard_dir),
                     "_api_file": safe_api,
+                    "_theme": safe_theme,
                     "_public_api_routes": _safe_public_plugin_api_routes(
                         data.get("public_api"), plugin_name=name,
                     ),
@@ -18089,47 +18162,44 @@ def _get_dashboard_plugins(force_rescan: bool = False) -> list:
     return _dashboard_plugins_cache
 
 
+def _get_active_dashboard_plugins(config: Optional[Dict[str, Any]] = None) -> list:
+    """Return dashboard plugins whose UI contributions are currently active."""
+    plugins = _get_dashboard_plugins()
+    if config is None:
+        config = load_config()
+    hidden: list = cfg_get(config, "dashboard", "hidden_plugins", default=[]) or []
+    try:
+        from hermes_cli.plugins_cmd import _get_enabled_set, _get_disabled_set
+        enabled_set = _get_enabled_set()
+        disabled_set = _get_disabled_set()
+    except Exception:
+        enabled_set = set()
+        disabled_set = set()
+
+    def _is_active(plugin: dict) -> bool:
+        name = plugin.get("name", "")
+        if name in hidden or name in disabled_set:
+            return False
+        if plugin.get("source") == "user" and name not in enabled_set:
+            return False
+        return True
+
+    return [plugin for plugin in plugins if _is_active(plugin)]
+
+
 @app.get("/api/dashboard/plugins")
 async def get_dashboard_plugins():
     """Return discovered dashboard plugins (excludes user-hidden and non-enabled ones)."""
     def _run():
-        plugins = _get_dashboard_plugins()
-        # Read user's hidden plugins list from config.
         config = load_config()
-        hidden: list = cfg_get(config, "dashboard", "hidden_plugins", default=[]) or []
-        # Gate: only serve user plugins that are in plugins.enabled and not
-        # in plugins.disabled.  This prevents the frontend from loading JS/CSS
-        # from plugins the user has not explicitly activated.  (#46435)
-        try:
-            from hermes_cli.plugins_cmd import _get_enabled_set, _get_disabled_set
-            enabled_set = _get_enabled_set()
-            disabled_set = _get_disabled_set()
-        except Exception:
-            enabled_set = set()
-            disabled_set = set()
-        return plugins, hidden, enabled_set, disabled_set
+        return _get_active_dashboard_plugins(config)
 
-    plugins, hidden, enabled_set, disabled_set = await asyncio.to_thread(_run)
-
-    def _is_active(p: dict) -> bool:
-        name = p.get("name", "")
-        if name in hidden:
-            return False
-        if p.get("source") == "user":
-            if name in disabled_set:
-                return False
-            if name not in enabled_set:
-                return False
-        elif p.get("source") == "bundled":
-            if name in disabled_set:
-                return False
-        return True
+    plugins = await asyncio.to_thread(_run)
 
     # Strip internal fields before sending to frontend.
     return [
         {k: v for k, v in p.items() if not k.startswith("_")}
         for p in plugins
-        if _is_active(p)
     ]
 
 

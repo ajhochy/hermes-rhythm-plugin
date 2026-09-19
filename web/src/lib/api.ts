@@ -2571,6 +2571,8 @@ export interface DashboardThemeSummary {
   /** Full theme definition for user themes; undefined for built-ins
    *  (which the frontend already has locally). */
   definition?: DashboardTheme;
+  /** Validated same-origin stylesheet for a dashboard-plugin theme. */
+  stylesheet?: string;
 }
 
 export interface DashboardThemesResponse {
