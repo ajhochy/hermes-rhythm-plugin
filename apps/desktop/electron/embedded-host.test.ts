@@ -322,7 +322,33 @@ test('embedded guest webviews retain remote browser access without inheriting th
     sandbox: true,
     webviewTag: false
   })
+
+  // Desktop Browser creates its guest as about:blank, then calls into the
+  // attached DOM guest to navigate. Rejecting this inert bootstrap leaves the
+  // guest unattached and causes Electron's dom-ready load failure.
+  const bootstrapPreferences: Record<string, unknown> = {
+    contextIsolation: false,
+    nodeIntegration: true,
+    preload: '/tmp/hermes-artifact/electron/preload.cjs'
+  }
+
+  const bootstrapParams: Record<string, unknown> = { src: 'about:blank' }
+  assert.equal(host.handleWillAttachWebview(bootstrapPreferences, bootstrapParams), true)
+  assert.equal(bootstrapParams.partition, 'persist:hermes-embedded-101-preview')
+  assert.deepEqual(bootstrapPreferences, {
+    contextIsolation: true,
+    nodeIntegration: false,
+    preload: undefined,
+    sandbox: true,
+    webviewTag: false
+  })
+  assert.equal(host.handleGuestNavigation('http://127.0.0.1:56708'), true)
+  assert.equal(host.handleGuestNavigation('https://example.test/docs'), true)
+  assert.equal(host.handleGuestNavigation('about:blank'), false)
   assert.equal(host.handleWillAttachWebview({}, { src: 'file:///tmp/hermes-artifact/renderer/index.html' }), false)
   assert.equal(host.handleWillAttachWebview({}, { src: 'javascript:alert(1)' }), false)
+  assert.equal(host.handleGuestNavigation('file:///tmp/hermes-artifact/renderer/index.html'), false)
+  assert.equal(host.handleGuestNavigation('data:text/html,hello'), false)
+  assert.equal(host.handleGuestNavigation('javascript:alert(1)'), false)
   assert.equal(host.handleWillAttachWebview({}, { partition: 'persist:rhythm', src: 'https://example.test/docs' }), false)
 })

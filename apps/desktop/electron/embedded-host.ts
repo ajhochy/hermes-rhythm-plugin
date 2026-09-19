@@ -94,6 +94,8 @@ export interface EmbeddedHermesHost {
   handlePermissionRequest: (request: EmbeddedPermissionRequest) => Promise<boolean>
   /** Sanitizes a Desktop Browser guest before Electron attaches it to this view. */
   handleWillAttachWebview: (webPreferences: EmbeddedGuestWebPreferences, params: EmbeddedGuestParams) => boolean
+  /** Allows only remote HTTP(S) navigation after the inert guest bootstrap. */
+  handleGuestNavigation: (url: string) => boolean
   /** Opens a guest popup through Rhythm's bounded external-browser policy. */
   handleGuestWindowOpen: (url: string) => Promise<boolean>
   handleIntent: (intent: unknown) => Promise<{ ok: boolean; reason?: string }>
@@ -1195,7 +1197,11 @@ export async function createEmbeddedHermesHostForTest(
       try {
         const source = new URL(params.src)
 
-        if (!['http:', 'https:'].includes(source.protocol)) {return false}
+        // The Browser component first attaches an inert blank guest and only
+        // then invokes navigation after dom-ready. Permit this exact bootstrap
+        // URL once; later guest navigation is checked separately and accepts
+        // HTTP(S) only.
+        if (!['http:', 'https:'].includes(source.protocol) && source.href !== 'about:blank') {return false}
       } catch {
         return false
       }
@@ -1212,6 +1218,15 @@ export async function createEmbeddedHermesHostForTest(
       webPreferences.webviewTag = false
 
       return true
+    },
+    handleGuestNavigation(rawUrl) {
+      try {
+        const url = new URL(rawUrl)
+
+        return ['http:', 'https:'].includes(url.protocol)
+      } catch {
+        return false
+      }
     },
     async handleGuestWindowOpen(rawUrl) {
       let url: URL
