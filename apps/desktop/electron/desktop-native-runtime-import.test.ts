@@ -35,6 +35,24 @@ test('embedded disposal stops only runtime-owned pool backends and clears their 
   assert.deepEqual(stopAll.mock.calls, [[]])
 })
 
+test('registry route descriptor publication retains the route identity for origin revocation', async () => {
+  const runtime = await import('./desktop-native-runtime')
+
+  const descriptor = runtime.withRegistryConnectionDescriptor(
+    { baseUrl: 'https://agents.example.test', profile: 'default', wsUrl: 'wss://agents.example.test/api/ws' },
+    'remote-a',
+    'default'
+  )
+
+  assert.deepEqual(descriptor, {
+    baseUrl: 'https://agents.example.test',
+    connectionId: 'remote-a',
+    profile: 'default',
+    registryScoped: true,
+    wsUrl: 'wss://agents.example.test/api/ws'
+  })
+})
+
 test('embedded disposal preserves a borrowed primary but stops a runtime-spawned primary', async () => {
   const invalidate = vi.fn(() => ({ pid: 42 }))
   const stop = vi.fn()

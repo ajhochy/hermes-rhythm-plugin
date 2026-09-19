@@ -19,6 +19,9 @@ test('buildEmbeddedArtifact packages the actual renderer, host, preload, and nat
     const preloadFile = path.join(root, 'preload', 'preload.cjs')
     const installStampFile = path.join(root, 'build', 'install-stamp.json')
     const nativeDir = path.join(root, 'native', 'node-pty')
+    const sourceLicense = path.join(root, 'LICENSE')
+    const nodePtyLicense = path.join(root, 'native-source', 'node-pty', 'LICENSE')
+    const getWindowsLicense = path.join(root, 'native-source', 'get-windows', 'license')
     const artifactRoot = path.join(root, 'artifact')
 
     write(path.join(rendererDir, 'index.html'), '<div id="root"></div><script type="module" src="/assets/main.js"></script>')
@@ -35,6 +38,9 @@ test('buildEmbeddedArtifact packages the actual renderer, host, preload, and nat
     }))
     write(path.join(nativeDir, 'package.json'), '{"name":"node-pty"}')
     write(path.join(nativeDir, 'prebuilds', 'darwin-arm64', 'pty.node'), 'native')
+    write(sourceLicense, 'Nous Research license')
+    write(nodePtyLicense, 'node-pty license')
+    write(getWindowsLicense, 'get-windows license')
 
     const manifest = buildEmbeddedArtifact({
       artifactRoot,
@@ -43,6 +49,11 @@ test('buildEmbeddedArtifact packages the actual renderer, host, preload, and nat
       installStampFile,
       preloadFile,
       nativeDependencies: [{ source: nativeDir, destination: 'native/node-pty' }],
+      licenseFiles: [
+        { source: sourceLicense, destination: 'licenses/LICENSE' },
+        { source: nodePtyLicense, destination: 'licenses/node-pty/LICENSE' },
+        { source: getWindowsLicense, destination: 'licenses/get-windows/LICENSE' }
+      ],
       sourceCommit: '9c8dcf4230cbf3d386c29b730c5f82deea9523b0',
       electronMajor: 40
     })
@@ -70,6 +81,12 @@ test('buildEmbeddedArtifact packages the actual renderer, host, preload, and nat
     })
     assert.match(manifest.integrity['install-stamp.json'], /^sha256-[A-Za-z0-9+/]+={0,2}$/)
     assert.equal(readFileSync(path.join(artifactRoot, 'native', 'node-pty', 'package.json'), 'utf8'), '{"name":"node-pty"}')
+    assert.equal(readFileSync(path.join(artifactRoot, 'licenses', 'LICENSE'), 'utf8'), 'Nous Research license')
+    assert.equal(readFileSync(path.join(artifactRoot, 'licenses', 'node-pty', 'LICENSE'), 'utf8'), 'node-pty license')
+    assert.equal(readFileSync(path.join(artifactRoot, 'licenses', 'get-windows', 'LICENSE'), 'utf8'), 'get-windows license')
+    assert.match(manifest.integrity['licenses/LICENSE'], /^sha256-[A-Za-z0-9+/]+={0,2}$/)
+    assert.match(manifest.integrity['licenses/node-pty/LICENSE'], /^sha256-[A-Za-z0-9+/]+={0,2}$/)
+    assert.match(manifest.integrity['licenses/get-windows/LICENSE'], /^sha256-[A-Za-z0-9+/]+={0,2}$/)
     assert.deepEqual(JSON.parse(readFileSync(path.join(artifactRoot, 'manifest.json'), 'utf8')), manifest)
   } finally {
     rmSync(root, { recursive: true, force: true })

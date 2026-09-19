@@ -15,10 +15,12 @@ import {
 } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { execFileSync } from 'node:child_process'
+import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 
 const desktopRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const repositoryRoot = resolve(desktopRoot, '..', '..')
+const require = createRequire(import.meta.url)
 const REQUIRED_FILES = Object.freeze({
   renderer: 'renderer/index.html',
   host: 'electron/embedded-host.mjs',
@@ -115,6 +117,7 @@ export function buildEmbeddedArtifact({
   installStampFile,
   preloadFile,
   nativeDependencies = [],
+  licenseFiles = [],
   sourceCommit,
   electronMajor,
   sourceDirty = false,
@@ -149,6 +152,14 @@ export function buildEmbeddedArtifact({
     assertInside(output, resolve(output, dependency.destination), `native dependency destination ${dependency.destination}`)
   }
 
+  for (const license of licenseFiles) {
+    assertFile(license.source, `license ${license.destination}`)
+    if (lstatSync(license.source).isSymbolicLink()) {
+      throw new Error(`Embedded license must not be a symlink: ${license.source}`)
+    }
+    assertInside(output, resolve(output, license.destination), `license destination ${license.destination}`)
+  }
+
   rmSync(output, { recursive: true, force: true })
   mkdirSync(output, { recursive: true })
   cpSync(renderer, join(output, 'renderer'), { recursive: true })
@@ -162,6 +173,15 @@ export function buildEmbeddedArtifact({
 
   for (const dependency of nativeDependencies) {
     cpSync(dependency.source, join(output, dependency.destination), { recursive: true })
+  }
+
+  // Keep the exact license bytes beside the immutable payload. Native staging
+  // deliberately copies only executable/runtime files, so these notices would
+  // otherwise disappear from the embedded artifact.
+  for (const license of licenseFiles) {
+    const destination = join(output, license.destination)
+    mkdirSync(dirname(destination), { recursive: true })
+    cpSync(license.source, destination)
   }
 
   const manifest = {
@@ -201,11 +221,41 @@ function sourceState({ allowDirty }) {
     : {}
 }
 
+function resolvePackageRoot(packageName, packageJson = false) {
+  const entry = require.resolve(packageJson ? `${packageName}/package.json` : packageName, {
+    paths: [desktopRoot]
+  })
+
+  return dirname(entry)
+}
+
+function embeddedLicenseFiles(nativeDependenciesRoot) {
+  const licenses = [
+    { source: join(repositoryRoot, 'LICENSE'), destination: 'licenses/LICENSE' },
+    {
+      source: join(resolvePackageRoot('node-pty', true), 'LICENSE'),
+      destination: 'licenses/node-pty/LICENSE'
+    }
+  ]
+
+  // get-windows is optional on targets where it is not staged. Include its
+  // license precisely when its executable payload is included.
+  if (existsSync(join(nativeDependenciesRoot, 'get-windows'))) {
+    licenses.push({
+      source: join(resolvePackageRoot('get-windows'), 'license'),
+      destination: 'licenses/get-windows/LICENSE'
+    })
+  }
+
+  return licenses
+}
+
 function main() {
   const artifactRoot = resolve(arg('--output') ?? join(desktopRoot, 'build', 'rhythm-embedded'))
   const electronMajor = Number.parseInt(arg('--electron-major') ?? '40', 10)
   const sourceCommit = arg('--source-commit') ?? currentCommit()
   const source = sourceState({ allowDirty: process.argv.includes('--allow-dirty') })
+  const nativeDependenciesRoot = join(desktopRoot, 'dist', 'node_modules')
   const manifest = buildEmbeddedArtifact({
     artifactRoot,
     rendererDir: join(desktopRoot, 'dist'),
@@ -213,9 +263,10 @@ function main() {
     installStampFile: join(desktopRoot, 'build', 'install-stamp.json'),
     preloadFile: join(desktopRoot, 'dist', 'electron-preload.js'),
     nativeDependencies: [{
-      source: join(desktopRoot, 'dist', 'node_modules'),
+      source: nativeDependenciesRoot,
       destination: 'electron/node_modules'
     }],
+    licenseFiles: embeddedLicenseFiles(nativeDependenciesRoot),
     sourceCommit,
     electronMajor,
     ...source

@@ -27,3 +27,8 @@ tags: [run, hermes]
 - This local commit supplies an immutable artifact source. Signed visible Rhythm package validation follows; this checkpoint is not a complete release qualification.
 - Existing compatible installed Hermes runtime is the local proof dependency. Self-contained Python distribution and exact fresh-install fork bootstrap remain separate release gates. No unpinned fallback, silent installer or installed-source mutation was added.
 - Opening the tab does not change Rhythm Google login or approval identity. Unrelated local plugin build deletions in the original fork worktree were not included.
+
+## Post-candidate review repairs
+- Registry descriptors now carry the connection ID when first published. The host replaces the legacy endpoint-only record, so removing the registry route revokes its network origin. Added descriptor and observable allowlist regressions; worker Electron selection passed 1454 tests with two skips, plus typecheck and diff checks.
+- Embedded artifacts retain the exact root license and staged node-pty/get-windows licenses under `licenses/`; these files are covered by the integrity manifest. Artifact tests passed 2/2. Comprehensive renderer dependency notices remain a distribution qualification item.
+- Parent launched the signed Rhythm candidate with a clean PATH: real saved sessions, profile/model controls, Settings and seven installed Desktop plugins are visible. Final pinned rebuild and repeated native smoke follow these repairs.

@@ -398,6 +398,20 @@ export type DesktopConnectionDescriptorEvent =
   | { type: 'remove'; connectionId?: string; profile?: string }
   | { type: 'reset' }
 
+/**
+ * Registry paths must publish their route identity before returning a
+ * connection to the renderer. The embedded host uses it to revoke exactly the
+ * retired endpoint from its session network allowlist.
+ */
+export function withRegistryConnectionDescriptor(connection: any, connectionId: string, profile: string) {
+  return {
+    ...connection,
+    connectionId,
+    profile: connection.profile || profile,
+    registryScoped: true
+  }
+}
+
 export interface DesktopNativeRuntimeOptions {
   app?: typeof electronApp
   ipc?: DesktopRuntimeIpc
@@ -10145,6 +10159,10 @@ async function ensureRegistryBackend(connectionId, profile) {
   const registry = readDesktopConnectionsRegistry()
   const id = String(connectionId || '').trim() || registry.primary
   const source = registry.connections.find(c => c.id === id)
+  const descriptorProfile = String(profile ?? '').trim() || 'default'
+
+  const publishRegistryDescriptor = connection =>
+    publishConnectionDescriptor(withRegistryConnectionDescriptor(connection, id, descriptorProfile))
 
   if (!source) {
     throw new Error(`No connection with id "${id}".`)
@@ -10160,7 +10178,7 @@ async function ensureRegistryBackend(connectionId, profile) {
     // the v1 route is genuinely local; otherwise spawn/reuse a forced-local
     // child pooled under the composite 'conn:local::<profile>' key so it
     // can't collide with the v1 remote descriptor cached at the bare key.
-    const profileKey = String(profile ?? '').trim() || 'default'
+    const profileKey = descriptorProfile
 
     profileDeletionGate.assertCanStart(profileKey)
 
@@ -10170,7 +10188,7 @@ async function ensureRegistryBackend(connectionId, profile) {
     })
 
     if (localRoute.delegate) {
-      return ensureBackend(profile)
+      return ensureBackend(profile).then(publishRegistryDescriptor)
     }
 
     const stoppingLocal = poolStopper.inFlight(localRoute.poolKey)
@@ -10184,7 +10202,7 @@ async function ensureRegistryBackend(connectionId, profile) {
     if (existingLocal) {
       existingLocal.lastActiveAt = Date.now()
 
-    return existingLocal.connectionPromise.then(publishConnectionDescriptor)
+      return existingLocal.connectionPromise.then(publishRegistryDescriptor)
     }
 
     evictLruPoolBackends(POOL_MAX_BACKENDS - 1)
@@ -10213,7 +10231,7 @@ async function ensureRegistryBackend(connectionId, profile) {
     backendPool.set(localRoute.poolKey, localEntry)
     startPoolIdleReaper()
 
-    return localEntry.connectionPromise.then(publishConnectionDescriptor)
+    return localEntry.connectionPromise.then(publishRegistryDescriptor)
   }
 
   const key = backendScopeKey(id, profile)
@@ -10222,7 +10240,7 @@ async function ensureRegistryBackend(connectionId, profile) {
   if (existing) {
     existing.lastActiveAt = Date.now()
 
-    return existing.connectionPromise.then(publishConnectionDescriptor)
+    return existing.connectionPromise.then(publishRegistryDescriptor)
   }
 
   evictLruPoolBackends(POOL_MAX_BACKENDS - 1)
@@ -10246,7 +10264,7 @@ async function ensureRegistryBackend(connectionId, profile) {
   backendPool.set(key, entry)
   startPoolIdleReaper()
 
-  return entry.connectionPromise.then(publishConnectionDescriptor)
+  return entry.connectionPromise.then(publishRegistryDescriptor)
 }
 
 // Dial a non-local registry connection for one profile. Never spawns a local
@@ -10837,6 +10855,7 @@ async function startHermes() {
 
     if (setup.kind !== 'local') {
       primaryBackendOwnedByRuntime = false
+
       return publishConnectionDescriptor(setup.connection)
     }
 

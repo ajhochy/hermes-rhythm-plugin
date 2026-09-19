@@ -220,3 +220,40 @@ test('shared descriptor lifecycle retains distinct routes and revokes removed or
   assert.deepEqual(await host.getAllowedOrigins(), [])
   await host.dispose()
 })
+
+test('an identified registry descriptor replaces its earlier endpoint-only publication', async () => {
+  // A registry-local route first traverses the legacy local resolver, then is
+  // wrapped by connection:for with its registry ID. Keep only the identified
+  // record so connections:remove can revoke its origin exactly.
+  fixtures.handlers.clear()
+  fixtures.initialize.mockReset()
+  fixtures.initialize.mockReturnValue({ dispose: vi.fn() })
+
+  const host = await createEmbeddedHermesHost({
+    assetRoot: '/tmp/hermes-artifact',
+    hermesHome: '/tmp/no-compatible-hermes-runtime',
+    hostWindow: {},
+    userDataPath: '/tmp/rhythm-user-data',
+    webContents: contents()
+  })
+
+  const initialized = fixtures.initialize.mock.calls.at(-1)?.[0] as {
+    onConnectionDescriptor: (event: unknown) => void
+  }
+
+  const route = {
+    baseUrl: 'http://127.0.0.1:49790',
+    profile: 'default',
+    wsUrl: 'ws://127.0.0.1:49790/api/ws'
+  }
+
+  initialized.onConnectionDescriptor({ connection: route, type: 'upsert' })
+  initialized.onConnectionDescriptor({
+    connection: { ...route, connectionId: 'local' },
+    type: 'upsert'
+  })
+  initialized.onConnectionDescriptor({ connectionId: 'local', profile: 'default', type: 'remove' })
+
+  assert.deepEqual(await host.getAllowedOrigins(), [])
+  await host.dispose()
+})

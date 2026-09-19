@@ -959,6 +959,37 @@ export async function createEmbeddedHermesHostForTest(
       const key = descriptorIdentity(connection)
 
       if (!key) {return}
+
+      // `connection:for` can resolve through the legacy local route first,
+      // which publishes the same endpoint without a registry ID. Once the
+      // scoped descriptor arrives, replace that fallback record so a later
+      // `connections:remove(id)` revokes this exact origin instead of leaving
+      // the endpoint-only entry approved for the rest of the view lifetime.
+      if (connection.connectionId) {
+        const fallbackIdentity = descriptorIdentity({
+          baseUrl: connection.baseUrl,
+          endpoint: connection.endpoint,
+          profile: connection.profile,
+          wsUrl: connection.wsUrl
+        })
+
+        if (fallbackIdentity && fallbackIdentity !== key) {
+          sharedConnections.delete(fallbackIdentity)
+
+          for (const [connectionKey, cached] of connections) {
+            if (descriptorIdentity(cached) !== fallbackIdentity) {
+              continue
+            }
+
+            if (cached.owned) {
+              retiredOwnedConnections.add(cached)
+            }
+
+            connections.delete(connectionKey)
+          }
+        }
+      }
+
       sharedConnections.set(key, connection)
       publishAllowedOrigins()
     } catch {
