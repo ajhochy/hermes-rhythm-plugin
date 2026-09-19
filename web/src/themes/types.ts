@@ -200,6 +200,10 @@ export interface ThemeListEntry {
    *  `~/.hermes/dashboard-themes/*.yaml`; undefined for built-ins (the
    *  client already has those in `BUILTIN_THEMES`). */
   definition?: DashboardTheme;
+  /** Same-origin CSS custom-property overrides contributed by an active
+   * dashboard plugin. The backend only emits validated paths below
+   * `/dashboard-plugins/`. */
+  stylesheet?: string;
 }
 
 export interface ThemeListResponse {

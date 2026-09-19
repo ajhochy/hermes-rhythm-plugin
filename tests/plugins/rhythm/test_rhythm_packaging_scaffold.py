@@ -69,6 +69,7 @@ def test_manifest_is_deterministic_and_declares_the_unified_opt_in_tree():
         "contracts/*.json",
         "dashboard/manifest.json",
         "dashboard/dist/index.js",
+        "dashboard/theme/rhythm.css",
         "packaging/package-manifest.json",
         "packaging/RELEASE-GATE.md",
         "packaging/LIVE-GATE.md",
@@ -254,7 +255,7 @@ def test_package_gate_rejects_undeclared_content_and_invalid_package_data(tmp_pa
     with pytest.raises(PackagingGateError, match="undeclared package content"):
         validate_package_tree(tmp_path, manifest)
 
-    manifest["content"]["package_data"].append("dashboard/*.css")
+    manifest["content"]["package_data"].append("dashboard/theme/*.svg")
     with pytest.raises(PackagingGateError, match="package_data pattern matches no declared content"):
         validate_package_tree(tmp_path, manifest)
 
