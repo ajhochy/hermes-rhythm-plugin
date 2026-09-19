@@ -39,3 +39,27 @@ tags: [run, hermes-rhythm-plugin]
   session token (the documented "AJ credentials; then CLI" path), or (b) restore and deploy the
   login-only routes, which reopens the question the revert settled.
 - `hermes plugins reload` does not exist in this CLI; `install-local.sh`'s printed hint is stale.
+
+## Follow-up — the second server path was unnecessary (a5a4818f25)
+
+The plugin now uses the deployed `POST /auth/google/desktop-exchange`, the same
+endpoint the Electron app uses. It never needed its own.
+
+`storeDesktopIntegration` upserts the single Google account row with **this
+grant's** `tokens.scope` and `tokens.refresh_token ?? null`. The plugin asked for
+`openid email profile` with no `access_type`/`prompt`/`include_granted_scopes`,
+so a plugin sign-in narrowed the row's scope to identity-only *and* nulled the
+refresh token — that is the Calendar/Gmail downgrade, and the reason a
+"login-only" exchange got built. Requesting the identical grant turns the same
+write into a refresh.
+
+- `GOOGLE_DESKTOP_SCOPES` mirrors `apps/electron/src/google-oauth-core.mjs`;
+  `access_type=offline`, `prompt=consent`, `include_granted_scopes=true` added.
+- `require_login_only_capability` and its 503 precondition removed.
+- `POST /oauth/start` verified live: HTTP 200 with a real
+  `accounts.google.com` URL carrying the four Electron scopes.
+- 295 plugin tests pass; the scope-parity test was mutation-checked by removing
+  `calendar.readonly` (it fails, as intended).
+
+Remaining: AJ completes the Google sign-in in the browser. No Rhythm API deploy
+and no Electron change are required.
