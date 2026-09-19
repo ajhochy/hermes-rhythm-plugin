@@ -54,3 +54,7 @@ tags: [run, hermes-rhythm-plugin]
 ## Live gates still outstanding
 
 The installed release registered `#/rhythm` and the JSX-only plugin route returned a React element, yet its generic composer remained visible and the workspace root was absent. The isolated fixed-host candidate **did** mount the workspace and later qualified running-host plugin disposal. Credentialed M3 is intentionally fail-closed against the old deployed server and requires deployment of the additive login-only API; hosted read UI, ACP mutation, unsent draft, and zero-write trace remain unqualified. The parent owns any installed plugin lifecycle.
+
+## Independent baseline audit
+
+The full ownership-ledger file was rerun at final source `a285b3651c`:25 passed/3 failed. A clean `git archive c5c9c1e17b` snapshot with the same required runner gave24 passed/3 failed with identical failing names: `test_targeted_unload_does_not_resurrect_an_older_tool_override`, `test_targeted_unload_does_not_resurrect_an_older_override`, `test_unload_cancels_a_deferred_platform_before_module_load`. The added reconcile test accounts for the extra pass. In base code, `ReplacementCoordinator.dispose` finalizes before the registration's `_disposed` flag changes, retaining stale manager-local names. This confirms baseline debt; no threshold or assertion was changed, and the temporary snapshot was removed. The full ledger is not green.
