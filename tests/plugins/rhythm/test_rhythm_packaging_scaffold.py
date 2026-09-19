@@ -2,13 +2,14 @@
 
 The tests catch a future packager that quietly emits split renderer chunks,
 ships a second React runtime, changes the opt-in destination, or includes a
-credential in operator-facing diagnostics.  They deliberately do not build,
-install, sign, notarize, or publish anything.
+credential in operator-facing diagnostics.  They build only in temporary
+directories and never install, sign, notarize, or publish anything.
 """
 
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -100,6 +101,74 @@ def test_final_builder_is_repeatable_closed_and_has_one_real_desktop_esm_artifac
     assert 'from"react"' in bundle
     assert 'from"lucide-react"' not in bundle
     assert "from'lucide-react'" not in bundle
+
+
+def test_desktop_route_renders_with_host_react_when_jsx_runtime_is_unavailable(tmp_path):
+    """The installed Desktop can expose a non-callable JSX shim while React itself works."""
+    package = build_feature_pack(REPO_ROOT, tmp_path / "package")
+    bundle = package / "desktop/dist/rhythm.mjs"
+    probe = r"""
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { SourceTextModule, SyntheticModule, createContext } from 'node:vm';
+
+const source = readFileSync(process.argv[2], 'utf8');
+const context = createContext({ URLSearchParams, console });
+const elements = [];
+const createElement = (type, props) => {
+  const element = { type, props };
+  elements.push(element);
+  return element;
+};
+const react = new Proxy({}, { get: (_target, name) => {
+  if (name === 'createElement') return createElement;
+  if (name === 'createContext') return () => ({ Provider: () => null });
+  if (name === 'forwardRef' || name === 'memo') return value => value;
+  if (name === 'Fragment') return Symbol.for('react.fragment');
+  return () => undefined;
+} });
+const sdk = {
+  ROUTES_AREA: 'routes', SIDEBAR_NAV_AREA: 'sidebar.nav', PALETTE_AREA: 'command-palette',
+  host: {}, useValue: () => undefined,
+};
+const values = {
+  react,
+  'react/jsx-runtime': { jsx: undefined, jsxs: undefined, Fragment: Symbol.for('react.fragment') },
+  '@hermes/plugin-sdk': sdk,
+};
+const names = {
+  react: ['createContext', 'forwardRef', 'createElement', 'useContext', 'useState', 'useRef', 'useEffect', 'useLayoutEffect', 'useMemo', 'useId', 'useCallback', 'useSyncExternalStore', 'memo', 'Fragment', 'lazy'],
+  'react/jsx-runtime': ['jsx', 'jsxs', 'Fragment'],
+  '@hermes/plugin-sdk': Object.keys(sdk),
+};
+let module;
+try { module = new SourceTextModule(source, { context }); }
+catch (error) { console.error('VM_COMPILE_ERROR:', error.message); process.exit(2); }
+try {
+await module.link(specifier => {
+  assert.ok(specifier in values, `unexpected import: ${specifier}`);
+  return new SyntheticModule(names[specifier], function () {
+    for (const name of names[specifier]) this.setExport(name, values[specifier][name]);
+  }, { context });
+});
+await module.evaluate();
+const contributions = [];
+module.namespace.default.register({ registerMany: entries => contributions.push(...entries) });
+const route = contributions.find(entry => entry.area === 'routes' && entry.data?.path === '/rhythm');
+assert.ok(route, 'Rhythm page route must be registered');
+const element = route.render();
+assert.equal(typeof element.type, 'function');
+assert.equal(elements.length, 1);
+} catch (error) {
+  console.error('VM_PROBE_ERROR:', error.name, error.message);
+  process.exit(1);
+}
+"""
+    result = subprocess.run(
+        ["node", "--no-warnings", "--experimental-vm-modules", "--input-type=module", "-", str(bundle)],
+        input=probe, text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 0, f"node exit {result.returncode}: {result.stderr[-400:]!r}"
 
 
 def test_temp_home_lifecycle_is_opt_in_reversible_and_confined_to_rhythm_tree(tmp_path):
@@ -194,11 +263,12 @@ def test_macos_fixture_is_built_from_the_actual_feature_pack(tmp_path):
     validate_macos_bundle(app, _manifest(), list_asar=list_asar, read_asar=read_asar)
 
 
-def test_desktop_build_uses_production_jsx_runtime(tmp_path):
-    """Regression: production Hermes exposes jsxDEV as undefined and the page crashes."""
+def test_desktop_build_uses_host_react_without_development_jsx(tmp_path):
+    """The desktop bundle must use host React and omit the broken/development JSX shims."""
     package = build_feature_pack(REPO_ROOT, tmp_path / "package")
     bundle = (package / "desktop/dist/rhythm.mjs").read_text(encoding="utf-8")
     assert 'react/jsx-dev-runtime' not in bundle
+    assert 'react/jsx-runtime' not in bundle
     assert "jsxDEV" not in bundle
 
 
@@ -421,7 +491,7 @@ def test_build_rebuilds_both_bundles_with_only_host_imports_and_no_secret_source
     package = build_feature_pack(REPO_ROOT, tmp_path / "package")
     desktop = (package / "desktop/dist/rhythm.mjs").read_text()
     dashboard = (package / "dashboard/dist/index.js").read_text()
-    assert bundle_imports(desktop) == {"@hermes/plugin-sdk", "react", "react/jsx-runtime"}
+    assert bundle_imports(desktop) == {"@hermes/plugin-sdk", "react"}
     assert bundle_imports(desktop) <= set(BUNDLE_EXTERNALS)
     assert bundle_imports(dashboard) == set()
     assert '__HERMES_PLUGINS__.register("rhythm"' in dashboard

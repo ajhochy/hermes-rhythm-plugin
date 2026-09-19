@@ -28,7 +28,9 @@ one desktop ESM file (`desktop/dist/rhythm.mjs`) and one rebuilt dashboard file
 (`dashboard/dist/index.js`) ship. The dashboard entry deliberately registers an
 API-only hidden tab; the workspace UI belongs to Desktop. Host externals are
 `@hermes/plugin-sdk`, `react`, `react-dom`, `react/jsx-runtime`,
-`react-dom/client`; actual desktop imports are SDK, React, and JSX runtime.
+`react-dom/client`; the final Desktop artifact imports SDK and React. The
+builder maps generated JSX calls to the host React singleton because the
+installed Desktop JSX-runtime shim may not expose callable `jsx`/`jsxs`.
 The package excludes the vendored source maps, vendor sources, and `.env` files.
 Both bundle text and the Bun dependency graph are checked; React cannot be
 bundled, JSX must be production, and all other imports must be bundled.
@@ -62,18 +64,18 @@ loader. No `ACTIVATION.json` is consumed by the checked-in runtime loader. Rhyth
 has `defaultEnabled: false`: AJ must also enable **Settings → Plugins → Rhythm**
 in Desktop. Python CLI enablement and Desktop's preference are separate gates.
 
-`hermes plugins reload rhythm` operates on the current process's plugin manager;
-it is not an IPC reload of an already-running Desktop/backend. Record its actual
-exit status. If that CLI reports an unloaded plugin, exercise the real reload
-contract in a process that loads it first:
+`hermes plugins reload rhythm` is not available in the installed v0.20.5 CLI
+(exit 2), and that release does not export `cmd_reload` from
+`hermes_cli.plugins_cmd`. Record the actual command outcome. To check only
+process-local rediscovery without claiming a Desktop reload, use the installed
+manager's supported `force=True` path:
 
 ```bash
 "$RHYTHM_PYTHON" -I - <<'PY'
 from hermes_cli.plugins import get_plugin_manager
-from hermes_cli.plugins_cmd import cmd_reload
 manager = get_plugin_manager()
 manager.discover_and_load()
-cmd_reload('rhythm')
+manager.discover_and_load(force=True)
 manager.unload()
 PY
 ```

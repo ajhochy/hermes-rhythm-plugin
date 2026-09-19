@@ -81,11 +81,45 @@ def _build_bundle(entry: Path, target: Path, work: Path) -> None:
                 raise PackagingGateError("unexpected dependency in build graph")
 
 
+def _bind_jsx_to_host_react(target: Path) -> None:
+    """Use the host React singleton when older Desktop JSX shims are non-callable."""
+    source = target.read_text(encoding="utf-8")
+    pattern = re.compile(r"import\s*\{([^{}]+)\}\s*from\s*['\"]react/jsx-runtime['\"];?")
+    found = 0
+
+    def replace(match: re.Match[str]) -> str:
+        nonlocal found
+        found += 1
+        declarations = []
+        for item in match.group(1).split(","):
+            parts = item.strip().split(" as ")
+            if len(parts) not in (1, 2) or parts[0] not in {"jsx", "jsxs", "Fragment"}:
+                raise PackagingGateError("unexpected JSX runtime import in desktop bundle")
+            alias = parts[-1]
+            if not re.fullmatch(r"[A-Za-z_$][\w$]*", alias):
+                raise PackagingGateError("invalid JSX runtime binding in desktop bundle")
+            value = "__rhythmReact.Fragment" if parts[0] == "Fragment" else "__rhythmJsx"
+            declarations.append(f"const {alias}={value};")
+        return "".join(declarations)
+
+    source = pattern.sub(replace, source)
+    if not found or 'react/jsx-runtime' in source:
+        raise PackagingGateError("desktop JSX runtime could not be bound to host React")
+    adapter = (
+        'import * as __rhythmReact from "react";\n'
+        'const __rhythmJsx=(type,props,key)=>__rhythmReact.createElement('
+        'type,key===undefined?props:{...props,key});\n'
+    )
+    target.write_text(adapter + source, encoding="utf-8")
+
+
 def _build_desktop(source: Path, output: Path, entry_relative: str) -> None:
     with tempfile.TemporaryDirectory(prefix="rhythm-build-") as temporary:
         work = Path(temporary)
         entry = _desktop_entry(source, work)
-        _build_bundle(entry, output / entry_relative, work)
+        target = output / entry_relative
+        _build_bundle(entry, target, work)
+        _bind_jsx_to_host_react(target)
 
 
 def _build_dashboard(source: Path, output: Path) -> None:

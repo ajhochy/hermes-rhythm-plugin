@@ -1,0 +1,36 @@
+▶ running per-file parallel test suite via run_tests_parallel.py
+  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)
+▶ pre-compiling bytecode cache
+▶ launching test runner
+Discovered 11 test files (~175 tests) under ['tests/plugins/rhythm']; running with -j 4
+[  1.7% |     3/~175 | ✓3 | ✗0] ✓ tests/plugins/rhythm/test_rhythm_install_local.py (3✓, 2.7s)
+[  4.6% |     8/~175 | ✓8 | ✗0] ✓ tests/plugins/rhythm/test_rhythm_dashboard_theme.py (5✓, 2.9s)
+[  8.6% |    15/~175 | ✓17 | ✗ 0] ✓ tests/plugins/rhythm/test_rhythm_issue_10_contract.py (9✓, 3.0s)
+[ 11.4% |    20/~175 | ✓22 | ✗ 0] ✓ tests/plugins/rhythm/test_rhythm_m10_cutover.py (5✓, 6.8s)
+[ 13.1% |    23/~175 | ✓25 | ✗ 0] ✓ tests/plugins/rhythm/test_rhythm_m7_contract.py (3✓, 3.1s)
+[ 34.3% |    60/~175 | ✓81 | ✗ 0] ✓ tests/plugins/rhythm/test_rhythm_backend.py (56✓, 16.0s)
+[ 39.4% |    69/~175 | ✓99 | ✗ 0] ✓ tests/plugins/rhythm/test_rhythm_m8_native_tools.py (18✓, 7.6s)
+[ 41.7% |    73/~175 | ✓103 | ✗  0] ✓ tests/plugins/rhythm/test_rhythm_mounted_oauth.py (4✓, 4.4s)
+[ 54.9% |    96/~175 | ✓144 | ✗  0] ✓ tests/plugins/rhythm/test_rhythm_m5_contract.py (41✓, 14.9s)
+[ 69.1% |   121/~175 | ✓206 | ✗  0] ✓ tests/plugins/rhythm/test_rhythm_packaging_scaffold.py (62✓, 9.9s)
+[100.0% |   175/~175 | ✓283 | ✗  0] ✓ tests/plugins/rhythm/test_rhythm_contracts.py (77✓, 50.8s)
+
+=== Summary: 11 files, 283 tests passed, 0 failed (100% complete) in 50.8s (4 workers) ===
+  Durations cached to test_durations.json (11 files)
+
+=== Per-file subprocess time distribution ===
+  Files:   11
+  Total subprocess CPU-wall: 122.0s  (runner wall: 50.8s, parallelism: 4x)
+  P50: 6.81s  P90: 16.02s  P95: 50.83s  P99: 50.83s  Max: 50.83s
+  <1s: 0 files (0%)  <2s: 0 files (0%)
+  Top 10 slowest:
+     50.83s  tests/plugins/rhythm/test_rhythm_contracts.py
+     16.02s  tests/plugins/rhythm/test_rhythm_backend.py
+     14.93s  tests/plugins/rhythm/test_rhythm_m5_contract.py
+      9.88s  tests/plugins/rhythm/test_rhythm_packaging_scaffold.py
+      7.56s  tests/plugins/rhythm/test_rhythm_m8_native_tools.py
+      6.81s  tests/plugins/rhythm/test_rhythm_m10_cutover.py
+      4.37s  tests/plugins/rhythm/test_rhythm_mounted_oauth.py
+      3.06s  tests/plugins/rhythm/test_rhythm_m7_contract.py
+      2.97s  tests/plugins/rhythm/test_rhythm_issue_10_contract.py
+      2.90s  tests/plugins/rhythm/test_rhythm_dashboard_theme.py
