@@ -14,8 +14,7 @@ from typing import Any, Callable
 from urllib.parse import parse_qsl, urljoin, urlparse
 
 APPROVED_ORIGIN = "https://api.vcrcapps.com"
-DESKTOP_LOGIN_CAPABILITY_ENDPOINT = f"{APPROVED_ORIGIN}/auth/google/desktop-login-capability"
-DESKTOP_EXCHANGE_ENDPOINT = f"{APPROVED_ORIGIN}/auth/google/desktop-login-exchange"
+DESKTOP_EXCHANGE_ENDPOINT = f"{APPROVED_ORIGIN}/auth/google/desktop-exchange"
 ALLOWED_OPERATIONS = {
     ("GET", "/auth/me"),
     ("GET", "/workspaces/me"),
@@ -135,17 +134,6 @@ class RhythmClient:
     token: str
     transport: Transport = _httpx_transport
     sleep: Callable[[float], None] = time.sleep
-
-    def require_login_only_capability(self) -> None:
-        """Refuse OAuth until the host guarantees exchange has no integration writes."""
-        status, headers, payload = self.transport(
-            "GET", DESKTOP_LOGIN_CAPABILITY_ENDPOINT,
-            {"Accept": "application/json"}, None, REQUEST_TIMEOUT_SECONDS,
-        )
-        if 300 <= status < 400 or headers.get("location") or headers.get("Location"):
-            raise RhythmProtocolError("redirect_rejected")
-        if status != 200 or not isinstance(payload, dict) or payload.get("loginOnlyDesktopExchange") is not True:
-            raise RhythmProtocolError("oauth_login_only_unavailable")
 
     def call(self, method: str, path: str, *, body: dict[str, Any] | None = None, idempotency_key: str | None = None, m5: bool = False) -> dict[str, Any]:
         method = method.upper()

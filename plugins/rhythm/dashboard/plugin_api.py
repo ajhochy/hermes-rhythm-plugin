@@ -510,6 +510,17 @@ def _dashboard_summary(payload: dict[str, Any], identity: dict[str, str], worksp
     return {"identity": identity, "workspace": workspace, "openTaskCount": count, "threadCount": thread_count, "tasks": summary_tasks, "project": None, "unreadThreads": []}
 
 
+# Mirrors apps/electron/src/google-oauth-core.mjs GOOGLE_DESKTOP_SCOPES. The
+# deployed /auth/google/desktop-exchange writes tokens.scope onto the shared
+# Google account row, so these must not be narrower than the Electron app's.
+GOOGLE_DESKTOP_SCOPES = (
+    "openid",
+    "email",
+    "profile",
+    "https://www.googleapis.com/auth/calendar.readonly",
+)
+
+
 def _oauth_client_id() -> str:
     """Read the public desktop OAuth client ID from this Hermes profile."""
     from hermes_cli.config import load_config_readonly
@@ -1385,10 +1396,6 @@ def facility_series(facility_id: str):
 @router.post("/oauth/start")
 def oauth_start(incoming_request: Request):
     client_id = _oauth_client_id()
-    try:
-        RhythmClient("", transport=request).require_login_only_capability()
-    except (RhythmProtocolError, RhythmRemoteError):
-        raise HTTPException(503, detail={"error": "oauth_login_only_unavailable", "recoverable": True}) from None
     verifier = secrets.token_urlsafe(64)
     state = secrets.token_urlsafe(32)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
@@ -1405,10 +1412,18 @@ def oauth_start(incoming_request: Request):
             "response_type": "code",
             "client_id": client_id,
             "redirect_uri": redirect_uri,
-            "scope": "openid email profile",
+            # The shared desktop exchange upserts the Google account row with
+            # THIS grant's scope and refresh token. Ask for exactly what the
+            # Electron app asks for (apps/electron/src/google-oauth-core.mjs),
+            # or a plugin sign-in narrows Calendar/Gmail and nulls the refresh
+            # token for every other client.
+            "scope": " ".join(GOOGLE_DESKTOP_SCOPES),
             "code_challenge_method": "S256",
             "code_challenge": challenge,
             "state": state,
+            "access_type": "offline",
+            "prompt": "consent",
+            "include_granted_scopes": "true",
         }
     )
     return {"state": state, "authorization_url": f"https://accounts.google.com/o/oauth2/v2/auth?{query}"}

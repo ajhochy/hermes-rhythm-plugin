@@ -53,10 +53,7 @@ def api(rhythm_home):
 
 
 def _ok_transport(method, url, headers, body, timeout):
-    if url == "https://api.vcrcapps.com/auth/google/desktop-login-capability":
-        assert method == "GET" and body is None and "Authorization" not in headers
-        return 200, {}, {"loginOnlyDesktopExchange": True}
-    if url == "https://api.vcrcapps.com/auth/google/desktop-login-exchange":
+    if url == "https://api.vcrcapps.com/auth/google/desktop-exchange":
         assert method == "POST"
         return 200, {}, {"sessionToken": TOKEN, "user": {"id": 7}}
     assert url.startswith("https://api.vcrcapps.com/")
@@ -644,7 +641,7 @@ def test_pkce_wire_contract_and_get_handoff(api, monkeypatch):
     seen = []
 
     def transport(method, url, headers, body, timeout):
-        if url == "https://api.vcrcapps.com/auth/google/desktop-login-exchange":
+        if url == "https://api.vcrcapps.com/auth/google/desktop-exchange":
             seen.append(json.loads(body))
         return _ok_transport(method, url, headers, body, timeout)
 

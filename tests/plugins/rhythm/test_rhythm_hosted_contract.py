@@ -28,7 +28,7 @@ def test_desktop_code_exchanges_at_pinned_rhythm_endpoint_for_session_token():
 
     assert token == SESSION_TOKEN
     assert calls == [(
-        'POST', 'https://api.vcrcapps.com/auth/google/desktop-login-exchange',
+        'POST', 'https://api.vcrcapps.com/auth/google/desktop-exchange',
         {'Accept': 'application/json', 'Content-Type': 'application/json'},
         {'code': 'code', 'codeVerifier': 'verifier', 'redirectUri': 'http://127.0.0.1:48761/api/plugins/rhythm/oauth/callback'},
     )]
@@ -68,29 +68,43 @@ def test_oauth_start_fails_closed_without_public_client_configuration(tmp_path, 
     assert 'authorization_url' not in result.json()
 
 
-@pytest.mark.parametrize('status,payload', [
-    (404, {}),
-    (200, {'loginOnlyDesktopExchange': False}),
-    (200, {'unrelated': True}),
-])
-def test_oauth_start_rejects_missing_login_only_capability_before_issuing_state(tmp_path, monkeypatch, status, payload):
+def test_oauth_start_requests_the_same_grant_as_the_electron_desktop_app(tmp_path, monkeypatch):
+    """Catches a narrowed plugin grant.
+
+    The shared POST /auth/google/desktop-exchange writes this grant's scope and
+    refresh token onto the one Google account row. If the plugin asks for less
+    than apps/electron/src/google-oauth-core.mjs does, or omits offline/consent,
+    a plugin sign-in silently downgrades Calendar/Gmail and nulls the refresh
+    token for every other client. Assert the full request, not just client_id.
+    """
+    home = tmp_path / '.hermes'
+    home.mkdir()
+    (home / 'config.yaml').write_text(f'plugins:\n  rhythm:\n    google_desktop_client_id: {PUBLIC_CLIENT_ID}\n')
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    app = FastAPI()
+    app.include_router(plugin_api.router, prefix='/api/plugins/rhythm')
+    result = TestClient(app, base_url='http://127.0.0.1:48761').post('/api/plugins/rhythm/oauth/start')
+    assert result.status_code == 200
+    query = parse_qs(urlsplit(result.json()['authorization_url']).query)
+    assert query['scope'] == ['openid email profile https://www.googleapis.com/auth/calendar.readonly']
+    assert query['access_type'] == ['offline']
+    assert query['prompt'] == ['consent']
+    assert query['include_granted_scopes'] == ['true']
+
+
+def test_oauth_start_needs_no_capability_probe_before_issuing_state(tmp_path, monkeypatch):
+    """Catches a reintroduced precondition call to a route production lacks."""
     home = tmp_path / '.hermes'
     home.mkdir()
     (home / 'config.yaml').write_text(f'plugins:\n  rhythm:\n    google_desktop_client_id: {PUBLIC_CLIENT_ID}\n')
     monkeypatch.setenv('HERMES_HOME', str(home))
     calls = []
-    def transport(method, url, headers, body, timeout):
-        calls.append((method, url, body))
-        return status, {}, payload
-    monkeypatch.setattr(plugin_api, 'request', transport)
-    before = set(plugin_api._oauth_states)
+    monkeypatch.setattr(plugin_api, 'request', lambda method, url, headers, body, timeout: (calls.append(url), (404, {}, {}))[1])
     app = FastAPI()
     app.include_router(plugin_api.router, prefix='/api/plugins/rhythm')
     result = TestClient(app, base_url='http://127.0.0.1:48761').post('/api/plugins/rhythm/oauth/start')
-    assert result.status_code == 503
-    assert 'authorization_url' not in result.json()
-    assert set(plugin_api._oauth_states) == before
-    assert calls == [('GET', 'https://api.vcrcapps.com/auth/google/desktop-login-capability', None)]
+    assert result.status_code == 200
+    assert calls == []
 
 
 def test_nested_hosted_dashboard_projects_bounded_cards_and_counts():

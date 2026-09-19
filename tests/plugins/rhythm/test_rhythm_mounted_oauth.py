@@ -15,10 +15,7 @@ PUBLIC_CLIENT_ID = "123456-example.apps.googleusercontent.com"
 
 
 def _ok_transport(method, url, headers, body, timeout):
-    if url == "https://api.vcrcapps.com/auth/google/desktop-login-capability":
-        assert method == "GET" and body is None and "Authorization" not in headers
-        return 200, {}, {"loginOnlyDesktopExchange": True}
-    if url == "https://api.vcrcapps.com/auth/google/desktop-login-exchange":
+    if url == "https://api.vcrcapps.com/auth/google/desktop-exchange":
         return 200, {}, {"sessionToken": TOKEN, "user": {"id": 7}}
     if url.endswith("/auth/me"):
         return 200, {}, {"id": "user-1", "email": "me@example.test"}
@@ -38,7 +35,7 @@ def _mounted_client(monkeypatch, tmp_path):
     exchanges = []
 
     def transport(method, url, headers, body, timeout):
-        if url == "https://api.vcrcapps.com/auth/google/desktop-login-exchange":
+        if url == "https://api.vcrcapps.com/auth/google/desktop-exchange":
             exchanges.append(json.loads(body))
         return _ok_transport(method, url, headers, body, timeout)
 
