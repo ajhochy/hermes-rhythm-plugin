@@ -5,13 +5,15 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { ipcMain, shell } from 'electron'
+import { ipcMain as electronIpcMain, shell } from 'electron'
 
 import { installDesktopPluginFromGit, probePluginRepo } from './desktop-plugin-install'
 import { readDirForIpc } from './fs-read-dir'
 import { gitRootForIpc } from './git-root'
 
 export interface FsIpcDeps {
+  /** An embedded host supplies a sender-scoped registrar. */
+  ipcMain?: Pick<typeof electronIpcMain, 'handle'>
   hermesHome: string
   readActiveDesktopProfile: () => null | string
   expandUserPath: (value: string) => string
@@ -21,6 +23,7 @@ export interface FsIpcDeps {
 }
 
 export function registerFsIpc({
+  ipcMain = electronIpcMain,
   hermesHome,
   readActiveDesktopProfile,
   expandUserPath,

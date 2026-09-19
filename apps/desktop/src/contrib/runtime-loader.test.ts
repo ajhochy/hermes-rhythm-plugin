@@ -73,22 +73,19 @@ describe('scanDiskPlugins (#66899)', () => {
     expect(readDir).not.toHaveBeenCalled()
   })
 
-  it('probes desktop/plugin.js inside agent-plugin packages (unified packaging)', async () => {
+  it('uses directory entries to skip agent packages with no desktop/plugin.js without an ENOENT read', async () => {
     desktopPluginsRoot.mockResolvedValue('/local/.hermes/desktop-plugins')
     agentPluginsRoot.mockResolvedValue('/local/.hermes/plugins')
     readDir.mockImplementation(async dir =>
       dir === '/local/.hermes/plugins'
         ? { entries: [{ isDirectory: true, name: 'my-feature', path: '/local/.hermes/plugins/my-feature' }] }
-        : { entries: [] }
+        : { entries: [{ isDirectory: false, name: 'plugin.yaml', path: '/local/.hermes/plugins/my-feature/plugin.yaml' }] }
     )
-    // No desktop half in this package — probe must target desktop/plugin.js.
-    readFileText.mockRejectedValue(new Error('ENOENT'))
 
     await discoverRuntimePlugins()
 
-    expect(readFileText).toHaveBeenCalledWith('/local/.hermes/plugins/my-feature/desktop/plugin.js')
-    // The Python half's files must never be probed as a desktop entry.
-    expect(readFileText).not.toHaveBeenCalledWith('/local/.hermes/plugins/my-feature/plugin.js')
+    expect(readDir).toHaveBeenCalledWith('/local/.hermes/plugins/my-feature')
+    expect(readFileText).not.toHaveBeenCalled()
   })
 
   it('still scans the standalone root when agentPluginsRoot is absent (older shell)', async () => {
@@ -108,7 +105,11 @@ describe('scanDiskPlugins (#66899)', () => {
     readDir.mockImplementation(async dir =>
       dir === '/local/.hermes/plugins'
         ? { entries: [{ isDirectory: true, name: 'uni', path: '/local/.hermes/plugins/uni' }] }
-        : { entries: [] }
+        : dir === '/local/.hermes/plugins/uni'
+          ? { entries: [{ isDirectory: true, name: 'desktop', path: '/local/.hermes/plugins/uni/desktop' }] }
+          : dir === '/local/.hermes/plugins/uni/desktop'
+            ? { entries: [{ isDirectory: false, name: 'plugin.js', path: '/local/.hermes/plugins/uni/desktop/plugin.js' }] }
+            : { entries: [] }
     )
 
     const register = vi.fn()
@@ -186,9 +187,11 @@ describe('bundled-shadowed disk copies', () => {
     let present = true
     desktopPluginsRoot.mockResolvedValue('/local/.hermes/desktop-plugins')
     agentPluginsRoot.mockResolvedValue('/local/.hermes/plugins')
-    readDir.mockImplementation(async dir => ({ entries: present && dir.endsWith('/desktop-plugins')
+    readDir.mockImplementation(async dir => ({ entries: present && dir === '/local/.hermes/desktop-plugins'
       ? [{ isDirectory: true, name: 'shadow-probe', path: '/local/.hermes/desktop-plugins/shadow-probe' }]
-      : [] }))
+      : present && dir === '/local/.hermes/desktop-plugins/shadow-probe'
+        ? [{ isDirectory: false, name: 'plugin.js', path: file }]
+        : [] }))
     readFileText.mockResolvedValue({ text: 'export default { id: "shadow-probe", name: "Shadow Probe", register() {} }' })
     watchPreviewFile.mockRejectedValue(new Error('watch unavailable'))
     publishPlugin({ id: 'shadow-probe', name: 'Bundled Probe', kind: 'bundled', status: 'loaded' })

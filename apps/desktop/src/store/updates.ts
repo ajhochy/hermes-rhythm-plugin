@@ -16,6 +16,7 @@ import type {
 } from '@/global'
 import { checkHermesUpdate, getActionStatus, updateHermes } from '@/hermes'
 import { translateNow } from '@/i18n'
+import { isEmbeddedDesktop } from '@/lib/embedded-mode'
 import { persistString, storedString } from '@/lib/storage'
 import { dismissNotification, notify } from '@/store/notifications'
 import { $connection } from '@/store/session'
@@ -62,6 +63,12 @@ export const $updateOverlayTarget = atom<UpdateTarget>('client')
 export const setUpdateOverlayOpen = (open: boolean) => $updateOverlayOpen.set(open)
 
 export const openUpdateOverlayFor = (target: UpdateTarget) => {
+  // Rhythm owns the outer app bundle. The embedded renderer may retain the
+  // remote-backend status path, but it must never initiate Hermes self-update.
+  if (target === 'client' && isEmbeddedDesktop()) {
+    return
+  }
+
   $updateOverlayTarget.set(target)
   $updateOverlayOpen.set(true)
   void (target === 'backend' ? checkBackendUpdates() : checkUpdates())
@@ -259,6 +266,11 @@ export function openUpdatesWindow(): void {
  */
 export function startActiveUpdate(): void {
   const target: UpdateTarget = isRemoteMode() ? 'backend' : 'client'
+
+  if (target === 'client' && isEmbeddedDesktop()) {
+    return
+  }
+
   $updateOverlayTarget.set(target)
   $updateOverlayOpen.set(true)
   void (target === 'backend' ? applyBackendUpdate() : applyUpdates())
@@ -272,6 +284,11 @@ export function startActiveUpdate(): void {
  */
 export function requestActiveUpdate(): void {
   const target: UpdateTarget = isRemoteMode() ? 'backend' : 'client'
+
+  if (target === 'client' && isEmbeddedDesktop()) {
+    return
+  }
+
   const status = target === 'backend' ? $backendUpdateStatus.get() : $updateStatus.get()
 
   if ((status?.behind ?? 0) > 0 || status?.updateAvailable) {
@@ -360,6 +377,10 @@ export async function checkBackendUpdates(): Promise<DesktopUpdateStatus | null>
 }
 
 export async function checkUpdates(): Promise<DesktopUpdateStatus | null> {
+  if (isEmbeddedDesktop()) {
+    return $updateStatus.get()
+  }
+
   const bridge = window.hermesDesktop?.updates
 
   if (!bridge || $updateChecking.get()) {
@@ -395,6 +416,10 @@ export async function checkUpdates(): Promise<DesktopUpdateStatus | null> {
 }
 
 export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promise<DesktopUpdateApplyResult> {
+  if (isEmbeddedDesktop()) {
+    return { ok: false, error: 'unavailable', message: 'Hermes app updates are managed by the host.' }
+  }
+
   const bridge = window.hermesDesktop?.updates
 
   if (!bridge) {
@@ -733,7 +758,7 @@ let lastConnectionMode: string | undefined
 
 /** Wire up background polling + progress streaming. Idempotent. */
 export function startUpdatePoller(): void {
-  if (pollerStarted || typeof window === 'undefined') {
+  if (pollerStarted || typeof window === 'undefined' || isEmbeddedDesktop()) {
     return
   }
 

@@ -16,6 +16,7 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { type Translations, useI18n } from '@/i18n'
+import { isEmbeddedDesktop } from '@/lib/embedded-mode'
 import { hostPathLabel, normalizeExternalUrl, openExternalLink } from '@/lib/external-link'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { isRemoteGateway } from '@/lib/media'
@@ -541,6 +542,8 @@ function guestSections(open: Extract<OpenContextMenu, { kind: 'guest' }>, t: Tra
 
 /** Bare right-click on app chrome: the window verbs (the old shell fallback). */
 function shellSections({ navigate, t }: ShellVerbs): ReactNode[][] {
+  const embedded = isEmbeddedDesktop()
+
   return [
     [
       <Item
@@ -573,14 +576,18 @@ function shellSections({ navigate, t }: ShellVerbs): ReactNode[][] {
         onSelect={() => navigateToWorkspacePage(navigate, SETTINGS_ROUTE)}
       />
     ],
-    [
-      <Item
-        icon="cloud-download"
-        key="shell-update"
-        label={t.commandCenter.updateHermes}
-        onSelect={requestActiveUpdate}
-      />
-    ]
+    ...(embedded
+      ? []
+      : [
+          [
+            <Item
+              icon="cloud-download"
+              key="shell-update"
+              label={t.commandCenter.updateHermes}
+              onSelect={requestActiveUpdate}
+            />
+          ]
+        ])
   ]
 }
 

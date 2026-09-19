@@ -910,7 +910,7 @@ test('resolveDirectoryForIpc accepts directory symlinks or junctions', async () 
   }
 })
 
-// main.ts has no module.exports, so the wiring of the extracted keyring-less
+// The shared desktop runtime has no module exports for these closures, so the wiring of the extracted keyring-less
 // helpers into the main process follows the repo's source-assertion pattern
 // (see windows-hermes-resolution.test.ts). These pin the propagation the PR
 // reviewer flagged as untested: the connection-config IPC path forwarding
@@ -918,12 +918,12 @@ test('resolveDirectoryForIpc accepts directory symlinks or junctions', async () 
 // --password-store=basic startup branch.
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
-function readMain() {
-  return fs.readFileSync(path.join(__dirname, 'main.ts'), 'utf8').replace(/\r\n/g, '\n')
+function readDesktopRuntime() {
+  return fs.readFileSync(path.join(__dirname, 'desktop-native-runtime.ts'), 'utf8').replace(/\r\n/g, '\n')
 }
 
 test('registry JSON helpers retain native OAuth bearer authentication', () => {
-  const source = readMain()
+  const source = readDesktopRuntime()
   const postStart = source.indexOf('async function postJsonForBackend(')
   const fetchStart = source.indexOf('async function fetchJsonForBackend(', postStart)
   const helpers = source.slice(postStart, fetchStart)
@@ -939,7 +939,7 @@ test('registry JSON helpers retain native OAuth bearer authentication', () => {
 })
 
 test('coerceDesktopConnectionConfig routes token persistence through resolvePersistedRemoteToken', () => {
-  const source = readMain()
+  const source = readDesktopRuntime()
   const fnStart = source.indexOf('function coerceDesktopConnectionConfig(')
   assert.notEqual(fnStart, -1, 'coerceDesktopConnectionConfig must exist in main.ts')
   const fnEnd = source.indexOf('\nfunction ', fnStart + 1)
@@ -966,7 +966,7 @@ test('coerceDesktopConnectionConfig routes token persistence through resolvePers
 })
 
 test('connection-config save and apply IPC handlers route payloads through coerceDesktopConnectionConfig', () => {
-  const source = readMain()
+  const source = readDesktopRuntime()
 
   for (const channel of ['hermes:connection-config:save', 'hermes:connection-config:apply']) {
     const handlerStart = source.indexOf(`ipcMain.handle('${channel}'`)
@@ -981,7 +981,7 @@ test('connection-config save and apply IPC handlers route payloads through coerc
 })
 
 test('whenReady enables basic password-store encryption before createWindow', () => {
-  const source = readMain()
+  const source = readDesktopRuntime()
   const enableIndex = source.indexOf('enableBasicPasswordStoreEncryption({')
   assert.notEqual(enableIndex, -1, 'whenReady must call enableBasicPasswordStoreEncryption')
 
@@ -1005,7 +1005,7 @@ test('whenReady enables basic password-store encryption before createWindow', ()
 })
 
 test('sanitizeDesktopConnectionConfig exposes secureTokenStorage and remoteTokenPlainText', () => {
-  const source = readMain()
+  const source = readDesktopRuntime()
   const fnStart = source.indexOf('async function sanitizeDesktopConnectionConfig(')
   assert.notEqual(fnStart, -1, 'sanitizeDesktopConnectionConfig must exist in main.ts')
   const fnEnd = source.indexOf('\nfunction ', fnStart + 1)

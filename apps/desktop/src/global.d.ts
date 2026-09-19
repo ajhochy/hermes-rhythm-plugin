@@ -15,6 +15,14 @@ export {}
 declare global {
   interface Window {
     hermesDesktop: {
+      /** Present for the Rhythm-owned renderer; app-window controls stay host-owned. */
+      embedded?: {
+        enabled: boolean
+        metadata: () => Promise<{ embedded: boolean; host?: string; schemaVersion?: number }>
+        onIntent: (
+          callback: (intent: EmbeddedHermesIntent) => void
+        ) => () => void
+      }
       // Resolve a backend connection. Omit `profile` (or pass the primary) for
       // the window's backend; pass a named profile to lazily spawn/reuse that
       // profile's backend from the pool.
@@ -458,6 +466,10 @@ declare global {
     }
   }
 }
+
+export type EmbeddedHermesIntent =
+  | { v: 1; type: 'new-chat'; context?: string }
+  | { v: 1; type: 'navigate-session'; sessionId: string }
 
 export interface DesktopMarketplaceSearchItem {
   extensionId: string
