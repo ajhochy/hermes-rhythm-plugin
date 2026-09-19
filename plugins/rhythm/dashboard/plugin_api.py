@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import logging
+import re
 import secrets
 import threading
 import time
@@ -25,7 +26,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 # existing ``plugins`` namespace with this trusted user-plugin root.
 try:
     from ..backend.client import (
-        OAUTH_CLIENT_ID,
         RhythmClient,
         RhythmProtocolError,
         RhythmRemoteError,
@@ -41,7 +41,6 @@ except ImportError:
     if _USER_PLUGINS_ROOT not in _plugins_namespace.__path__:
         _plugins_namespace.__path__.append(_USER_PLUGINS_ROOT)
     from plugins.rhythm.backend.client import (
-        OAUTH_CLIENT_ID,
         RhythmClient,
         RhythmProtocolError,
         RhythmRemoteError,
@@ -361,8 +360,14 @@ def _operation_intent_digest(actor_id: str, workspace_id: str, task_id: str, ope
 
 
 def _safe_identity(payload: dict[str, Any]) -> dict[str, Any]:
+    # Hosted /auth/me wraps the user alongside workspace and role. Older
+    # fixture clients supplied the user object directly.
+    if isinstance(payload.get("user"), dict):
+        payload = payload["user"]
     ident = payload.get("id")
     email = payload.get("email")
+    if type(ident) is int and ident > 0:
+        ident = str(ident)
     if not isinstance(ident, str) or not ident or len(ident) > 128:
         raise RhythmProtocolError("schema_drift")
     result = {"id": ident}
@@ -376,6 +381,8 @@ def _safe_identity(payload: dict[str, Any]) -> dict[str, Any]:
 def _safe_workspace(payload: dict[str, Any]) -> dict[str, str]:
     workspace_id = payload.get("id")
     name = payload.get("name")
+    if type(workspace_id) is int and workspace_id > 0:
+        workspace_id = str(workspace_id)
     if not isinstance(workspace_id, str) or not workspace_id or len(workspace_id) > 128:
         raise RhythmProtocolError("schema_drift")
     result = {"id": workspace_id}
@@ -398,9 +405,19 @@ def _task(payload: dict[str, Any]) -> dict[str, Any]:
     title = _text(payload, "title", 512, required=True)
     status = payload.get("status")
     bucket = payload.get("bucket")
-    if status not in {"open", "in_progress", "waiting_for_reply", "done"} or bucket not in {"past-due", "today", "week", "month", "no-due", "completed"}:
+    if status not in {"open", "in_progress", "waiting_for_reply", "done", "deferred"}:
         raise RhythmProtocolError("schema_drift")
-    priority = payload.get("priority", 0)
+    if bucket is None:
+        when = payload.get("scheduledDate") or payload.get("dueDate")
+        if when is not None and (not isinstance(when, str) or not _safe_iso_date(when)):
+            raise RhythmProtocolError("schema_drift")
+        delta = (date.fromisoformat(when) - date.today()).days if when else None
+        bucket = ("completed" if status == "done" else "no-due" if delta is None else
+                  "past-due" if delta < 0 else "today" if delta == 0 else
+                  "week" if delta <= 7 else "month")
+    if bucket not in {"past-due", "today", "week", "month", "no-due", "completed"}:
+        raise RhythmProtocolError("schema_drift")
+    priority = payload.get("priority") if payload.get("priority") is not None else 0
     tags = payload.get("tags", [])
     collaborators = payload.get("collaborators", [])
     if type(priority) is not int or priority not in {0, 1, 2, 3} or not isinstance(tags, list) or len(tags) > 32 or not all(isinstance(tag, str) and 0 < len(tag) <= 64 for tag in tags) or not isinstance(collaborators, list) or len(collaborators) > 32:
@@ -409,13 +426,26 @@ def _task(payload: dict[str, Any]) -> dict[str, Any]:
     for collaborator in collaborators:
         if not isinstance(collaborator, dict):
             raise RhythmProtocolError("schema_drift")
-        safe_collaborators.append({"id": _text(collaborator, "id", 128, required=True), "name": _text(collaborator, "name", 256, required=True), "initials": _text(collaborator, "initials", 16, required=True)})
+        collaborator_id = collaborator.get("id", collaborator.get("userId"))
+        if isinstance(collaborator_id, bool) or not isinstance(collaborator_id, (str, int)) or not str(collaborator_id):
+            raise RhythmProtocolError("schema_drift")
+        name = _text(collaborator, "name", 256, required=True)
+        initials = collaborator.get("initials") or "".join(part[0] for part in name.split()[:2]).upper()
+        if not isinstance(initials, str) or not initials or len(initials) > 16:
+            raise RhythmProtocolError("schema_drift")
+        safe_collaborators.append({"id": str(collaborator_id), "name": name, "initials": initials})
+    owner_id = payload.get("ownerId")
+    if isinstance(owner_id, bool) or not isinstance(owner_id, (str, int)) or not str(owner_id) or len(str(owner_id)) > 128:
+        raise RhythmProtocolError("schema_drift")
+    created_by = payload.get("createdBy", str(owner_id))
+    if not isinstance(created_by, str) or not created_by or len(created_by) > 256:
+        raise RhythmProtocolError("schema_drift")
     result: dict[str, Any] = {
-        "id": ident, "title": title, "notes": _text(payload, "notes", 8_192) or "", "status": status,
+        "id": ident, "title": title, "notes": _text(payload, "notes", 8_192) or "", "status": "open" if status == "deferred" else status,
         "bucket": bucket, "priority": priority, "tags": tags, "createdAt": _text(payload, "createdAt", 64, required=True),
-        "createdBy": _text(payload, "createdBy", 256, required=True), "ownerId": _text(payload, "ownerId", 128, required=True),
-        "isShared": payload.get("isShared") is True, "sourceType": payload.get("sourceType", "manual"),
-        "preferredAgent": payload.get("preferredAgent", ""), "energy": payload.get("energy", ""), "collaborators": safe_collaborators,
+        "createdBy": created_by, "ownerId": str(owner_id),
+        "isShared": payload.get("isShared") is True, "sourceType": payload.get("sourceType") or "manual",
+        "preferredAgent": payload.get("preferredAgent") or "", "energy": payload.get("energy") or "", "collaborators": safe_collaborators,
     }
     if result["sourceType"] not in {"manual", "rhythm", "project", "automation", "calendar_shadow_event", "prod_mirror"} or result["preferredAgent"] not in {"", "claude-code", "codex"} or result["energy"] not in {"", "🔥", "⚡", "🌱"}:
         raise RhythmProtocolError("schema_drift")
@@ -427,6 +457,41 @@ def _task(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _dashboard_summary(payload: dict[str, Any], identity: dict[str, str], workspace: dict[str, str]) -> dict[str, Any]:
+    if isinstance(payload.get("tasks"), dict):
+        task_group = payload["tasks"]
+        messages = payload.get("messages")
+        if not isinstance(messages, dict):
+            raise RhythmProtocolError("schema_drift")
+        count, thread_count = task_group.get("openCount"), messages.get("threadCount")
+        if type(count) is not int or not 0 <= count <= 10_000 or type(thread_count) is not int or not 0 <= thread_count <= 10_000:
+            raise RhythmProtocolError("schema_drift")
+        summary_tasks = []
+        for source, bucket in (("pastDue", "past-due"), ("today", "today"), ("thisWeek", "week"), ("unscheduled", "unscheduled")):
+            rows = task_group.get(source)
+            if not isinstance(rows, list) or len(rows) > 500:
+                raise RhythmProtocolError("schema_drift")
+            for raw in rows:
+                if not isinstance(raw, dict):
+                    raise RhythmProtocolError("schema_drift")
+                if len(summary_tasks) >= 24:
+                    continue
+                status = raw.get("status")
+                if status not in {"open", "in_progress", "waiting_for_reply", "done", "deferred"}:
+                    raise RhythmProtocolError("schema_drift")
+                due = _text(raw, "scheduledDate", 64) or _text(raw, "dueDate", 64)
+                summary_tasks.append({
+                    "id": _text(raw, "id", 128, required=True),
+                    "title": _text(raw, "title", 512, required=True),
+                    "notes": (_text(raw, "notes", 8_192) or "")[:512],
+                    "status": "done" if status == "done" else "open",
+                    "bucket": bucket,
+                    "dueLabel": due or ("Unscheduled" if bucket == "unscheduled" else bucket.title()),
+                })
+        result = {"identity": identity, "workspace": workspace, "openTaskCount": count, "threadCount": thread_count, "tasks": summary_tasks, "project": None, "unreadThreads": []}
+        if len(json.dumps(result, separators=(",", ":")).encode()) > 32_768:
+            raise RhythmProtocolError("response_too_large")
+        return result
+
     count = payload.get("openTaskCount")
     thread_count = payload.get("threadCount")
     tasks = payload.get("tasks")
@@ -443,6 +508,19 @@ def _dashboard_summary(payload: dict[str, Any], identity: dict[str, str], worksp
             raise RhythmProtocolError("schema_drift")
         summary_tasks.append({"id": _text(raw, "id", 128, required=True), "title": _text(raw, "title", 512, required=True), "notes": _text(raw, "notes", 8_192) or "", "status": status, "bucket": bucket, "dueLabel": _text(raw, "dueLabel", 128, required=True)})
     return {"identity": identity, "workspace": workspace, "openTaskCount": count, "threadCount": thread_count, "tasks": summary_tasks, "project": None, "unreadThreads": []}
+
+
+def _oauth_client_id() -> str:
+    """Read the public desktop OAuth client ID from this Hermes profile."""
+    from hermes_cli.config import load_config_readonly
+
+    config = load_config_readonly()
+    plugins = config.get("plugins") if isinstance(config, dict) else None
+    rhythm = plugins.get("rhythm") if isinstance(plugins, dict) else None
+    value = rhythm.get("google_desktop_client_id") if isinstance(rhythm, dict) else None
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9]+-[a-z0-9-]+\.apps\.googleusercontent\.com", value, re.I):
+        raise HTTPException(503, detail={"error": "oauth_client_not_configured", "recoverable": True})
+    return value
 
 
 def _error(exc: Exception) -> HTTPException:
@@ -541,7 +619,13 @@ def task_list(incoming_request: Request):
             raise RhythmProtocolError("schema_drift")
         if not all(isinstance(row, dict) for row in rows):
             raise RhythmProtocolError("schema_drift")
-        return {"tasks": [_task(row) for row in rows]}
+        tasks = [_task(row) for row in rows]
+        for task in tasks:
+            task["notes"] = task["notes"][:1024]
+        result = {"tasks": tasks}
+        if len(json.dumps(result, separators=(",", ":")).encode()) > 524_288:
+            raise RhythmProtocolError("response_too_large")
+        return result
     except Exception as exc:
         raise _error(exc) from None
 
@@ -1300,6 +1384,11 @@ def facility_series(facility_id: str):
 
 @router.post("/oauth/start")
 def oauth_start(incoming_request: Request):
+    client_id = _oauth_client_id()
+    try:
+        RhythmClient("", transport=request).require_login_only_capability()
+    except (RhythmProtocolError, RhythmRemoteError):
+        raise HTTPException(503, detail={"error": "oauth_login_only_unavailable", "recoverable": True}) from None
     verifier = secrets.token_urlsafe(64)
     state = secrets.token_urlsafe(32)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
@@ -1314,7 +1403,7 @@ def oauth_start(incoming_request: Request):
     query = urlencode(
         {
             "response_type": "code",
-            "client_id": OAUTH_CLIENT_ID,
+            "client_id": client_id,
             "redirect_uri": redirect_uri,
             "scope": "openid email profile",
             "code_challenge_method": "S256",

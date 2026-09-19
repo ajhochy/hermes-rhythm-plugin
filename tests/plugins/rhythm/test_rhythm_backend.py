@@ -27,6 +27,7 @@ from starlette.requests import Request
 
 TOKEN = "rhythm-test-token-" + "x" * 24
 JOIN_CODE = "join-" + "q" * 20
+PUBLIC_CLIENT_ID = "123456-example.apps.googleusercontent.com"
 
 
 def _router_module():
@@ -39,6 +40,7 @@ def rhythm_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes" / "profiles" / "rhythm-test"
     home.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / "config.yaml").write_text(f"plugins:\n  rhythm:\n    google_desktop_client_id: {PUBLIC_CLIENT_ID}\n")
     return home
 
 
@@ -51,9 +53,12 @@ def api(rhythm_home):
 
 
 def _ok_transport(method, url, headers, body, timeout):
-    if url == "https://oauth2.googleapis.com/token":
+    if url == "https://api.vcrcapps.com/auth/google/desktop-login-capability":
+        assert method == "GET" and body is None and "Authorization" not in headers
+        return 200, {}, {"loginOnlyDesktopExchange": True}
+    if url == "https://api.vcrcapps.com/auth/google/desktop-login-exchange":
         assert method == "POST"
-        return 200, {}, {"access_token": TOKEN}
+        return 200, {}, {"sessionToken": TOKEN, "user": {"id": 7}}
     assert url.startswith("https://api.vcrcapps.com/")
     assert method == "GET"
     assert headers["Authorization"] == f"Bearer {TOKEN}"
@@ -639,14 +644,14 @@ def test_pkce_wire_contract_and_get_handoff(api, monkeypatch):
     seen = []
 
     def transport(method, url, headers, body, timeout):
-        if url == "https://oauth2.googleapis.com/token":
+        if url == "https://api.vcrcapps.com/auth/google/desktop-login-exchange":
             seen.append(json.loads(body))
         return _ok_transport(method, url, headers, body, timeout)
 
     monkeypatch.setattr(mod, "request", transport)
     start = client.post("/api/plugins/rhythm/oauth/start").json()
     query = dict(parse_qsl(start["authorization_url"].split("?", 1)[1]))
-    assert query["client_id"] == mod.OAUTH_CLIENT_ID
+    assert query["client_id"] == PUBLIC_CLIENT_ID
     assert query["redirect_uri"] == "http://127.0.0.1:49123/api/plugins/rhythm/oauth/callback"
     response = client.get(
         "/api/plugins/rhythm/oauth/callback",
@@ -656,11 +661,9 @@ def test_pkce_wire_contract_and_get_handoff(api, monkeypatch):
     assert "handoff-code" not in response.text and TOKEN not in response.text
     assert seen == [
         {
-            "grant_type": "authorization_code",
             "code": "handoff-code",
-            "code_verifier": ANY,
-            "client_id": mod.OAUTH_CLIENT_ID,
-            "redirect_uri": "http://127.0.0.1:49123/api/plugins/rhythm/oauth/callback",
+            "codeVerifier": ANY,
+            "redirectUri": "http://127.0.0.1:49123/api/plugins/rhythm/oauth/callback",
         }
     ]
 
@@ -697,6 +700,7 @@ def test_pkce_concurrent_profiles_persist_only_to_their_bound_homes(api, monkeyp
     homes = [tmp_path / ".hermes" / "profiles" / name for name in ("one", "two")]
     for home in homes:
         home.mkdir(parents=True)
+        (home / "config.yaml").write_text(f"plugins:\n  rhythm:\n    google_desktop_client_id: {PUBLIC_CLIENT_ID}\n")
     outcomes = []
 
     def complete(home):

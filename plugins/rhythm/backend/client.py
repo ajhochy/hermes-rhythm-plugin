@@ -14,8 +14,8 @@ from typing import Any, Callable
 from urllib.parse import parse_qsl, urljoin, urlparse
 
 APPROVED_ORIGIN = "https://api.vcrcapps.com"
-GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
-OAUTH_CLIENT_ID = "hermes-desktop"
+DESKTOP_LOGIN_CAPABILITY_ENDPOINT = f"{APPROVED_ORIGIN}/auth/google/desktop-login-capability"
+DESKTOP_EXCHANGE_ENDPOINT = f"{APPROVED_ORIGIN}/auth/google/desktop-login-exchange"
 ALLOWED_OPERATIONS = {
     ("GET", "/auth/me"),
     ("GET", "/workspaces/me"),
@@ -38,6 +38,11 @@ ALLOWED_OPERATIONS = {
     ("GET", "/facilities/reservations"),
 }
 MAX_RESPONSE_BYTES = 32_768
+# The hosted dashboard includes several full task arrays before we project it
+# to small cards. Bound that one pinned response independently of the other
+# API reads; the public plugin route still emits at most MAX_RESPONSE_BYTES.
+MAX_DASHBOARD_RESPONSE_BYTES = 131_072
+MAX_TASKS_RESPONSE_BYTES = 1_048_576  # At most 500 bounded task records before projection.
 REQUEST_TIMEOUT_SECONDS = 10.0
 Transport = Callable[[str, str, dict[str, str], bytes | None, float], tuple[int, dict[str, str], Any]]
 
@@ -56,13 +61,19 @@ class RhythmRemoteError(RuntimeError):
 def _httpx_transport(method: str, url: str, headers: dict[str, str], body: bytes | None, timeout: float):
     import httpx
 
+    limit = (MAX_DASHBOARD_RESPONSE_BYTES if method == "GET" and url == f"{APPROVED_ORIGIN}/dashboard/summary"
+             else MAX_TASKS_RESPONSE_BYTES if method == "GET" and url == f"{APPROVED_ORIGIN}/tasks"
+             else MAX_RESPONSE_BYTES)
     try:
         with httpx.Client(timeout=timeout, follow_redirects=False) as client:
-            with client.stream(method, url, headers=headers, content=body) as response:
+            # HTTPX advertises Brotli when its optional decoder is installed,
+            # while our bounded raw/decoded stream deliberately supports only
+            # identity, gzip and deflate. Negotiate exactly those encodings.
+            with client.stream(method, url, headers={**headers, "Accept-Encoding": "gzip, deflate"}, content=body) as response:
                 content_length = response.headers.get("content-length")
                 if content_length is not None:
                     try:
-                        if int(content_length) > MAX_RESPONSE_BYTES:
+                        if int(content_length) > limit:
                             raise RhythmProtocolError("response_too_large")
                     except ValueError as exc:
                         raise RhythmProtocolError("invalid_content_length") from exc
@@ -81,21 +92,21 @@ def _httpx_transport(method: str, url: str, headers: dict[str, str], body: bytes
                 raw_bytes = 0
                 for raw_chunk in response.iter_raw():
                     raw_bytes += len(raw_chunk)
-                    if raw_bytes > MAX_RESPONSE_BYTES:
+                    if raw_bytes > limit:
                         raise RhythmProtocolError("response_too_large")
                     decoded_chunk = (
                         raw_chunk
                         if decoder is None
                         else decoder.decompress(
-                            raw_chunk, MAX_RESPONSE_BYTES - len(content) + 1
+                            raw_chunk, limit - len(content) + 1
                         )
                     )
                     content.extend(decoded_chunk)
-                    if len(content) > MAX_RESPONSE_BYTES:
+                    if len(content) > limit:
                         raise RhythmProtocolError("response_too_large")
                 if decoder is not None:
-                    content.extend(decoder.flush(MAX_RESPONSE_BYTES - len(content) + 1))
-                    if len(content) > MAX_RESPONSE_BYTES:
+                    content.extend(decoder.flush(limit - len(content) + 1))
+                    if len(content) > limit:
                         raise RhythmProtocolError("response_too_large")
                 payload = json.loads(bytes(content).decode("utf-8")) if content else {}
                 return response.status_code, dict(response.headers), payload
@@ -124,6 +135,17 @@ class RhythmClient:
     token: str
     transport: Transport = _httpx_transport
     sleep: Callable[[float], None] = time.sleep
+
+    def require_login_only_capability(self) -> None:
+        """Refuse OAuth until the host guarantees exchange has no integration writes."""
+        status, headers, payload = self.transport(
+            "GET", DESKTOP_LOGIN_CAPABILITY_ENDPOINT,
+            {"Accept": "application/json"}, None, REQUEST_TIMEOUT_SECONDS,
+        )
+        if 300 <= status < 400 or headers.get("location") or headers.get("Location"):
+            raise RhythmProtocolError("redirect_rejected")
+        if status != 200 or not isinstance(payload, dict) or payload.get("loginOnlyDesktopExchange") is not True:
+            raise RhythmProtocolError("oauth_login_only_unavailable")
 
     def call(self, method: str, path: str, *, body: dict[str, Any] | None = None, idempotency_key: str | None = None, m5: bool = False) -> dict[str, Any]:
         method = method.upper()
@@ -186,9 +208,16 @@ class RhythmClient:
                 continue
             if status != 200:
                 raise _remote_error(status)
+            if method == "GET" and path == "/tasks" and isinstance(payload, list):
+                if len(payload) > 500 or not all(isinstance(row, dict) for row in payload):
+                    raise RhythmProtocolError("schema_drift")
+                payload = {"tasks": payload}
             if not isinstance(payload, dict):
                 raise RhythmProtocolError("schema_drift")
-            if len(json.dumps(payload, separators=(",", ":"))) > MAX_RESPONSE_BYTES:
+            response_limit = (MAX_DASHBOARD_RESPONSE_BYTES if method == "GET" and path == "/dashboard/summary"
+                              else MAX_TASKS_RESPONSE_BYTES if method == "GET" and path == "/tasks"
+                              else MAX_RESPONSE_BYTES)
+            if len(json.dumps(payload, separators=(",", ":")).encode()) > response_limit:
                 raise RhythmProtocolError("response_too_large")
             return payload
         raise RhythmRemoteError("upstream_unavailable")
@@ -224,21 +253,19 @@ class RhythmClient:
         raise RhythmRemoteError("uncertain", uncertain.status_code) if uncertain is not None else RhythmRemoteError("conflict", 409)
 
     def exchange_code(self, code: str, verifier: str, redirect_uri: str) -> str:
-        """Perform the one explicitly-defined OAuth exchange; never redirect."""
+        """Exchange a desktop PKCE code for a Rhythm session, never a Google token."""
         if not code or not verifier or not redirect_uri:
             raise RhythmProtocolError("invalid_oauth_callback")
         body = json.dumps(
             {
-                "grant_type": "authorization_code",
                 "code": code,
-                "code_verifier": verifier,
-                "client_id": OAUTH_CLIENT_ID,
-                "redirect_uri": redirect_uri,
+                "codeVerifier": verifier,
+                "redirectUri": redirect_uri,
             }
         ).encode()
         status, headers, payload = self.transport(
             "POST",
-            GOOGLE_TOKEN_ENDPOINT,
+            DESKTOP_EXCHANGE_ENDPOINT,
             {"Accept": "application/json", "Content-Type": "application/json"},
             body,
             REQUEST_TIMEOUT_SECONDS,
@@ -247,9 +274,9 @@ class RhythmClient:
             raise RhythmProtocolError("redirect_rejected")
         if status != 200:
             raise _remote_error(status)
-        if not isinstance(payload, dict) or not isinstance(payload.get("access_token"), str) or not payload["access_token"]:
+        if not isinstance(payload, dict) or not isinstance(payload.get("sessionToken"), str) or not payload["sessionToken"]:
             raise RhythmProtocolError("schema_drift")
-        return payload["access_token"]
+        return payload["sessionToken"]
 
 
 def _safe_task_id(value: str) -> bool:

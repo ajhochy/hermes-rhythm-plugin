@@ -2,7 +2,7 @@ import { host as hermesHost } from '@hermes/plugin-sdk'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { askHermes, confirmationKey, createGateway, gatewayError, workspaceKey } from '../../../../plugins/rhythm/desktop/src/plugin'
+import { askHermes, confirmationKey, createGateway, gatewayError, RhythmWorkspace, workspaceKey } from '../../../../plugins/rhythm/desktop/src/plugin'
 import {
   DashboardScreen,
   ArtifactsScreen,
@@ -79,6 +79,43 @@ function m5Rest() {
 afterEach(() => cleanup())
 
 describe('accepted Rhythm workspace package', () => {
+  it('offers visible profile-scoped OAuth when the mounted Rhythm profile is disconnected', async () => {
+    const authorizationUrl = 'https://accounts.google.com/o/oauth2/v2/auth?state=fixture'
+    const rest = vi.fn(async (path: string, opts?: { method?: string }) => {
+      if (path === '/connection') return { connected: false }
+      if (path === '/oauth/start' && opts?.method === 'POST') return { authorization_url: authorizationUrl }
+      throw new Error(`unexpected Rhythm request ${path}`)
+    })
+    const openExternal = vi.fn().mockResolvedValue(true)
+
+    render(<RhythmWorkspace rest={rest as never} openExternal={openExternal} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect Rhythm' }))
+
+    await waitFor(() => expect(openExternal).toHaveBeenCalledWith(authorizationUrl))
+    expect(rest).toHaveBeenCalledWith('/oauth/start', { method: 'POST' })
+    expect(rest.mock.calls.every(([path]) => path === '/connection' || path === '/oauth/start')).toBe(true)
+    expect(screen.getByText(/finish signing in/i)).toBeTruthy()
+  })
+
+  it('explains the login-only server gate without exposing an arbitrary OAuth error body', async () => {
+    // ipcRenderer.invoke serializes the main-process Error into this wrapper
+    // and drops its custom statusCode property before ctx.rest sees it.
+    const failure = new Error('Error invoking remote method \'hermes:api\': Error: 503: {"detail":{"error":"oauth_login_only_unavailable","recoverable":true}}')
+    const rest = vi.fn(async (path: string) => {
+      if (path === '/connection') return { connected: false }
+      if (path === '/oauth/start') throw failure
+      throw new Error(`unexpected Rhythm request ${path}`)
+    })
+    const openExternal = vi.fn()
+
+    render(<RhythmWorkspace rest={rest as never} openExternal={openExternal} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect Rhythm' }))
+
+    expect(await screen.findByText('Rhythm sign-in is unavailable until the server is updated.')).toBeTruthy()
+    expect(screen.queryByText(/oauth_login_only_unavailable/)).toBeNull()
+    expect(openExternal).not.toHaveBeenCalled()
+  })
+
   it('issue-10-c1: messages use only pinned reads and receipt-bound state operations; creation stays unavailable', async () => {
     const rest = vi.fn(async (path: string) => {
       if (path === '/messages') return []

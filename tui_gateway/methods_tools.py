@@ -2396,6 +2396,8 @@ def _(rid, params: dict) -> dict:
     Actions:
       - ``list``   → {"plugins": [{name, key, version, description, source,
                        status, portable}], "user_count": N, "bundled_count": M}
+      - ``reconcile`` → dispose user/project plugins removed on disk, then
+                        return the refreshed inventory and removed keys.
       - ``toggle`` → flip ``key`` (or ``name``) based on ``enable`` (bool).
                        Returns the refreshed row plus {"ok", "unchanged"}.
       - ``install`` → git-clone into ``~/.hermes/plugins/`` (non-interactive).
@@ -2467,6 +2469,19 @@ def _(rid, params: dict) -> dict:
                     "bundled_count": len(rows) - user_count,
                 },
             )
+
+        if action == "reconcile":
+            from hermes_cli.plugins import get_plugin_manager
+
+            removed = get_plugin_manager().reconcile_removed_plugins()
+            rows = _rows()
+            user_count = sum(1 for row in rows if row["source"] != "bundled")
+            return _ok(rid, {
+                "plugins": rows,
+                "removed": removed,
+                "user_count": user_count,
+                "bundled_count": len(rows) - user_count,
+            })
 
         if action == "toggle":
             from hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled

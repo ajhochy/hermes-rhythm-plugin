@@ -39,7 +39,8 @@ beforeEach(() => {
     readDir,
     readFileText,
     watchDirectory,
-    watchPreviewFile
+    watchPreviewFile,
+    stopPreviewFileWatch: vi.fn()
   }
 })
 
@@ -180,6 +181,37 @@ describe('watchRuntimePlugins dir watch (#66899)', () => {
 })
 
 describe('bundled-shadowed disk copies', () => {
+  it('drops a removed shadowed disk copy on Rescan while preserving its bundled twin', async () => {
+    const file = '/local/.hermes/desktop-plugins/shadow-probe/plugin.js'
+    let present = true
+    desktopPluginsRoot.mockResolvedValue('/local/.hermes/desktop-plugins')
+    agentPluginsRoot.mockResolvedValue('/local/.hermes/plugins')
+    readDir.mockImplementation(async dir => ({ entries: present && dir.endsWith('/desktop-plugins')
+      ? [{ isDirectory: true, name: 'shadow-probe', path: '/local/.hermes/desktop-plugins/shadow-probe' }]
+      : [] }))
+    readFileText.mockResolvedValue({ text: 'export default { id: "shadow-probe", name: "Shadow Probe", register() {} }' })
+    watchPreviewFile.mockRejectedValue(new Error('watch unavailable'))
+    publishPlugin({ id: 'shadow-probe', name: 'Bundled Probe', kind: 'bundled', status: 'loaded' })
+
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockImplementation(blob =>
+      `data:text/javascript;base64,${Buffer.from((blob as unknown as { parts: string[] }).parts.join('')).toString('base64')}`)
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    const RealBlob = globalThis.Blob
+    vi.stubGlobal('Blob', class { parts: string[]; constructor(parts: string[]) { this.parts = parts } })
+    try {
+      await discoverRuntimePlugins()
+      expect($pluginRecords.get()['shadow-probe:disk-shadowed']).toMatchObject({ file, kind: 'disk' })
+      present = false
+      await discoverRuntimePlugins()
+      expect($pluginRecords.get()['shadow-probe:disk-shadowed']).toBeUndefined()
+      expect($pluginRecords.get()['shadow-probe']).toMatchObject({ kind: 'bundled', status: 'loaded' })
+    } finally {
+      createObjectURL.mockRestore()
+      revokeObjectURL.mockRestore()
+      vi.stubGlobal('Blob', RealBlob)
+    }
+  })
+
   it('skips a disk copy of a bundled plugin but publishes a visible inventory row', async () => {
     // The bundled twin is already registered (build-time glob).
     publishPlugin({ id: 'hermes-bots', name: 'Bot Mode', kind: 'bundled', status: 'loaded' })

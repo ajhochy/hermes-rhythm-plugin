@@ -11,11 +11,15 @@ from fastapi.testclient import TestClient
 
 
 TOKEN = "rhythm-mounted-test-token-" + "x" * 24
+PUBLIC_CLIENT_ID = "123456-example.apps.googleusercontent.com"
 
 
 def _ok_transport(method, url, headers, body, timeout):
-    if url == "https://oauth2.googleapis.com/token":
-        return 200, {}, {"access_token": TOKEN}
+    if url == "https://api.vcrcapps.com/auth/google/desktop-login-capability":
+        assert method == "GET" and body is None and "Authorization" not in headers
+        return 200, {}, {"loginOnlyDesktopExchange": True}
+    if url == "https://api.vcrcapps.com/auth/google/desktop-login-exchange":
+        return 200, {}, {"sessionToken": TOKEN, "user": {"id": 7}}
     if url.endswith("/auth/me"):
         return 200, {}, {"id": "user-1", "email": "me@example.test"}
     if url.endswith("/workspaces/me"):
@@ -24,14 +28,17 @@ def _ok_transport(method, url, headers, body, timeout):
 
 
 def _mounted_client(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(f"plugins:\n  rhythm:\n    google_desktop_client_id: {PUBLIC_CLIENT_ID}\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
     from hermes_cli import web_server
     plugin_api = sys.modules["hermes_dashboard_plugin_rhythm"]
 
     exchanges = []
 
     def transport(method, url, headers, body, timeout):
-        if url == "https://oauth2.googleapis.com/token":
+        if url == "https://api.vcrcapps.com/auth/google/desktop-login-exchange":
             exchanges.append(json.loads(body))
         return _ok_transport(method, url, headers, body, timeout)
 
@@ -56,7 +63,7 @@ def test_mounted_oauth_callback_uses_request_origin_and_is_only_public_plugin_ap
     assert callback.status_code == 200
     assert "mounted-code" not in callback.text
     assert TOKEN not in callback.text
-    assert exchanges[0]["redirect_uri"] == query["redirect_uri"]
+    assert exchanges[0]["redirectUri"] == query["redirect_uri"]
     assert client.get("/api/plugins/rhythm/connection").status_code == 401
     assert client.post("/api/plugins/rhythm/oauth/callback").status_code == 401
 

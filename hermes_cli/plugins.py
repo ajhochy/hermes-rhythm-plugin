@@ -3875,6 +3875,34 @@ class PluginManager:
                 self._discovered = False
                 raise
 
+    def reconcile_removed_plugins(self) -> List[str]:
+        """Dispose missing disk plugins without disturbing still-installed ones.
+
+        A CLI uninstall runs in another process, so this manager's loaded
+        registrations outlive the removed directory until a host refreshes
+        them. Full force rediscovery also reloads unrelated plugins; this
+        sweep only releases user/project registrations absent from the current
+        manifest scan and verifies that their inverses actually took effect.
+        """
+        with self._discovery_lock, _plugin_home_scope(self.home_path):
+            available = {
+                manifest.key or manifest.name
+                for manifest in self._collect_directory_manifests()
+            }
+            removed = []
+            for key, loaded in list(self._plugins.items()):
+                if loaded.manifest.source not in {"user", "project"} or key in available:
+                    continue
+                registrations = list(self._ownership_ledger.get(key, []))
+                self._unload_scoped(key)
+                survivors = [registration for registration in registrations if not registration.confirmed_released]
+                if survivors:
+                    raise RuntimeError(
+                        f"plugin '{key}' has {len(survivors)} registration(s) surviving disposal"
+                    )
+                removed.append(key)
+            return removed
+
     def _re_register_shell_hooks_after_force(self) -> None:
         """Restore config.yaml shell hooks wiped by force-clear of ``_hooks``."""
         try:

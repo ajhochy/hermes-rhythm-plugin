@@ -170,7 +170,7 @@ function AgentPluginRowView({ row, profile }: { row: AgentPluginRow; profile: st
   )
 }
 
-function AgentPluginsSection() {
+function AgentPluginsSection({ refreshGeneration }: { refreshGeneration: number }) {
   const { t } = useI18n()
   const p = t.settings.plugins
   const { requestGateway } = useGatewayRequest()
@@ -212,8 +212,8 @@ function AgentPluginsSection() {
       return
     }
 
-    void loadAgentPlugins(requestGateway, requestProfile)
-  }, [gatewayState, requestGateway, requestProfile])
+    void loadAgentPlugins(requestGateway, requestProfile, refreshGeneration > 0)
+  }, [gatewayState, requestGateway, requestProfile, refreshGeneration])
 
   const needle = normalize(query)
 
@@ -358,6 +358,7 @@ export function PluginsSettings() {
   const { t } = useI18n()
   const p = t.settings.plugins
   const records = useStore($pluginRecords)
+  const [refreshGeneration, setRefreshGeneration] = useState(0)
 
   // Deep-link from settings search (?plugin=<id or key>): rows render as soon
   // as their store hydrates, so "ready" is simply target-present; the polling
@@ -386,6 +387,7 @@ export function PluginsSettings() {
             onClick={() => {
               triggerHaptic('selection')
               void discoverRuntimePlugins()
+              setRefreshGeneration(generation => generation + 1)
             }}
             size="sm"
             type="button"
@@ -407,7 +409,7 @@ export function PluginsSettings() {
         )}
       </SettingsSection>
 
-      <AgentPluginsSection />
+      <AgentPluginsSection refreshGeneration={refreshGeneration} />
     </SettingsContent>
   )
 }

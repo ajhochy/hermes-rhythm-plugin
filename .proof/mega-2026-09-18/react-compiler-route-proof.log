@@ -1,0 +1,4 @@
+HEAD compilerCache= true routesHook= true snapshotArg= false mapOutsideGuard= false
+] !== gatewayState || $[4] !== maxVoiceRecordingSeconds) { const routeContributions = contributedRoutes(); let t14; if ($[19] !== actions || $[20] !== activeGatewayProfile || $[21] !== gateway || $[22] !== gatewayState) { t14 =
+WORKTREE compilerCache= true routesHook= true snapshotArg= true mapOutsideGuard= true
+e($gateway); const gatewayState = useStore($gatewayState); const routeContributions = contributedRoutes(useContributions(ROUTES_AREA)); let t1; if ($[0] !== actions || $[1] !== activeGatewayProfile || $[2] !== gateway || $[3] !== gateway

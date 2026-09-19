@@ -298,6 +298,11 @@ let scanning = false
  *  of ANOTHER disk entry (two roots can carry same-named folders; a broken one
  *  must not clobber its healthy namesake's inventory row). */
 function dropOriginRecord(origin: string, except: DiskPlugin): void {
+  const record = $pluginRecords.get()[origin]
+  if (record?.kind !== 'disk' || record.file !== except.file) {
+    return
+  }
+
   for (const other of disk.values()) {
     if (other !== except && other.id === origin) {
       return
@@ -411,6 +416,15 @@ async function scanDiskPlugins(): Promise<void> {
       if (record.id) {
         unloadRuntimePlugin(record.id)
         dropPlugin(record.id)
+      }
+
+      // A bundled twin makes loadRuntimePlugin publish a visible
+      // `:disk-shadowed` row and return null. That row has no loaded plugin id,
+      // so release inventory records by their owning entry file as well.
+      for (const plugin of Object.values($pluginRecords.get())) {
+        if (plugin.kind === 'disk' && plugin.file === file) {
+          dropPlugin(plugin.id)
+        }
       }
 
       dropOriginRecord(record.origin, record)

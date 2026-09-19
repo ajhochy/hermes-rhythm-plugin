@@ -153,7 +153,11 @@ await module.link(specifier => {
 });
 await module.evaluate();
 const contributions = [];
-module.namespace.default.register({ registerMany: entries => contributions.push(...entries) });
+module.namespace.default.register({
+  registerMany: entries => contributions.push(...entries),
+  rest: () => Promise.resolve({ connected: false }),
+  os: { openExternal: () => Promise.resolve(true) },
+});
 const route = contributions.find(entry => entry.area === 'routes' && entry.data?.path === '/rhythm');
 assert.ok(route, 'Rhythm page route must be registered');
 const element = route.render();

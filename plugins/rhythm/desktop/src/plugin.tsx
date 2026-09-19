@@ -6,7 +6,7 @@
  * owns only the Hermes transport, lifecycle and bounded chat handoff.
  */
 import { host, type HermesPlugin, PALETTE_AREA, ROUTES_AREA, SIDEBAR_NAV_AREA, type PluginContext, useValue } from '@hermes/plugin-sdk'
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   DashboardScreen,
   AutomationsScreen,
@@ -254,15 +254,71 @@ function askHermes(context: { screen: string; label: string; action?: string; re
   })
 }
 
-function RhythmWorkspace({ rest }: { rest: Rest }) {
+type ConnectionState = 'loading' | 'disconnected' | 'connecting' | 'connected' | 'error' | 'server-update-required'
+
+function loginOnlyServerUnavailable(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  const status = statusOf(error)
+  if (status !== undefined && status !== 503) return false
+  // ipcRenderer.invoke drops custom Error properties and wraps the message.
+  // Accept only this pinned API bridge's 503 JSON envelope; never echo it.
+  const match = /^(?:Error invoking remote method 'hermes:api': Error: )?503:\s*(\{.{1,512}\})$/s.exec(error.message)
+  if (!match) return false
+  try {
+    const payload = JSON.parse(match[1])
+    return payload?.detail?.error === 'oauth_login_only_unavailable'
+  } catch { return false }
+}
+
+export function RhythmWorkspace({ rest, openExternal }: { rest: Rest; openExternal: (url: string) => Promise<boolean> }) {
   const profile = useValue(host.state.profile)
   const connectionId = useValue(host.state.connectionId) ?? 'local'
   const gatewayState = useValue(host.state.gateway)
+  const [connectionState, setConnectionState] = useState<ConnectionState>('loading')
   const target = rhythmRouteTarget(window.location.hash.split('?')[1] ? `?${window.location.hash.split('?')[1]}` : '')
   const tab = (['tasks', 'planner', 'rhythms', 'projects', 'facilities', 'messages', 'automations', 'integrations', 'artifacts'] as const).find(candidate => target.includes(`tab=${candidate}`)) ?? 'overview'
   // A changed identity is a synchronous re-home: React unmounts old screen
   // state before the replacement gateway can publish, invalidating stale work.
   const generation = `${connectionId}:${profile}:${gatewayState}`
+  useEffect(() => {
+    let active = true
+    setConnectionState('loading')
+    void rest<{ connected: boolean }>('/connection').then(
+      result => { if (active) setConnectionState(result.connected === true ? 'connected' : 'disconnected') },
+      () => { if (active) setConnectionState('error') },
+    )
+    return () => { active = false }
+  }, [generation, rest])
+
+  useEffect(() => {
+    if (connectionState !== 'connecting') return
+    let active = true
+    const deadline = Date.now() + 300_000
+    const timer = window.setInterval(() => {
+      if (Date.now() >= deadline) {
+        setConnectionState('disconnected')
+        return
+      }
+      void rest<{ connected: boolean }>('/connection').then(
+        result => { if (active && result.connected === true) setConnectionState('connected') },
+        () => { if (active) setConnectionState('error') },
+      )
+    }, 2_000)
+    return () => { active = false; window.clearInterval(timer) }
+  }, [connectionState, generation, rest])
+
+  const startConnection = async () => {
+    setConnectionState('connecting')
+    try {
+      const result = await rest<{ authorization_url: string }>('/oauth/start', { method: 'POST' })
+      const url = new URL(result.authorization_url)
+      if (url.protocol !== 'https:' || url.hostname !== 'accounts.google.com' || url.pathname !== '/o/oauth2/v2/auth' || !await openExternal(url.toString())) {
+        setConnectionState('error')
+      }
+    } catch (error) {
+      setConnectionState(loginOnlyServerUnavailable(error) ? 'server-update-required' : 'error')
+    }
+  }
   const confirmations = useMemo(() => new Map<string, ConfirmationReceipt>(), [generation])
   const gateway = useMemo(() => createGateway(rest, confirmations), [rest, confirmations])
   const artifactHostPort = useMemo(() => createArtifactHostPort(rest), [rest])
@@ -288,6 +344,18 @@ function RhythmWorkspace({ rest }: { rest: Rest }) {
     onRequestFollowUp: askHermes,
   }), [confirmations, rest])
 
+  if (connectionState !== 'connected') return <main className="rhythm-workspace-root" aria-label="Rhythm workspace" data-testid="rhythm-workspace-readonly" data-readonly="false">
+    <section aria-live="polite" style={{ margin: 'auto', maxWidth: 440, padding: 32 }}>
+      <h1>Connect Rhythm</h1>
+      {connectionState === 'loading' ? <p>Checking this profile's Rhythm connection…</p> :
+        connectionState === 'connecting' ? <p>Finish signing in in your browser. Rhythm will open here when connected.</p> :
+        <>
+          <p>{connectionState === 'server-update-required' ? 'Rhythm sign-in is unavailable until the server is updated.' : connectionState === 'error' ? 'Rhythm could not check the connection. Try again.' : 'Sign in to show your Rhythm workspace in this profile.'}</p>
+          <button className="primary-button" type="button" onClick={() => void startConnection()}>Connect Rhythm</button>
+        </>}
+    </section>
+  </main>
+
   return <main className="rhythm-workspace-root" aria-label="Rhythm workspace" data-testid="rhythm-workspace-readonly" data-readonly="false">
     <RhythmWorkspaceProvider gateway={gateway} host={adapter} key={generation}>
       {tab === 'tasks' ? <TasksScreen /> : tab === 'planner' ? <PlannerScreen /> : tab === 'rhythms' ? <RhythmsScreen /> : tab === 'projects' ? <ProjectsScreen /> : tab === 'facilities' ? <FacilitiesScreen /> : tab === 'messages' ? <MessagesScreen /> : tab === 'automations' ? <AutomationsScreen /> : tab === 'integrations' ? <IntegrationsScreen /> : tab === 'artifacts' ? <ArtifactsScreen artifactsGateway={{ list: async () => (await read<{ items?: Array<{ id: string; title: string; kind: 'document' | 'image' | 'other' }> }>(rest, '/artifacts')).items ?? [] }} artifactHostPort={artifactHostPort} /> : <DashboardScreen />}
@@ -299,7 +367,7 @@ const plugin: HermesPlugin = {
   id: 'rhythm', name: 'Rhythm', description: 'Rhythm workspace', defaultEnabled: false,
   register(ctx) {
     ctx.registerMany([
-      { area: ROUTES_AREA, data: { path: '/rhythm' }, id: 'page', render: () => <RhythmWorkspace rest={ctx.rest} />, title: 'Rhythm' },
+      { area: ROUTES_AREA, data: { path: '/rhythm' }, id: 'page', render: () => <RhythmWorkspace rest={ctx.rest} openExternal={ctx.os.openExternal} />, title: 'Rhythm' },
       { area: SIDEBAR_NAV_AREA, data: { codicon: 'pulse', label: 'Rhythm', path: '/rhythm' }, id: 'nav' },
       { area: PALETTE_AREA, data: { id: 'open-rhythm', label: 'Open Rhythm', keywords: ['rhythm', 'tasks', 'overview'], run: () => { window.location.hash = rhythmRouteTarget() } }, id: 'palette' },
     ])
