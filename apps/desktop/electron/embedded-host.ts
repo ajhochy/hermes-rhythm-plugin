@@ -9,6 +9,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { StringDecoder } from 'node:string_decoder'
 import { pathToFileURL } from 'node:url'
 
 import { ipcMain, systemPreferences } from 'electron'
@@ -36,6 +37,17 @@ export interface EmbeddedHermesHostOptions {
   userDataPath: string
   hermesHome?: string
   log?: (line: string) => void
+  /** Trusted main-process identity, never supplied by the renderer. */
+  backendEnvContext?: { serverOrigin: string; rhythmUserId: string; authGeneration: string }
+  /** Ephemeral grant values for a Rhythm-owned default-profile backend only. */
+  backendEnv?: (request: {
+    serverOrigin: string
+    rhythmUserId: string
+    profile: 'default'
+    hermesHome: string
+    source: 'opencode-auth-json' | 'memory-search'
+    authGeneration: string
+  }) => Promise<Record<string, string>> | Record<string, string>
   /** A Rhythm-owned, user-visible microphone/camera consent prompt. */
   mediaConsent?: (request: EmbeddedPermissionRequest) => Promise<boolean> | boolean
   /** Rhythm's narrowly supplied external-browser action (usually shell.openExternal). */
@@ -350,8 +362,13 @@ function writeProfile(userDataPath: string, raw: unknown): null | string {
   return profile || null
 }
 
+const CHILD_BINARY_DIRS = process.platform === 'win32'
+  ? ['C:\\Windows\\System32', 'C:\\Windows']
+  : [path.join(os.userInfo().homedir, '.local', 'bin'), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin']
+const APPROVED_BROKER_KEYS = ['OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GOOGLE_API_KEY'] as const
+
 function resolveBinary(command: string) {
-  const entries = String(process.env.PATH || '').split(path.delimiter)
+  const entries = CHILD_BINARY_DIRS
   const names = process.platform === 'win32' ? [command, `${command}.exe`, `${command}.cmd`] : [command]
 
   for (const entry of entries) {
@@ -368,7 +385,110 @@ function resolveBinary(command: string) {
     }
   }
 
-  return command
+  return path.join(CHILD_BINARY_DIRS[0], process.platform === 'win32' ? `${command}.exe` : command)
+}
+
+function validEnvValue(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 4096 && !/[\u0000-\u001f\u007f]/.test(value)
+}
+
+function controlledChildEnv(options: EmbeddedHermesHostOptions, token: string): NodeJS.ProcessEnv {
+  const selectedHome = options.hermesHome || path.join(os.userInfo().homedir, '.hermes')
+  let home: string
+  try { home = fs.realpathSync(selectedHome) } catch { home = path.resolve(selectedHome) }
+  const temp = path.resolve(options.userDataPath, 'hermes-temp')
+  fs.mkdirSync(temp, { recursive: true, mode: 0o700 })
+  const env: NodeJS.ProcessEnv = {
+    PATH: CHILD_BINARY_DIRS.join(path.delimiter),
+    HOME: os.userInfo().homedir,
+    TMPDIR: temp,
+    TMP: temp,
+    TEMP: temp,
+    LANG: 'C.UTF-8',
+    HERMES_HOME: home,
+    HERMES_DASHBOARD_SESSION_TOKEN: token,
+    HERMES_DESKTOP: '1'
+  }
+  if (process.platform === 'win32') {
+    env.SystemRoot = 'C:\\Windows'
+    env.WINDIR = 'C:\\Windows'
+  }
+  return env
+}
+
+async function brokeredChildEnv(options: EmbeddedHermesHostOptions, env: NodeJS.ProcessEnv, profile?: string): Promise<string[]> {
+  if (profile && profile !== 'default') return []
+  const context = options.backendEnvContext
+  if (!options.backendEnv || !context || !validEnvValue(context.serverOrigin) ||
+    !validEnvValue(context.rhythmUserId) || !validEnvValue(context.authGeneration)) return []
+  try {
+    if (fs.realpathSync(env.HERMES_HOME!) !== env.HERMES_HOME) return []
+  } catch { return [] }
+  let origin: string
+  try {
+    const parsed = new URL(context.serverOrigin)
+    if (!['https:', 'http:'].includes(parsed.protocol) || parsed.origin !== context.serverOrigin) return []
+    origin = parsed.origin
+  } catch { return [] }
+
+  try {
+    let deadline: ReturnType<typeof setTimeout> | undefined
+    const result = await Promise.race([
+      Promise.resolve().then(() => options.backendEnv!({
+        serverOrigin: origin,
+        rhythmUserId: context.rhythmUserId,
+        profile: 'default',
+        hermesHome: env.HERMES_HOME!,
+        source: 'opencode-auth-json',
+        authGeneration: context.authGeneration
+      })),
+      new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new Error('deadline')), 2_000) })
+    ]).finally(() => clearTimeout(deadline))
+    if (!result || typeof result !== 'object' || Array.isArray(result)) return []
+    const staged: Array<[string, string]> = []
+    for (const key of APPROVED_BROKER_KEYS) {
+      const value = result[key]
+      if (validEnvValue(value)) staged.push([key, value])
+    }
+    for (const [key, value] of staged) env[key] = value
+    return staged.map(([, value]) => value)
+  } catch {
+    logLine(options.log, 'Credential broker unavailable; starting without grants.')
+    return []
+  }
+}
+
+function captureChildOutput(stream: NodeJS.ReadableStream, log: EmbeddedHermesHostOptions['log'], secrets: string[]) {
+  const decoder = new StringDecoder('utf8')
+  const redactionValues = [...new Set(secrets.filter(Boolean))].sort((left, right) => right.length - left.length)
+  let line = ''
+  let oversized = false
+  const emit = () => {
+    if (oversized) logLine(log, '[backend output omitted: oversized line]')
+    else if (line) {
+      let safe = line
+      for (const secret of redactionValues) safe = safe.replaceAll(secret, '[redacted]')
+      safe = safe.replace(/([?&](?:access_token|token|session_token)=)[^&#\s]+/gi, '$1[redacted]')
+      logLine(log, safe)
+    }
+    line = ''
+    oversized = false
+  }
+  const append = (text: string) => {
+    const parts = text.split('\n')
+    for (const [index, part] of parts.entries()) {
+      if (!oversized) {
+        line += part
+        if (line.length > 8192) { line = ''; oversized = true }
+      }
+      if (index < parts.length - 1) emit()
+    }
+  }
+  stream.on('data', chunk => append(decoder.write(chunk)))
+  stream.on('end', () => {
+    append(decoder.end())
+    emit()
+  })
 }
 
 function resolveHermesBinary(hermesHome?: string) {
@@ -423,27 +543,18 @@ function createSpawnRuntime(options: EmbeddedHermesHostOptions): EmbeddedRuntime
       const pending = (async () => {
         const token = crypto.randomBytes(32).toString('base64url')
         const args = [...(profile && profile !== 'default' ? ['--profile', profile] : []), 'serve', '--host', '127.0.0.1', '--port', '0']
-        const hermes = resolveHermesBinary(options.hermesHome)
+        const env = controlledChildEnv(options, token)
+        const grantedValues = await brokeredChildEnv(options, env, profile)
+        const hermes = resolveHermesBinary(env.HERMES_HOME)
 
         const child = spawn(hermes, args, {
-          cwd: options.hermesHome || os.homedir(),
-          env: {
-            ...process.env,
-            ...(options.hermesHome ? { HERMES_HOME: options.hermesHome } : {}),
-            HERMES_DASHBOARD_SESSION_TOKEN: token,
-            HERMES_DESKTOP: '1'
-          },
+          cwd: env.HERMES_HOME,
+          env,
           stdio: ['ignore', 'pipe', 'pipe']
         })
 
-        const redactBackendLog = (raw: string) =>
-          raw
-            .replaceAll(token, '[redacted]')
-            .replace(/([?&](?:access_token|token|session_token)=)[^&#\s]+/gi, '$1[redacted]')
-
-        const onLog = (stream: NodeJS.ReadableStream) => stream.on('data', chunk => logLine(options.log, redactBackendLog(String(chunk)).trim()))
-        onLog(child.stdout!)
-        onLog(child.stderr!)
+        captureChildOutput(child.stdout!, options.log, [token, ...grantedValues])
+        captureChildOutput(child.stderr!, options.log, [token, ...grantedValues])
 
         try {
           const port = await waitForDashboardPortAnnouncement(child)
