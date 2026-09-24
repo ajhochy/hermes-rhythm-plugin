@@ -574,6 +574,13 @@ class ComputeHost:
                 service_tier_override=frame.get("service_tier_override"),
                 platform_override=frame.get("source"),
                 session_db=session_db,
+                session_policy=(
+                    server._restore_session_policy(
+                        {"model_config": {"native_session_policy": frame["native_session_policy"]}},
+                        key,
+                        frame["native_session_policy"]["profile_id"],
+                    ) if frame.get("native_session_policy") is not None else None
+                ),
             )
             if server._transfer_db_to_agent(agent, session_db):
                 owns_db = False

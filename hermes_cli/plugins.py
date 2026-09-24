@@ -63,6 +63,7 @@ from registration_lifecycle import replacement_coordinator
 from utils import env_var_enabled, fast_safe_load
 from hermes_cli.config import cfg_get, load_config_readonly
 from hermes_cli.middleware import OBSERVER_SCHEMA_VERSION, VALID_MIDDLEWARE
+from agent.session_policy import register_session_policy_provider  # plugin facade
 from hermes_cli.plugin_capabilities import (  # noqa: F401 — re-exported
     CAPABILITY_REGISTRY,
     VALID_CAPABILITY_IDS,

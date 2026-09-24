@@ -1,0 +1,80 @@
+{
+  "issue": "shared-agent-n0",
+  "generated": "2026-09-24",
+  "stack": "python",
+  "not_tested": [],
+  "criteria": [
+    {
+      "criterion_id": "shared-agent-n0-AC1",
+      "text": "Use real session.create + prompt.submit with a fixture registered policy provider and a local deterministic OpenAI-compatible endpoint. Assert received request has the selected model/reasoning and unique frozen instruction marker. Endpoint returns a tool call and final response; the actual Hermes tool loop executes it and transcript contains its result. Assert no OpenCode/API delegation request occurred. Disable/bypass tui_gateway.synthetic_turn.maybe_build_synthetic_agent fixture mode; the native AIAgent must execute.",
+      "mode": "integration",
+      "status": "pending",
+      "reason": "Real session.create/prompt.submit, frozen instruction, model name, restricted tools, native read_file result, and final response passed against a local scripted model. Explicit reasoning request bytes, negative OpenCode traffic capture, and an executable gateway child remain unproved.",
+      "test_file": "tests/tui_gateway/test_shared_agent_policy_live.py",
+      "test_id": "test_native_shared_agent_uses_real_hermes_policy"
+    },
+    {
+      "criterion_id": "shared-agent-n0-AC2",
+      "text": "Create native session with allowed tool names []; capture zero executable tools in provider request. Have endpoint deliberately return a disallowed terminal call anyway; native dispatch returns denial, marker file is absent and no subprocess side effect occurs. A control session with allowlist omitted uses its normal native toolset, proving [] differs from inherit.",
+      "mode": "unit",
+      "test_file": "tests/tui_gateway/test_shared_agent_policy_live.py",
+      "test_id": "test_empty_tool_allowlist_does_not_inherit",
+      "status": "pending",
+      "reason": "Live [] session offered zero tools and rejected a forged terminal call without a marker side effect; ordinary unbound session offered its native catalog. An omitted allowlist on a bound policy is covered by focused policy tests, not a separate live control."
+    },
+    {
+      "criterion_id": "shared-agent-n0-AC3",
+      "text": "Permit native terminal and read_file only; configure broad terminal deny plus a later exact safe command allow. The allowed command creates a synthetic marker or returns a nonce; adjacent disallowed command does not. Reverse the rule order and the same command is denied. Include read inside fixture root versus outside/traversal/symlink paths, denied tool omitted from schemas, and direct attempted dispatch denied. All paths use synthetic directories.",
+      "mode": "unit",
+      "test_file": "tests/tui_gateway/test_shared_agent_policy_live.py",
+      "test_id": "test_allowed_tool_and_ordered_patterns_enforced",
+      "status": "pending",
+      "reason": "Live ordered read_file allow/deny, symlink escape, and global final deny passed. Focused tests cover terminal scalar matching, literal brackets, slash normalization, ambiguous path rejection, and symlink rule-anchor retarget. Native terminal execution, direct dispatch, and command decomposition remain unproved. Final terminal newline matching is deliberately stricter than Rhythm JS."
+    },
+    {
+      "criterion_id": "shared-agent-n0-AC4",
+      "text": "With native approval callback denied/unavailable, zero file/process mutation; an explicitly authorized once response executes one operation, then a second distinct call still requires approval. A competing ordinary plugin approve must not bypass policy deny. No call to input() or indefinite wait in headless mode.",
+      "mode": "unit",
+      "test_file": "tests/tui_gateway/test_shared_agent_policy_live.py",
+      "test_id": "test_policy_ask_uses_native_approval",
+      "status": "pending",
+      "reason": "Gateway approval.respond deny and once choices changed real read_file results. A second operation after once, unavailable/headless callback, competing ordinary plugin approval, and bounded timeout remain unproved live."
+    },
+    {
+      "criterion_id": "shared-agent-n0-AC5",
+      "text": "Inject resolver/evaluator failure, malformed binding and missing policy snapshot. Both real agent executor preflight and direct model_tools dispatch refuse protected operations and produce bounded errors. An ordinary plugin modify cannot turn approved arguments into forbidden ones after evaluation; enforcement sees final effective arguments or rejects post-approval mutation. Assert no side effects.",
+      "mode": "unit",
+      "test_file": "tests/tui_gateway/test_shared_agent_policy_live.py",
+      "test_id": "test_resolver_and_agent_executor_failure_fail_closed",
+      "status": "pending",
+      "reason": "Bad resolver selection and injected evaluator failure refused protected reads in the real agent loop. Direct model_tools dispatch and ordinary plugin post-approval mutation remain focused-test only, not live proof."
+    },
+    {
+      "criterion_id": "shared-agent-n0-AC6",
+      "text": "Launch revision 1, change fixture provider to revision 2, submit again and assert old session still uses v1 prompt and tools; new session uses v2. Resume/restart through native supported session API restores v1 without rereading current mutable policy as authority. Exercise both inline and compute-host construction if enabled. No changes to fixture config.yaml/.env/auth.json/MEMORY.md/USER.md hashes.",
+      "mode": "unit",
+      "test_file": "tests/tui_gateway/test_shared_agent_policy_live.py",
+      "test_id": "test_policy_snapshot_survives_edit_and_native_resume",
+      "status": "pending",
+      "reason": "Live provider v1/v2 revision and SessionDB resume kept old instructions frozen; synthetic config/.env/auth/MEMORY/USER hashes held. Separate process restart, compute-host construction, and model reasoning request parity remain unproved."
+    },
+    {
+      "criterion_id": "shared-agent-n0-AC7",
+      "text": "Run two simultaneous sessions with opposite allowlists; neither inherits the other's tools/rules. Wrong owner/profile/runtime generation or replayed binding fails before a model request. Unknown keys, unsupported version/pattern/critical field fail visibly without dropping fields or reverting to default permissions.",
+      "mode": "unit",
+      "test_file": "tests/tui_gateway/test_shared_agent_policy_live.py",
+      "test_id": "test_policy_replay_and_oversize_input_fail_before_model",
+      "status": "pending",
+      "reason": "Cross-session policy replay and oversize instruction were refused before a model request. Concurrent opposite allowlists and live wrong-owner/profile/runtime-generation cases remain unproved."
+    },
+    {
+      "criterion_id": "shared-agent-n0-AC8",
+      "text": "An ordinary Hermes session with no shared policy retains existing behavior; plugin registration/disposal does not mutate native defaults. Policy limits reject oversize prompt/rule/input before native start. Errors/logs/results expose neither capability material nor credential sentinels.",
+      "mode": "unit",
+      "test_file": "tests/tui_gateway/test_shared_agent_policy_live.py",
+      "test_id": "test_unbound_native_session_keeps_tool_schemas",
+      "status": "pending",
+      "reason": "Ordinary unbound session retained native tool schemas with provider registered. Lifecycle under process restart and comprehensive error/log/result secret redaction remain unproved."
+    }
+  ]
+}

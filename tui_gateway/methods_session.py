@@ -41,6 +41,21 @@ def _(rid, params: dict) -> dict:
     # and each turn re-bind HERMES_HOME. None/own profile → launch (unchanged).
     profile = (params.get("profile") or "").strip() or None
     profile_home = _profile_home(profile)
+    session_policy = None
+    if "policy_selection" in params:
+        try:
+            from agent.session_policy import resolve_session_policy
+            from hermes_cli.plugins import discover_plugins
+
+            discover_plugins()
+            session_policy = resolve_session_policy(
+                params["policy_selection"], session_id=key,
+                profile_id=_response_profile_name(profile),
+                runtime_generation=_SESSION_POLICY_RUNTIME_GENERATION,
+                transport=current_transport() or _stdio_transport,
+            )
+        except Exception:
+            return _err(rid, 4000, "unsupported_policy")
 
     # The desktop composer owns its model/effort/fast as plain UI state and ships
     # it on every session.create. Honor each as a PER-SESSION override (built into
@@ -94,6 +109,7 @@ def _(rid, params: dict) -> dict:
             "inflight_turn": None,
             "last_active": now,
             "model_override": session_model_override,
+            "session_policy": session_policy,
             "create_reasoning_override": create_reasoning_override,
             "create_service_tier_override": create_service_tier_override,
             "parent_session_id": parent_session_id,
@@ -420,6 +436,12 @@ def _(rid, params: dict) -> dict:
         profile_resume_cwd = str(found.get("cwd") or "").strip() or _profile_configured_cwd(
             profile_home
         )
+        try:
+            restored_policy = _restore_session_policy(
+                found, target, _response_profile_name(profile)
+            )
+        except Exception:
+            return _err(rid, 4000, "unsupported_policy")
 
         def _reuse_live_payload(sid: str, session: dict) -> dict:
             payload = _live_session_payload(
@@ -489,6 +511,7 @@ def _(rid, params: dict) -> dict:
                 profile_home=profile_home,
                 lazy=True,
             )
+            record["session_policy"] = restored_policy
             if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
                 return _ok(rid, _reuse_live_payload(*live))
             # A delegated child mid-run emits no session events of its own — report
@@ -557,6 +580,7 @@ def _(rid, params: dict) -> dict:
                 model_override=overrides.get("model_override"),
                 resume_runtime_overrides=overrides or None,
             )
+            record["session_policy"] = restored_policy
             record["resume_history_ready"] = threading.Event()
             record["resume_hydrating"] = True
             record["resume_message_count"] = int(found.get("message_count") or 0)
@@ -653,6 +677,7 @@ def _(rid, params: dict) -> dict:
                 model_override=overrides.get("model_override"),
                 resume_runtime_overrides=overrides or None,
             )
+            record["session_policy"] = restored_policy
             if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
                 return _ok(rid, _reuse_live_payload(*live))
 
@@ -737,6 +762,7 @@ def _(rid, params: dict) -> dict:
                     session_id=target,
                     session_db=db,
                     platform_override=source,
+                    session_policy=restored_policy,
                     **stored_runtime_overrides,
                 )
             finally:

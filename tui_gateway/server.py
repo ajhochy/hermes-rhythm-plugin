@@ -52,6 +52,7 @@ from tui_gateway.transport import (
 )
 
 logger = logging.getLogger(__name__)
+_SESSION_POLICY_RUNTIME_GENERATION = uuid.uuid4().hex
 
 _hermes_home = get_hermes_home()
 load_hermes_dotenv(
@@ -1786,6 +1787,12 @@ def _compute_host_turn_frame(
         "cwd": _session_cwd(session),
         "profile_home": session.get("profile_home") or "",
         "model_override": session.get("model_override"),
+        "native_session_policy": (
+            {"payload": session["session_policy"].to_mapping(),
+             "owner_id": session["session_policy"].binding.owner_id,
+             "profile_id": session["session_policy"].binding.profile_id}
+            if session.get("session_policy") is not None else None
+        ),
         "reasoning_config_override": session.get("create_reasoning_override"),
         "service_tier_override": session.get("create_service_tier_override"),
         "source": _session_source(session),
@@ -2364,6 +2371,8 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 # id — pass it through so the upgrade continues that session
                 # instead of starting a fresh one under the same key.
                 kw = {"session_db": session_db}
+                if current.get("session_policy") is not None:
+                    kw["session_policy"] = current["session_policy"]
                 if resume_sid := current.get("resume_session_id"):
                     kw["session_id"] = resume_sid
                 kw["platform_override"] = _session_source(current)
@@ -2963,6 +2972,14 @@ def _ensure_session_db_row(session: dict) -> None:
     override = override if isinstance(override, dict) else {}
     row_model = str(override.get("model") or "").strip() or _resolve_model()
     model_config: dict = {}
+    policy = session.get("session_policy")
+    if policy is not None:
+        row_model = policy.model.model
+        model_config["native_session_policy"] = {
+            "payload": policy.to_mapping(),
+            "owner_id": policy.binding.owner_id,
+            "profile_id": policy.binding.profile_id,
+        }
     for src_key, cfg_key in (
         ("model", "model"),
         ("provider", "provider"),
@@ -2971,6 +2988,11 @@ def _ensure_session_db_row(session: dict) -> None:
     ):
         if val := override.get(src_key):
             model_config[cfg_key] = str(val)
+    if policy is not None:
+        model_config["model"] = policy.model.model
+        model_config["provider"] = policy.model.provider
+        model_config.pop("base_url", None)
+        model_config.pop("api_mode", None)
     # The composer override may carry the RESOLVED provider "custom" for a named
     # ``providers:`` / ``custom_providers:`` entry. Persisting bare "custom" here
     # (the very first DB write for a fresh desktop session, before the agent is
@@ -2995,6 +3017,8 @@ def _ensure_session_db_row(session: dict) -> None:
             )
     if (reasoning := session.get("create_reasoning_override")) is not None:
         model_config["reasoning_config"] = reasoning
+    if policy is not None:
+        model_config["reasoning_config"] = {"effort": policy.model.reasoning}
     create_service_tier_override = session.get("create_service_tier_override")
     if create_service_tier_override is not None:
         # Empty string is the in-memory sentinel for an explicit normal tier:
@@ -3037,6 +3061,8 @@ def _ensure_session_db_row(session: dict) -> None:
 
         if is_disk_full_error(exc):
             raise
+        if policy is not None:
+            raise RuntimeError("session policy persistence failed") from exc
         logger.debug("failed to persist desktop session row", exc_info=True)
     finally:
         if close_db:
@@ -4215,8 +4241,41 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     return overrides
 
 
+def _restore_session_policy(row: dict, session_key: str, profile_id: str):
+    """Restore a stored native policy without consulting today's provider."""
+    raw = row.get("model_config")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception as exc:
+            if "native_session_policy" in raw:
+                raise ValueError("unsupported_policy") from exc
+            return None
+    if not isinstance(raw, dict) or "native_session_policy" not in raw:
+        return None
+    entry = raw["native_session_policy"]
+    if not isinstance(entry, dict) or set(entry) != {"payload", "owner_id", "profile_id"}:
+        raise ValueError("unsupported_policy")
+    if entry["profile_id"] != profile_id:
+        raise ValueError("policy profile mismatch")
+    from agent.session_policy import SessionPolicySnapshot
+    return SessionPolicySnapshot.from_mapping(entry["payload"], binding={
+        "session_id": session_key,
+        "owner_id": entry["owner_id"],
+        "profile_id": profile_id,
+        "runtime_generation": _SESSION_POLICY_RUNTIME_GENERATION,
+    })
+
+
 def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     config = dict(existing or {})
+    policy = getattr(agent, "session_policy", None)
+    if policy is not None:
+        config["native_session_policy"] = {
+            "payload": policy.to_mapping(),
+            "owner_id": policy.binding.owner_id,
+            "profile_id": policy.binding.profile_id,
+        }
     model = str(getattr(agent, "model", "") or "").strip()
     provider = str(getattr(agent, "provider", "") or "").strip()
     base_url = str(getattr(agent, "base_url", "") or "").strip()
@@ -6836,6 +6895,7 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
             session["session_key"],
             session_id=session["session_key"],
             platform_override=_session_source(session),
+            session_policy=session.get("session_policy"),
         )
     finally:
         _clear_session_context(tokens)
@@ -6886,6 +6946,8 @@ def _schedule_mcp_late_refresh(sid: str, agent) -> None:
     require an explicit ``/reload-mcp`` (which gates on user consent), exactly
     as today. No-op when discovery already finished before the agent build.
     """
+    if getattr(agent, "session_policy", None) is not None:
+        return
     try:
         from tui_gateway.entry import mcp_discovery_in_flight, join_mcp_discovery
     except Exception:
@@ -7006,13 +7068,25 @@ def _make_agent(
     reasoning_config_override: dict | None = None,
     service_tier_override: str | None = None,
     platform_override: str | None = None,
+    session_policy=None,
 ):
+    if session_policy is not None:
+        if session_policy.binding.session_id != (session_id or key):
+            raise ValueError("unsupported_policy: session binding mismatch")
+        if session_policy.binding.runtime_generation != _SESSION_POLICY_RUNTIME_GENERATION:
+            raise ValueError("unsupported_policy: runtime generation mismatch")
+        # Multi-profile remote transport does not yet carry an independent
+        # profile authority into this builder. Refuse it until that context
+        # is bound explicitly instead of replaying the snapshot's own value.
+        if session_policy.binding.profile_id != _current_profile_name():
+            raise ValueError("unsupported_policy: cross-profile native transport")
     # AC-4 test seam: dead unless explicitly armed by the isolated certify
     # harness. Both inline and compute-host paths construct through _make_agent,
     # leaving the process boundary as the only experimental variable.
     from tui_gateway.synthetic_turn import maybe_build_synthetic_agent
 
-    synthetic = maybe_build_synthetic_agent(session_id or key, model_override)
+    synthetic = (None if session_policy is not None else
+                 maybe_build_synthetic_agent(session_id or key, model_override))
     if synthetic is not None:
         return synthetic
 
@@ -7041,7 +7115,7 @@ def _make_agent(
     from hermes_cli.config import resolve_ephemeral_system_prompt_from_config
 
     system_prompt = resolve_ephemeral_system_prompt_from_config(cfg)
-    startup_skills = _parse_tui_skills_env()
+    startup_skills = [] if session_policy is not None else _parse_tui_skills_env()
     if startup_skills:
         from agent.skill_commands import build_preloaded_skills_prompt
 
@@ -7071,7 +7145,21 @@ def _make_agent(
     # Prefer a per-session model override (set by a prior in-session /model
     # switch) over global config/env resolution. Resume-time stored sessions may
     # also pass scalar model/provider/runtime knobs from the persisted DB row.
-    if isinstance(model_override, dict) and model_override.get("model"):
+    if session_policy is not None:
+        if session_policy.binding.session_id != (session_id or key):
+            raise ValueError("policy binding mismatch")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        model = session_policy.model.model
+        requested_provider = session_policy.model.provider
+        runtime = resolve_runtime_provider(requested=requested_provider,
+                                           target_model=model)
+        if (runtime.get("provider") != requested_provider and
+                not (requested_provider.startswith("custom:") and
+                     runtime.get("provider") == "custom")):
+            raise ValueError("policy provider mismatch")
+        reasoning_config_override = {"effort": session_policy.model.reasoning}
+        system_prompt = session_policy.instructions
+    elif isinstance(model_override, dict) and model_override.get("model"):
         model = str(model_override.get("model") or "")
         requested_provider = model_override.get("provider") or provider_override or None
         override_base_url = model_override.get("base_url")
@@ -7135,6 +7223,13 @@ def _make_agent(
                 raise RuntimeError("Auth fallback resolved without a model")
             model = resolution.selected_model
     _pr = _load_provider_routing()
+    def _policy_approve(tool_name: str, arguments: dict) -> bool:
+        from tools.approval import request_mandatory_policy_approval
+
+        return request_mandatory_policy_approval(
+            tool_name, arguments, session_key=session_id or key
+        )
+
     return AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 500),
@@ -7177,9 +7272,13 @@ def _make_agent(
         ephemeral_system_prompt=system_prompt or None,
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
-        skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
-        skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
-        fallback_model=_load_fallback_model(),
+        skip_context_files=(session_policy is not None or
+                            is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))),
+        skip_memory=(session_policy is not None or
+                     is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))),
+        fallback_model=[] if session_policy is not None else _load_fallback_model(),
+        session_policy=session_policy,
+        policy_approval_callback=_policy_approve if session_policy is not None else None,
         **_agent_cbs(sid),
     )
 

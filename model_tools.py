@@ -1205,6 +1205,9 @@ def handle_function_call(
     tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
+    session_policy=None,
+    policy_binding=None,
+    policy_approval_callback=None,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -1284,6 +1287,10 @@ def handle_function_call(
                 disabled_toolsets=disabled_toolsets,
                 quiet_mode=True, skip_tool_search_assembly=True,
             ) or []
+            if session_policy is not None:
+                current_defs = session_policy.filter_tool_schemas(
+                    current_defs, binding=policy_binding,
+                )
         except Exception:
             current_defs = []
         if function_name == _ts_mod.TOOL_SEARCH_NAME:
@@ -1344,6 +1351,9 @@ def handle_function_call(
                 tool_request_middleware_trace=list(_tool_middleware_trace),
                 enabled_toolsets=enabled_toolsets,
                 disabled_toolsets=disabled_toolsets,
+                session_policy=session_policy,
+                policy_binding=policy_binding,
+                policy_approval_callback=policy_approval_callback,
             )
 
     _tool_original_args = dict(function_args)
@@ -1490,21 +1500,41 @@ def handle_function_call(
         except Exception:
             reset_current_observability_context = None
         try:
+            def _policy_dispatch(next_args: Dict[str, Any], **dispatch_kwargs: Any) -> Any:
+                # Execution middleware may rewrite arguments. Authorize the
+                # exact payload crossing into the registry, once per dispatch.
+                if session_policy is not None:
+                    try:
+                        decision = session_policy.authorize_tool_call(
+                            tool_name=function_name, arguments=next_args,
+                            binding=policy_binding,
+                        )
+                        if decision.effect == "ask":
+                            approved = (policy_approval_callback(function_name, dict(next_args))
+                                        if policy_approval_callback else False)
+                            if approved is not True:
+                                return tool_error("Session policy approval required")
+                        elif decision.effect != "allow":
+                            return tool_error("Session policy denied tool call")
+                    except Exception:
+                        return tool_error("Session policy evaluation failed")
+                return registry.dispatch(function_name, next_args, **dispatch_kwargs)
+
             if function_name == "execute_code":
                 # Prefer the caller-provided list so subagents can't overwrite
                 # the parent's tool set via the process-global.
                 sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
-                    return registry.dispatch(
-                        function_name, next_args,
+                    return _policy_dispatch(
+                        next_args,
                         task_id=task_id,
                         session_id=session_id,
                         enabled_tools=sandbox_enabled,
                     )
             else:
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
-                    return registry.dispatch(
-                        function_name, next_args,
+                    return _policy_dispatch(
+                        next_args,
                         task_id=task_id,
                         session_id=session_id,
                         user_task=user_task,

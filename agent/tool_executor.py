@@ -631,6 +631,33 @@ def _run_agent_tool_execution_middleware(
                 else authorization_gate.run(_resolve_pre_tool_block)
             )
 
+        # Mandatory session authorization sees the final arguments after Relay,
+        # request/execution middleware, and ordinary plugin rewrites.  It is
+        # independent of the fail-soft observer hook above.
+        policy = getattr(agent, "session_policy", None)
+        if policy is not None:
+            try:
+                decision = policy.authorize_tool_call(
+                    tool_name=function_name, arguments=final_args,
+                    binding={
+                        "session_id": agent.session_id,
+                        "owner_id": policy.binding.owner_id,
+                        "profile_id": policy.binding.profile_id,
+                        "runtime_generation": policy.binding.runtime_generation,
+                    },
+                )
+                if decision.effect == "ask":
+                    callback = getattr(agent, "policy_approval_callback", None)
+                    approved = callback(function_name, dict(final_args)) if callback else False
+                    if approved is not True:
+                        block_message = "Session policy approval required"
+                elif decision.effect != "allow":
+                    block_message = "Session policy denied tool call"
+            except Exception:
+                block_message = "Session policy evaluation failed"
+            if block_message is not None:
+                block_error_type = "session_policy_block"
+
         guardrail_decision = None
         if block_message is None:
             guardrail_decision = agent._tool_guardrails.before_call(
