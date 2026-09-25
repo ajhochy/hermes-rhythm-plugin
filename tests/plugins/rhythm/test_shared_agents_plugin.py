@@ -118,8 +118,8 @@ def test_rp_2_provider_resolve_restore_check_and_errors(monkeypatch):
             if op == "projection.issue":
                 return {"snapshot": {"version": 2}, "ownerId": "local-user", "projectionId": "projection-1"}
             if kwargs["body"]["includeSnapshot"]:
-                return {"ok": True, "snapshot": {"version": 2}}
-            return {"ok": True}
+                return {"ok": True, "ownerId": "local-user", "snapshot": {"version": 2}}
+            return {"ok": True, "ownerId": "local-user"}
 
     provider = shared_agents.RhythmSessionPolicyProvider(client=Client())
     payload, owner = provider.resolve(
@@ -172,6 +172,36 @@ def test_rp_2_provider_resolve_restore_check_and_errors(monkeypatch):
     assert conflict.value.code == "revision_conflict"
 
 
+def test_rp_2_restore_uses_bridge_owner_in_fresh_provider_and_closes_on_mismatch():
+    """Regression: cross-process restore depends on process-local owner memory."""
+    from agent.session_policy import UnsupportedPolicy
+    from plugins.rhythm import agent_bridge, shared_agents
+
+    class FreshProcessClient:
+        def call(self, op, **kwargs):
+            assert op == "projection.check"
+            assert kwargs == {
+                "path_params": {"projectionId": "projection-1"},
+                "body": {"sessionKey": "session-1", "includeSnapshot": True},
+            }
+            return {"ok": True, "ownerId": "local-user", "snapshot": {"version": 2}}
+
+    provider = shared_agents.RhythmSessionPolicyProvider(client=FreshProcessClient())
+    assert provider.restore(
+        "projection-1", lineage_root="session-1", profile_id="default"
+    ) == ({"version": 2}, "local-user")
+
+    class OwnerMismatchClient:
+        def call(self, *_args, **_kwargs):
+            raise agent_bridge.BridgeError("projection_owner_mismatch")
+
+    with pytest.raises(UnsupportedPolicy) as mismatch:
+        shared_agents.RhythmSessionPolicyProvider(client=OwnerMismatchClient()).restore(
+            "projection-1", lineage_root="session-1", profile_id="default"
+        )
+    assert mismatch.value.code == "projection_owner_mismatch"
+
+
 def test_rp_3_register_is_idempotent(monkeypatch):
     """Regression: repeated discovery starts workers and providers twice."""
     import plugins.rhythm as rhythm
@@ -216,6 +246,123 @@ def test_rp_4_tools_require_v2_and_reuse_one_idempotency_key(monkeypatch):
     assert body["parent"] == {"projectionId": "projection-1", "sessionKey": "lineage-1"}
     assert body["idempotencyKey"]
     assert len({body["idempotencyKey"]}) == 1
+
+
+def test_rp_4_bridge_tool_schemas_and_dispatch_are_policy_scoped(tmp_path):
+    """Regression: bridge tools leak through ordinary or deferred catalogs."""
+    import model_tools
+    from agent.session_policy import SessionPolicySnapshot
+    from plugins.rhythm import bridge_tools
+    from tools.registry import registry
+
+    registrations = {}
+
+    class Context:
+        def register_tool(self, **kwargs):
+            registrations[kwargs["name"]] = kwargs
+
+    bridge_tools.register_bridge_tools(Context())
+    expected = set(bridge_tools._TOOLS)
+    assert set(registrations) == expected
+    assert all(row.get("policy_scoped") is True for row in registrations.values())
+
+    root = str(tmp_path.resolve())
+    binding = {
+        "session_id": "lineage-1",
+        "owner_id": "local-user",
+        "profile_id": "default",
+        "runtime_generation": "generation-1",
+    }
+    payload = {
+        "version": 2,
+        "source": {
+            "agent_id": "agent-1",
+            "revision": 7,
+            "reference": "projection-1",
+        },
+        "instructions": "frozen",
+        "model": {"provider": "openrouter", "model": "fixture", "reasoning": None},
+        "allowed_tools": sorted(expected),
+        "tool_effects": {},
+        "paths": {
+            "root": root,
+            "boundary": [root],
+            "external": "deny",
+            "protected": [],
+        },
+        "rules": [],
+        "taint_gate": {"sources": [], "gated": []},
+        "launch": {"kind": "interactive", "cwd": root},
+    }
+    allowed = SessionPolicySnapshot.from_mapping(payload, binding=binding)
+    denied = SessionPolicySnapshot.from_mapping(
+        {**payload, "allowed_tools": []}, binding=binding
+    )
+    v1 = SessionPolicySnapshot.from_mapping(
+        {
+            "version": 1,
+            "source": {"agent_id": "legacy", "revision": 1},
+            "instructions": "legacy",
+            "model": {"provider": "openrouter", "model": "legacy", "reasoning": "low"},
+            "allowed_tools": sorted(expected),
+            "rules": [],
+        },
+        binding=binding,
+    )
+
+    previous = {name: registry.snapshot_registration(name) for name in expected}
+    try:
+        for row in registrations.values():
+            registry.register(**row, override=True)
+
+        def offered(policy=None):
+            return {
+                item["function"]["name"]
+                for item in model_tools.get_tool_definitions(
+                    enabled_toolsets=["rhythm"],
+                    quiet_mode=True,
+                    skip_tool_search_assembly=True,
+                    session_policy=policy,
+                )
+            }
+
+        assert expected.isdisjoint(offered())
+        assert expected.isdisjoint(offered(v1))
+        assert expected.isdisjoint(offered(denied))
+        assert expected <= offered(allowed)
+
+        def searched(policy=None):
+            result = model_tools.handle_function_call(
+                "tool_search",
+                {"query": "rhythm", "limit": 20},
+                enabled_toolsets=["rhythm"],
+                session_policy=policy,
+                policy_binding=binding if policy is not None else None,
+            )
+            return {item["name"] for item in json.loads(result)["matches"]}
+
+        assert expected.isdisjoint(searched())
+        assert expected <= searched(allowed)
+
+        for name in expected:
+            refused = json.loads(
+                model_tools.handle_function_call(
+                    name,
+                    {},
+                    skip_pre_tool_call_hook=True,
+                    skip_tool_request_middleware=True,
+                    skip_tool_execution_middleware=True,
+                )
+            )
+            assert refused == {
+                "error": "policy_scoped_tool_unavailable",
+                "code": "policy_scoped_tool_unavailable",
+            }
+    finally:
+        for name, prior in previous.items():
+            current = registry.snapshot_registration(name)
+            if current is not None:
+                registry.restore_registration(name, current, prior)
 
 
 def test_rp_5_delegation_reads_are_parent_scoped_and_untrusted(monkeypatch):

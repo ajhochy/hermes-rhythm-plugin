@@ -43,8 +43,6 @@ def worker_claim(job_id: str, lease_token: str):
 class RhythmSessionPolicyProvider:
     def __init__(self, client: BridgeClient | None = None):
         self._client = client or BridgeClient()
-        self._owners: dict[str, str] = {}
-        self._owners_lock = threading.RLock()
 
     def resolve(
         self,
@@ -106,8 +104,6 @@ class RhythmSessionPolicyProvider:
         reference = response.get("projectionId")
         if not isinstance(snapshot, dict) or not isinstance(owner_id, str) or not owner_id or not isinstance(reference, str) or not reference:
             raise UnsupportedPolicy("provider_failed")
-        with self._owners_lock:
-            self._owners[reference] = owner_id
         return snapshot, owner_id
 
     def restore(self, reference: str, *, lineage_root: str, profile_id: str) -> tuple[dict, str]:
@@ -122,9 +118,8 @@ class RhythmSessionPolicyProvider:
         except BridgeError as exc:
             raise _unsupported(exc) from exc
         snapshot = response.get("snapshot")
-        with self._owners_lock:
-            owner_id = self._owners.get(reference)
-        if not isinstance(snapshot, dict) or not owner_id:
+        owner_id = response.get("ownerId")
+        if not isinstance(snapshot, dict) or not isinstance(owner_id, str) or not owner_id:
             raise UnsupportedPolicy("binding_mismatch")
         return snapshot, owner_id
 

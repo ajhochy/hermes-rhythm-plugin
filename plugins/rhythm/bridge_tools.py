@@ -215,4 +215,11 @@ _TOOLS = {
 
 def register_bridge_tools(ctx: Any) -> None:
     for name, (schema, handler, emoji) in _TOOLS.items():
-        ctx.register_tool(name=name, toolset="rhythm", schema=schema, handler=handler, emoji=emoji)
+        ctx.register_tool(
+            name=name,
+            toolset="rhythm",
+            schema=schema,
+            handler=handler,
+            emoji=emoji,
+            policy_scoped=True,
+        )
