@@ -110,6 +110,8 @@ def test_issue_12_native_tools_discover_through_plugin_manifest(monkeypatch, tmp
         assert loaded.enabled is True
         assert set(loaded.tools_registered) == {
             "rhythm_get_dashboard", "rhythm_list_tasks", "rhythm_complete_task",
+            "rhythm_delegate", "rhythm_delegation_status", "rhythm_delegation_result",
+            "rhythm_delegation_cancel", "rhythm_memory_search",
         }
     finally:
         manager.unload()

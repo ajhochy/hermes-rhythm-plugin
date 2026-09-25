@@ -1473,3 +1473,13 @@ def oauth_callback_handoff(request: Request):
     except ValidationError:
         raise _invalid_request() from None
     return _complete_oauth_callback(payload.state, payload.code, request)
+
+
+# Shared-agent routes remain local dashboard APIs; the manifest deliberately
+# does not list them as unauthenticated public paths.
+try:
+    from .shared_agents_api import router as _shared_agents_router
+except ImportError:
+    from plugins.rhythm.dashboard.shared_agents_api import router as _shared_agents_router
+
+router.include_router(_shared_agents_router)
