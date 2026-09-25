@@ -61,23 +61,23 @@ def test_hp_5_driver_lifecycle_events_and_eviction_exemption(monkeypatch):
     ]
 
 
-def test_hp_5_driver_errors_preserve_codes(monkeypatch):
-    """Regression caught: worker control flow receives an untyped generic exception."""
+def test_hp_5_driver_errors_preserve_real_gateway_policy_codes(monkeypatch):
+    """Regression caught: the gateway's policy code is replaced by JSON-RPC 4000."""
     from tui_gateway.session_driver import DriverError, create_session
 
-    monkeypatch.setattr(
-        server,
-        "handle_request",
-        lambda request: {
-            "jsonrpc": "2.0",
-            "id": request["id"],
-            "error": {"code": 409, "message": "refused", "data": {"code": "lease_invalid"}},
-        },
+    original = server._methods["session.create"]
+    server._methods["session.create"] = lambda request_id, _params: server._err(
+        request_id,
+        4000,
+        "unsupported_policy:lease_invalid",
     )
 
     try:
-        create_session({}, on_event=lambda _event: None)
-    except DriverError as exc:
-        assert exc.code == "lease_invalid"
-    else:  # pragma: no cover - assertion clarity
-        raise AssertionError("DriverError was not raised")
+        try:
+            create_session({}, on_event=lambda _event: None)
+        except DriverError as exc:
+            assert exc.code == "lease_invalid"
+        else:  # pragma: no cover - assertion clarity
+            raise AssertionError("DriverError was not raised")
+    finally:
+        server._methods["session.create"] = original

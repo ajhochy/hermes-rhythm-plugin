@@ -490,7 +490,12 @@ function writeHostCapabilityHandoff(
 async function brokeredChildEnv(options: EmbeddedHermesHostOptions, env: NodeJS.ProcessEnv, profile: string | undefined, attemptId: string): Promise<{ names: BrokeredKeyName[]; values: string[]; handoffPath?: string }> {
   const empty = () => ({ names: [] as BrokeredKeyName[], values: [] as string[], handoffPath: undefined })
   if (profile && profile !== 'default') return empty()
-  cleanupStaleHostCapabilityFiles(options)
+  try {
+    cleanupStaleHostCapabilityFiles(options)
+  } catch {
+    logLine(options.log, 'Credential broker unavailable; starting without grants.')
+    return empty()
+  }
   const context = options.backendEnvContext
   if (!options.backendEnv || !context || !validEnvValue(context.serverOrigin) ||
     !validEnvValue(context.rhythmUserId) || !validEnvValue(context.authGeneration)) return empty()
@@ -523,8 +528,10 @@ async function brokeredChildEnv(options: EmbeddedHermesHostOptions, env: NodeJS.
       const value = result[key]
       if (validEnvValue(value)) staged.push([key, value])
     }
-    for (const [key, value] of staged) env[key] = value
     const capability = writeHostCapabilityHandoff(options, attemptId, result)
+    // Do not mutate the child environment until every required capability
+    // artifact is durable. A write failure must leave no untracked secrets.
+    for (const [key, value] of staged) env[key] = value
     if (capability.path) env.HERMES_HOST_CAPABILITIES_FILE = capability.path
     return {
       names: staged.map(([name]) => name),
