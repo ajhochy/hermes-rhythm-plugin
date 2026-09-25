@@ -9,7 +9,7 @@ vi.mock('@/store/profile', async importActual => {
 import { takeSessionDraft } from '@/store/composer'
 import { newSessionInProfile } from '@/store/profile'
 
-import { host } from './index'
+import { host, newChatPolicySelection } from './index'
 
 describe('host.newChat draft prefill', () => {
   afterEach(() => {
@@ -48,5 +48,32 @@ describe('host.newChat draft prefill', () => {
     expect(text).toContain('Rhythm task')
     expect(text.length).toBeLessThanOrEqual(2_048)
     expect((text.match(/field-/g) ?? []).length).toBeLessThanOrEqual(8)
+  })
+})
+
+// Follow-up from the S7 review: a direct unit test for the §5.4 policy-
+// selection validator, independent of the draft-composition tests above.
+describe('newChatPolicySelection validator (§5.4)', () => {
+  it('accepts a well-formed selection and trims surrounding whitespace', () => {
+    expect(newChatPolicySelection({ policySelection: '  rhythm:shared-agent@v1.2_launch  ' })).toBe(
+      'rhythm:shared-agent@v1.2_launch'
+    )
+  })
+
+  it('drops a selection with characters outside the allowed grammar', () => {
+    expect(newChatPolicySelection({ policySelection: 'bad value!' })).toBeNull()
+    expect(newChatPolicySelection({ policySelection: 'has/slash' })).toBeNull()
+    expect(newChatPolicySelection({ policySelection: 'emoji😀' })).toBeNull()
+  })
+
+  it('accepts exactly the length limit and drops one character over it', () => {
+    expect(newChatPolicySelection({ policySelection: 'a'.repeat(1_024) })).toBe('a'.repeat(1_024))
+    expect(newChatPolicySelection({ policySelection: 'a'.repeat(1_025) })).toBeNull()
+  })
+
+  it('drops a missing, empty, or whitespace-only selection', () => {
+    expect(newChatPolicySelection({})).toBeNull()
+    expect(newChatPolicySelection({ policySelection: '' })).toBeNull()
+    expect(newChatPolicySelection({ policySelection: '   ' })).toBeNull()
   })
 })

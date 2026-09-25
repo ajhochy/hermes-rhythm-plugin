@@ -13,10 +13,10 @@ import {
   rmSync,
   writeFileSync
 } from 'node:fs'
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const desktopRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const repositoryRoot = resolve(desktopRoot, '..', '..')
@@ -26,6 +26,7 @@ const REQUIRED_FILES = Object.freeze({
   host: 'electron/embedded-host.mjs',
   preload: 'electron/preload.cjs'
 })
+const THEMES_DIR = 'themes'
 
 function assertFile(filePath, label) {
   if (!existsSync(filePath) || !lstatSync(filePath).isFile()) {
@@ -110,6 +111,8 @@ function assertInstallStamp(installStampFile, sourceCommit) {
  * Exposed for behavioral tests; callers provide concrete build products rather
  * than a mutable user installation or a fake renderer facade.
  */
+const SEMVER_LIKE = /^\d+\.\d+\.\d+/
+
 export function buildEmbeddedArtifact({
   artifactRoot,
   rendererDir,
@@ -118,14 +121,36 @@ export function buildEmbeddedArtifact({
   preloadFile,
   nativeDependencies = [],
   licenseFiles = [],
+  themeFiles = [],
   sourceCommit,
   electronMajor,
   sourceDirty = false,
-  sourceDiffHash
+  sourceDiffHash,
+  // v2 manifest fields (#1570-b). Rhythm's verifier only requires these for an
+  // *installed* (updated) artifact -- schemaVersion stays 1 here, so an older
+  // Rhythm build ignores them and a factory build stays exactly as backward
+  // compatible as before. Optional so every existing caller/test is unaffected;
+  // `main()` below always supplies real values for a CLI build.
+  hermesVersion,
+  hostApiVersion,
+  electronVersion,
+  sequence
 }) {
   assertSourceCommit(sourceCommit)
   if (!Number.isInteger(electronMajor) || electronMajor < 1) {
     throw new Error(`Embedded artifact requires a positive Electron major, received: ${electronMajor}`)
+  }
+  if (hermesVersion !== undefined && !SEMVER_LIKE.test(hermesVersion)) {
+    throw new Error(`Embedded artifact hermesVersion must be a semver string, received: ${hermesVersion}`)
+  }
+  if (hostApiVersion !== undefined && (!Number.isInteger(hostApiVersion) || hostApiVersion < 1)) {
+    throw new Error(`Embedded artifact hostApiVersion must be a positive integer, received: ${hostApiVersion}`)
+  }
+  if (electronVersion !== undefined && !SEMVER_LIKE.test(electronVersion)) {
+    throw new Error(`Embedded artifact electronVersion must be a semver string, received: ${electronVersion}`)
+  }
+  if (sequence !== undefined && (!Number.isInteger(sequence) || sequence < 1)) {
+    throw new Error(`Embedded artifact sequence must be a positive integer, received: ${sequence}`)
   }
 
   const output = resolve(artifactRoot)
@@ -160,6 +185,26 @@ export function buildEmbeddedArtifact({
     assertInside(output, resolve(output, license.destination), `license destination ${license.destination}`)
   }
 
+  // Generic theme JSON (#1543-b): any embedding host may bundle skin data
+  // here, loaded only in embedded mode. This builder has no opinion on the
+  // theme's contents beyond "valid JSON" -- a bad source file fails the BUILD
+  // rather than shipping unverifiable bytes into a signed artifact.
+  for (const theme of themeFiles) {
+    assertFile(theme.source, `theme ${theme.destination}`)
+    if (lstatSync(theme.source).isSymbolicLink()) {
+      throw new Error(`Embedded theme file must not be a symlink: ${theme.source}`)
+    }
+    if (!theme.destination.startsWith(`${THEMES_DIR}/`) || !theme.destination.endsWith('.json')) {
+      throw new Error(`Embedded theme destination must be themes/<name>.json, received: ${theme.destination}`)
+    }
+    assertInside(output, resolve(output, theme.destination), `theme destination ${theme.destination}`)
+    try {
+      JSON.parse(readFileSync(theme.source, 'utf8'))
+    } catch (error) {
+      throw new Error(`Embedded theme file is not valid JSON: ${theme.source} (${error instanceof Error ? error.message : String(error)})`)
+    }
+  }
+
   rmSync(output, { recursive: true, force: true })
   mkdirSync(output, { recursive: true })
   cpSync(renderer, join(output, 'renderer'), { recursive: true })
@@ -184,6 +229,12 @@ export function buildEmbeddedArtifact({
     cpSync(license.source, destination)
   }
 
+  for (const theme of themeFiles) {
+    const destination = join(output, theme.destination)
+    mkdirSync(dirname(destination), { recursive: true })
+    cpSync(theme.source, destination)
+  }
+
   const manifest = {
     schemaVersion: 1,
     product: 'hermes-desktop',
@@ -191,7 +242,11 @@ export function buildEmbeddedArtifact({
     electronMajor,
     files: REQUIRED_FILES,
     integrity: collectIntegrity(output),
-    ...(sourceDirty ? { sourceDirty: true, sourceDiffHash } : {})
+    ...(sourceDirty ? { sourceDirty: true, sourceDiffHash } : {}),
+    ...(hermesVersion !== undefined ? { hermesVersion } : {}),
+    ...(hostApiVersion !== undefined ? { hostApiVersion } : {}),
+    ...(electronVersion !== undefined ? { electronVersion } : {}),
+    ...(sequence !== undefined ? { sequence } : {})
   }
   writeFileSync(join(output, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`)
   return manifest
@@ -200,6 +255,37 @@ export function buildEmbeddedArtifact({
 function arg(name) {
   const index = process.argv.indexOf(name)
   return index === -1 ? undefined : process.argv[index + 1]
+}
+
+function repeatableArg(name) {
+  const values = []
+  for (let index = process.argv.indexOf(name); index !== -1; index = process.argv.indexOf(name, index + 1)) {
+    values.push(process.argv[index + 1])
+  }
+  return values
+}
+
+/** `--theme-json <path>` (repeatable): each becomes `themes/<basename>` in
+ *  the artifact. Generic -- any embedding host may pass any file. */
+function themeFilesFromArgs() {
+  return repeatableArg('--theme-json').map(source => ({ source, destination: `${THEMES_DIR}/${basename(source)}` }))
+}
+
+/**
+ * `--sequence` is optional: the factory build (`npm run build:rhythm-embedded`,
+ * schemaVersion:1) never passes it and Rhythm's verifier never reads sequence
+ * on that path, so an absent flag must produce `undefined` (buildEmbeddedArtifact
+ * omits the field entirely rather than shipping a fake "1" forever). A future
+ * installed-update release/packaging mode (schemaVersion 2, #1570-c/#1570-d)
+ * MUST pass --sequence explicitly, since Rhythm refuses a replayed/older
+ * installed artifact without it; when provided it is parsed as an integer and
+ * buildEmbeddedArtifact's own validation rejects anything but a positive one.
+ * Exported (and `argv`-injectable) for behavioral tests of this CLI parsing
+ * without needing a full `dist/` build.
+ */
+export function sequenceFromArgs(argv = process.argv) {
+  const index = argv.indexOf('--sequence')
+  return index === -1 ? undefined : Number.parseInt(argv[index + 1], 10)
 }
 
 function currentCommit() {
@@ -229,6 +315,40 @@ function resolvePackageRoot(packageName, packageJson = false) {
   return dirname(entry)
 }
 
+/**
+ * The Hermes *agent's* version (pyproject.toml), not this Desktop package's
+ * own package.json (0.17.0 as of writing). Rhythm's HERMES_DESKTOP_MINIMUM_VERSION
+ * (0.20.5) is written against this scheme -- apps/desktop/package.json would
+ * never satisfy it -- so this is the value manifest.hermesVersion must carry.
+ */
+function hermesAgentVersion() {
+  const pyproject = readFileSync(join(repositoryRoot, 'pyproject.toml'), 'utf8')
+  const match = /^version\s*=\s*"([^"]+)"/m.exec(pyproject)
+  if (!match) {
+    throw new Error('Could not read the Hermes agent version from pyproject.toml')
+  }
+  return match[1]
+}
+
+/** The exact installed Electron version, so Rhythm can gate an installed
+ *  artifact update on more than just the major (native addons are ABI-bound
+ *  to the exact build, not the major). */
+function installedElectronVersion() {
+  return JSON.parse(readFileSync(join(resolvePackageRoot('electron', true), 'package.json'), 'utf8')).version
+}
+
+/** The compiled host module's own declared API version (#1543-b/#1570-b),
+ *  read from the SAME bytes being packaged so the manifest can never drift
+ *  from what actually ships. Exported for behavioral tests. */
+export async function hostApiVersionOf(hostFile) {
+  const module = await import(pathToFileURL(hostFile).href)
+  const version = module.EMBEDDED_HOST_API_VERSION
+  if (!Number.isInteger(version) || version < 1) {
+    throw new Error(`Embedded host module does not export a valid EMBEDDED_HOST_API_VERSION: ${hostFile}`)
+  }
+  return version
+}
+
 function embeddedLicenseFiles(nativeDependenciesRoot) {
   const licenses = [
     { source: join(repositoryRoot, 'LICENSE'), destination: 'licenses/LICENSE' },
@@ -250,16 +370,18 @@ function embeddedLicenseFiles(nativeDependenciesRoot) {
   return licenses
 }
 
-function main() {
+async function main() {
   const artifactRoot = resolve(arg('--output') ?? join(desktopRoot, 'build', 'rhythm-embedded'))
   const electronMajor = Number.parseInt(arg('--electron-major') ?? '40', 10)
   const sourceCommit = arg('--source-commit') ?? currentCommit()
   const source = sourceState({ allowDirty: process.argv.includes('--allow-dirty') })
   const nativeDependenciesRoot = join(desktopRoot, 'dist', 'node_modules')
+  const hostFile = join(desktopRoot, 'dist', 'embedded-host.mjs')
+  const sequence = sequenceFromArgs()
   const manifest = buildEmbeddedArtifact({
     artifactRoot,
     rendererDir: join(desktopRoot, 'dist'),
-    hostFile: join(desktopRoot, 'dist', 'embedded-host.mjs'),
+    hostFile,
     installStampFile: join(desktopRoot, 'build', 'install-stamp.json'),
     preloadFile: join(desktopRoot, 'dist', 'electron-preload.js'),
     nativeDependencies: [{
@@ -267,13 +389,21 @@ function main() {
       destination: 'electron/node_modules'
     }],
     licenseFiles: embeddedLicenseFiles(nativeDependenciesRoot),
+    themeFiles: themeFilesFromArgs(),
     sourceCommit,
     electronMajor,
+    hermesVersion: hermesAgentVersion(),
+    hostApiVersion: await hostApiVersionOf(hostFile),
+    electronVersion: installedElectronVersion(),
+    sequence,
     ...source
   })
   console.log(`[embedded-artifact] wrote ${artifactRoot} (${Object.keys(manifest.integrity).length} verified files)`)
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main()
+  main().catch(error => {
+    console.error(error instanceof Error ? error.message : error)
+    process.exitCode = 1
+  })
 }

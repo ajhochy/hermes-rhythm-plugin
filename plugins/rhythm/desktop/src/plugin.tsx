@@ -5,7 +5,7 @@
  * The package remains the owner of Dashboard/Tasks JSX and styles; this file
  * owns only the Hermes transport, lifecycle and bounded chat handoff.
  */
-import { host, type HermesPlugin, PALETTE_AREA, ROUTES_AREA, SIDEBAR_NAV_AREA, type PluginContext, useValue } from '@hermes/plugin-sdk'
+import { host, type HermesPlugin, PALETTE_AREA, ROUTES_AREA, SIDEBAR_NAV_AREA, THEMES_AREA, type PluginContext, useValue } from '@hermes/plugin-sdk'
 import { useEffect, useMemo, useState } from 'react'
 import {
   DashboardScreen,
@@ -39,6 +39,7 @@ import '../vendor/rhythm-workspace-ui/dist/styles/rhythm.css'
 
 import { rhythmRouteTarget } from './route-state'
 import { createHermesSharedAgentsPort } from './shared-agents'
+import { rhythmDesktopTheme } from './theme'
 
 type Rest = PluginContext['rest']
 type RestFailure = { statusCode?: unknown; status?: unknown; detail?: unknown; body?: unknown; response?: { status?: unknown; statusCode?: unknown; detail?: unknown; body?: unknown; data?: unknown } }
@@ -373,6 +374,7 @@ const plugin: HermesPlugin = {
       { area: ROUTES_AREA, data: { path: '/rhythm' }, id: 'page', render: () => <RhythmWorkspace rest={ctx.rest} openExternal={ctx.os.openExternal} />, title: 'Rhythm' },
       { area: SIDEBAR_NAV_AREA, data: { codicon: 'pulse', label: 'Rhythm', path: '/rhythm' }, id: 'nav' },
       { area: PALETTE_AREA, data: { id: 'open-rhythm', label: 'Open Rhythm', keywords: ['rhythm', 'tasks', 'overview'], run: () => { window.location.hash = rhythmRouteTarget() } }, id: 'palette' },
+      { area: THEMES_AREA, data: rhythmDesktopTheme, id: 'theme' },
     ])
   },
 }

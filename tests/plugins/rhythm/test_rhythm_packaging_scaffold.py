@@ -154,7 +154,7 @@ const react = new Proxy({}, { get: (_target, name) => {
   return () => undefined;
 } });
 const sdk = {
-  ROUTES_AREA: 'routes', SIDEBAR_NAV_AREA: 'sidebar.nav', PALETTE_AREA: 'command-palette',
+  ROUTES_AREA: 'routes', SIDEBAR_NAV_AREA: 'sidebar.nav', PALETTE_AREA: 'command-palette', THEMES_AREA: 'themes',
   host: {}, useValue: () => undefined,
 };
 const values = {

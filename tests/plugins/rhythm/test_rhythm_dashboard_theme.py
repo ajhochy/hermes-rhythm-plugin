@@ -107,6 +107,38 @@ def test_dashboard_theme_declaration_rejects_external_and_traversal_css(tmp_path
     ) is None
 
 
+def test_theme_generator_matches_committed_output():
+    """RED first: tokens.json is the single source of truth. Regenerating from
+    it must reproduce the committed rhythm.css and desktop/src/theme.ts
+    byte-for-byte."""
+    from plugins.rhythm.theme import generate
+
+    tokens = generate.load_tokens()
+    assert generate.render_css(tokens) == generate.CSS_PATH.read_text(encoding="utf-8")
+    assert generate.render_desktop_theme_ts(tokens) == generate.DESKTOP_THEME_PATH.read_text(encoding="utf-8")
+
+
+def test_theme_generator_check_fails_on_one_hex_drift(tmp_path, monkeypatch):
+    """A single-hex drift in either committed file must fail `--check`."""
+    from plugins.rhythm.theme import generate
+
+    drifted_css = tmp_path / "rhythm.css"
+    unchanged_ts = tmp_path / "theme.ts"
+    drifted_css.write_text(
+        generate.CSS_PATH.read_text(encoding="utf-8").replace("#4F6AF5", "#000000", 1), encoding="utf-8"
+    )
+    unchanged_ts.write_text(generate.DESKTOP_THEME_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+
+    monkeypatch.setattr(generate, "CSS_PATH", drifted_css)
+    monkeypatch.setattr(generate, "DESKTOP_THEME_PATH", unchanged_ts)
+
+    assert generate.main(["--check"]) == 1
+
+    generate.main(["--write"])
+    assert drifted_css.read_text(encoding="utf-8") == generate.render_css(generate.load_tokens())
+    assert generate.main(["--check"]) == 0
+
+
 def test_feature_pack_build_contains_theme(tmp_path):
     from plugins.rhythm.packaging.build import build_feature_pack
 

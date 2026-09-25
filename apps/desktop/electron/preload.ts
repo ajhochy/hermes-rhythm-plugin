@@ -258,7 +258,15 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   stopPreviewFileWatch: id => ipcRenderer.invoke('hermes:stopPreviewFileWatch', id),
   setActiveWork: payload => ipcRenderer.send('hermes:active-work', payload),
   setTitleBarTheme: payload => ipcRenderer.send('hermes:titlebar-theme', payload),
-  setNativeTheme: mode => ipcRenderer.send('hermes:native-theme', mode),
+  // The Rhythm-owned outer window owns native appearance when embedded. Avoid
+  // sending an unhandled standalone-window IPC event from the real embedded
+  // renderer (main also refuses this while embedded; this keeps the intent
+  // out of the IPC log entirely).
+  setNativeTheme: mode => {
+    if (!embeddedRenderer) {
+      ipcRenderer.send('hermes:native-theme', mode)
+    }
+  },
   // The Rhythm-owned outer window owns translucency. Avoid sending an
   // unhandled standalone-window IPC event from the real embedded renderer.
   setTranslucency: payload => {

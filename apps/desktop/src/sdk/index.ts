@@ -260,7 +260,7 @@ const NEW_CHAT_MAX_DRAFT = 2_048
 const POLICY_SELECTION_MAX_LENGTH = 1_024
 const POLICY_SELECTION_RE = /^[A-Za-z0-9:._@-]+$/
 
-function newChatPolicySelection(options: NewChatOptions): string | null {
+export function newChatPolicySelection(options: NewChatOptions): string | null {
   const raw = (options.policySelection ?? '').trim()
 
   return raw && raw.length <= POLICY_SELECTION_MAX_LENGTH && POLICY_SELECTION_RE.test(raw) ? raw : null
