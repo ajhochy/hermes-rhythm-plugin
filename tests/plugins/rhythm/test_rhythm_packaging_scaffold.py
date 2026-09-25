@@ -8,6 +8,7 @@ directories and never install, sign, notarize, or publish anything.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -21,6 +22,7 @@ from plugins.rhythm.packaging.validate import (
     validate_macos_bundle,
     validate_package_tree,
 )
+from plugins.rhythm.packaging import build as packaging_build
 from plugins.rhythm.packaging.build import build_feature_pack, build_macos_fixture
 from plugins.rhythm.packaging.lifecycle import (
     doctor_feature_pack,
@@ -101,6 +103,30 @@ def test_final_builder_is_repeatable_closed_and_has_one_real_desktop_esm_artifac
     assert 'from"react"' in bundle
     assert 'from"lucide-react"' not in bundle
     assert "from'lucide-react'" not in bundle
+
+
+def test_m92_write_false_rebuild_matches_packaged_desktop_bytes_and_hash(tmp_path):
+    """Regression: two disk builds are reported as the required write:false receipt."""
+    package = build_feature_pack(REPO_ROOT, tmp_path / "package")
+    rebuild = getattr(packaging_build, "rebuild_desktop_in_memory", None)
+    assert callable(rebuild), "M9.2 requires a Bun write:false desktop rebuild"
+
+    rebuilt = rebuild(REPO_ROOT)
+    packaged = (package / _manifest()["desktop"]["entry"]).read_bytes()
+    assert rebuilt == packaged
+    assert hashlib.sha256(rebuilt).hexdigest() == hashlib.sha256(packaged).hexdigest()
+
+
+def test_m92_write_false_check_rejects_packaged_desktop_drift(tmp_path):
+    """Regression: the packaged artifact changes without failing the in-memory comparison."""
+    package = build_feature_pack(REPO_ROOT, tmp_path / "package")
+    verify = getattr(packaging_build, "verify_desktop_write_false_rebuild", None)
+    assert callable(verify), "M9.2 requires a packaged-vs-write:false verification check"
+    entry = package / _manifest()["desktop"]["entry"]
+    entry.write_bytes(entry.read_bytes() + b"\n// drift\n")
+
+    with pytest.raises(PackagingGateError, match="write:false"):
+        verify(REPO_ROOT, package)
 
 
 def test_desktop_route_renders_with_host_react_when_jsx_runtime_is_unavailable(tmp_path):
@@ -290,6 +316,17 @@ def test_package_gate_accepts_one_self_contained_esm_artifact(tmp_path):
     _write_complete_package(tmp_path, manifest)
 
     validate_package_tree(tmp_path, manifest)
+
+
+@pytest.mark.parametrize("external", ["react-dom", "react-dom/client"])
+def test_m92_desktop_gate_rejects_react_dom_externals(tmp_path, external):
+    """Regression: the desktop allowlist widens beyond host SDK and React JSX runtimes."""
+    manifest = _manifest()
+    _write_complete_package(tmp_path, manifest)
+    _write(tmp_path, manifest["desktop"]["entry"], f"import value from '{external}'; export {{ value }};\n")
+
+    with pytest.raises(PackagingGateError, match="unexpected desktop bundle imports"):
+        validate_package_tree(tmp_path, manifest)
 
 
 @pytest.mark.parametrize(
@@ -488,7 +525,7 @@ def test_package_gate_rejects_unsafe_code_in_either_bundle(tmp_path, entry, sour
 
 
 def test_build_rebuilds_both_bundles_with_only_host_imports_and_no_secret_sources(tmp_path, monkeypatch):
-    from plugins.rhythm.packaging.validate import BUNDLE_EXTERNALS, bundle_imports
+    from plugins.rhythm.packaging.validate import DESKTOP_BUNDLE_EXTERNALS, bundle_imports
 
     sentinel = "must-not-enter-renderer-credential"
     monkeypatch.setenv("RHYTHM_BUILD_SECRET", sentinel)
@@ -496,7 +533,7 @@ def test_build_rebuilds_both_bundles_with_only_host_imports_and_no_secret_source
     desktop = (package / "desktop/dist/rhythm.mjs").read_text()
     dashboard = (package / "dashboard/dist/index.js").read_text()
     assert bundle_imports(desktop) == {"@hermes/plugin-sdk", "react"}
-    assert bundle_imports(desktop) <= set(BUNDLE_EXTERNALS)
+    assert bundle_imports(desktop) <= set(DESKTOP_BUNDLE_EXTERNALS)
     assert bundle_imports(dashboard) == set()
     assert '__HERMES_PLUGINS__.register("rhythm"' in dashboard
     assert dashboard != (REPO_ROOT / "plugins/rhythm/dashboard/src/index.js").read_text()

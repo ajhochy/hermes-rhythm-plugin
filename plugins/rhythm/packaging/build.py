@@ -7,6 +7,8 @@ materializes an explicitly supplied staging directory from the source tree.
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
 import re
 import shutil
@@ -15,7 +17,13 @@ import tempfile
 from pathlib import Path
 from typing import Callable
 
-from .validate import BUNDLE_EXTERNALS, PackagingGateError, load_packaging_manifest, validate_package_tree
+from .validate import (
+    DASHBOARD_BUNDLE_EXTERNALS,
+    DESKTOP_BUNDLE_EXTERNALS,
+    PackagingGateError,
+    load_packaging_manifest,
+    validate_package_tree,
+)
 
 
 def _copy_declared(source: Path, output: Path, manifest: dict) -> None:
@@ -57,7 +65,17 @@ def _desktop_entry(source: Path, work: Path) -> Path:
     return entry
 
 
-def _build_bundle(entry: Path, target: Path, work: Path) -> None:
+def _validate_build_graph(graph: dict, externals: tuple[str, ...]) -> None:
+    for name in graph["inputs"]:
+        if re.search(r"(?:^|/)node_modules/(?:react|react-dom)(?:/|$)", name):
+            raise PackagingGateError("embedded React runtime found in build graph")
+    for bundle in graph["outputs"].values():
+        for dependency in bundle.get("imports", []):
+            if not dependency.get("external") or dependency["path"] not in externals:
+                raise PackagingGateError("unexpected dependency in build graph")
+
+
+def _build_bundle(entry: Path, target: Path, work: Path, externals: tuple[str, ...]) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     metadata = work / "bundle-meta.json"
     command = [
@@ -65,25 +83,66 @@ def _build_bundle(entry: Path, target: Path, work: Path) -> None:
         "--target=browser", "--minify", "--production", "--sourcemap=none",
         "--env=disable", f"--metafile={metadata}",
     ]
-    for external in BUNDLE_EXTERNALS:
+    for external in externals:
         command.extend(["--external", external])
     # Run outside the checkout: Bun must never load a developer's .env/bunfig.
     result = subprocess.run(command, cwd=work, capture_output=True, text=True, check=False)
     if result.returncode:
         raise PackagingGateError(f"feature-pack build failed: {result.stderr.strip()[:400]}")
-    graph = json.loads(metadata.read_text(encoding="utf-8"))
-    for name in graph["inputs"]:
-        if re.search(r"(?:^|/)node_modules/(?:react|react-dom)(?:/|$)", name):
-            raise PackagingGateError("embedded React runtime found in build graph")
-    for bundle in graph["outputs"].values():
-        for dependency in bundle.get("imports", []):
-            if not dependency.get("external") or dependency["path"] not in BUNDLE_EXTERNALS:
-                raise PackagingGateError("unexpected dependency in build graph")
+    _validate_build_graph(json.loads(metadata.read_text(encoding="utf-8")), externals)
 
 
-def _bind_jsx_to_host_react(target: Path) -> None:
+_WRITE_FALSE_SCRIPT = r"""
+const [entry, ...external] = process.argv.slice(1);
+const result = await Bun.build({
+  entrypoints: [entry],
+  target: "browser",
+  format: "esm",
+  minify: true,
+  sourcemap: "none",
+  env: "disable",
+  external,
+  write: false,
+  metafile: true,
+  define: { "process.env.NODE_ENV": JSON.stringify("production") },
+});
+if (!result.success) {
+  console.error(result.logs.map(log => log.message).join("\n"));
+  process.exit(1);
+}
+const outputs = result.outputs.filter(output => output.kind === "entry-point");
+if (outputs.length !== 1) {
+  console.error(`expected one in-memory entry point, received ${outputs.length}`);
+  process.exit(1);
+}
+const bytes = Buffer.from(await outputs[0].arrayBuffer());
+process.stdout.write(JSON.stringify({ bundle: bytes.toString("base64"), metafile: result.metafile }));
+"""
+
+
+def _build_bundle_in_memory(entry: Path, work: Path, externals: tuple[str, ...]) -> bytes:
+    """Build one ESM entry with Bun's write:false API and return its bytes."""
+    result = subprocess.run(
+        ["bun", "--eval", _WRITE_FALSE_SCRIPT, str(entry), *externals],
+        cwd=work,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode:
+        raise PackagingGateError(f"feature-pack write:false build failed: {result.stderr.strip()[:400]}")
+    try:
+        payload = json.loads(result.stdout)
+        bundle = base64.b64decode(payload["bundle"], validate=True)
+        graph = payload["metafile"]
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise PackagingGateError("feature-pack write:false build returned an invalid result") from error
+    _validate_build_graph(graph, externals)
+    return bundle
+
+
+def _bind_jsx_to_host_react_source(source: str) -> str:
     """Use the host React singleton when older Desktop JSX shims are non-callable."""
-    source = target.read_text(encoding="utf-8")
     pattern = re.compile(r"import\s*\{([^{}]+)\}\s*from\s*['\"]react/jsx-runtime['\"];?")
     found = 0
 
@@ -110,7 +169,14 @@ def _bind_jsx_to_host_react(target: Path) -> None:
         'const __rhythmJsx=(type,props,key)=>__rhythmReact.createElement('
         'type,key===undefined?props:{...props,key});\n'
     )
-    target.write_text(adapter + source, encoding="utf-8")
+    return adapter + source
+
+
+def _bind_jsx_to_host_react(target: Path) -> None:
+    target.write_text(
+        _bind_jsx_to_host_react_source(target.read_text(encoding="utf-8")),
+        encoding="utf-8",
+    )
 
 
 def _build_desktop(source: Path, output: Path, entry_relative: str) -> None:
@@ -118,8 +184,33 @@ def _build_desktop(source: Path, output: Path, entry_relative: str) -> None:
         work = Path(temporary)
         entry = _desktop_entry(source, work)
         target = output / entry_relative
-        _build_bundle(entry, target, work)
+        _build_bundle(entry, target, work, DESKTOP_BUNDLE_EXTERNALS)
         _bind_jsx_to_host_react(target)
+
+
+def rebuild_desktop_in_memory(repo_root: Path) -> bytes:
+    """Rebuild the Desktop artifact with Bun write:false from declared source."""
+    source = repo_root.resolve() / "plugins/rhythm"
+    with tempfile.TemporaryDirectory(prefix="rhythm-write-false-") as temporary:
+        work = Path(temporary)
+        entry = _desktop_entry(source, work)
+        bundle = _build_bundle_in_memory(entry, work, DESKTOP_BUNDLE_EXTERNALS)
+        return _bind_jsx_to_host_react_source(bundle.decode("utf-8")).encode("utf-8")
+
+
+def verify_desktop_write_false_rebuild(repo_root: Path, package: Path) -> dict[str, str]:
+    """Compare packaged Desktop bytes and SHA-256 to a write:false rebuild."""
+    manifest = load_packaging_manifest(repo_root.resolve())
+    packaged = (package / manifest["desktop"]["entry"]).read_bytes()
+    rebuilt = rebuild_desktop_in_memory(repo_root)
+    packaged_hash = hashlib.sha256(packaged).hexdigest()
+    rebuilt_hash = hashlib.sha256(rebuilt).hexdigest()
+    if rebuilt != packaged or rebuilt_hash != packaged_hash:
+        raise PackagingGateError(
+            "desktop write:false rebuild does not match packaged artifact "
+            f"({rebuilt_hash} != {packaged_hash})"
+        )
+    return {"packaged_sha256": packaged_hash, "write_false_sha256": rebuilt_hash}
 
 
 def _build_dashboard(source: Path, output: Path) -> None:
@@ -127,7 +218,7 @@ def _build_dashboard(source: Path, output: Path) -> None:
         work = Path(temporary)
         entry = work / "entry.js"
         shutil.copyfile(source / "dashboard/src/index.js", entry)
-        _build_bundle(entry, output / "dashboard/dist/index.js", work)
+        _build_bundle(entry, output / "dashboard/dist/index.js", work, DASHBOARD_BUNDLE_EXTERNALS)
 
 
 def build_feature_pack(repo_root: Path, output: Path) -> Path:
@@ -188,8 +279,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True, help="Empty staging directory (never a Hermes home)")
     args = parser.parse_args()
-    package = build_feature_pack(Path(__file__).resolve().parents[3], args.output)
+    repo_root = Path(__file__).resolve().parents[3]
+    package = build_feature_pack(repo_root, args.output)
+    receipt = verify_desktop_write_false_rebuild(repo_root, package)
     for relative in ("desktop/dist/rhythm.mjs", "dashboard/dist/index.js"):
         print(f"{relative}: {(package / relative).stat().st_size} bytes")
-    print("Allowed externals: " + ", ".join(BUNDLE_EXTERNALS))
+    print("Allowed Desktop externals: " + ", ".join(DESKTOP_BUNDLE_EXTERNALS))
+    print("Desktop write:false SHA256: " + receipt["write_false_sha256"])
     print(f"Validated package: {package}")

@@ -1,13 +1,98 @@
-import { describe, expect, it } from 'vitest'
+import { createElement } from 'react'
+import { act, cleanup, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { PALETTE_AREA } from '@/app/command-palette/contrib'
 import { contributedRoutes, SIDEBAR_NAV_AREA } from '@/app/routes'
 import { registry } from '@/contrib/registry'
 
-import plugin from '../../../../plugins/rhythm/desktop/src/plugin'
+import plugin, { RhythmWorkspace } from '../../../../plugins/rhythm/desktop/src/plugin'
 import { rhythmRouteTarget } from '../../../../plugins/rhythm/desktop/src/route-state'
+import type { RhythmHostAdapter } from '../../../../plugins/rhythm/desktop/vendor/rhythm-workspace-ui/dist/index.js'
+
+const providerCaptures = vi.hoisted(() => ({ hosts: [] as RhythmHostAdapter[] }))
+
+vi.mock('../../../../plugins/rhythm/desktop/vendor/rhythm-workspace-ui/dist/index.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../../../plugins/rhythm/desktop/vendor/rhythm-workspace-ui/dist/index.js')>()
+  return {
+    ...actual,
+    RhythmWorkspaceProvider: (props: React.ComponentProps<typeof actual.RhythmWorkspaceProvider>) => {
+      providerCaptures.hosts.push(props.host)
+      return createElement(actual.RhythmWorkspaceProvider, props)
+    },
+  }
+})
+
+const summary = { openTaskCount: 0, threadCount: 0, tasks: [], project: null, unreadThreads: [] }
+const routeFixtureRest = vi.fn(async (path: string) => {
+  if (path === '/connection') return { connected: true }
+  if (path === '/dashboard-summary') return summary
+  if (path === '/tasks') return { tasks: [] }
+  if (path.startsWith('/planner/weeks/')) return { weekLabel: 'Fixture week', weekStart: '2026-09-21', backlog: [], days: [] }
+  if (path === '/rhythm-rules' || path === '/project-templates' || path === '/project-instances' || path === '/automations/rules') return { items: [] }
+  if (path === '/messages' || path === '/directory' || path === '/facilities' || path.startsWith('/facilities/reservations')) return []
+  if (path === '/automations/catalog') return { providers: [], triggers: {}, actions: [] }
+  if (path === '/integrations/status') return { accounts: [] }
+  if (path === '/integrations/settings') return { calendarSources: [] }
+  if (path === '/artifacts') return { items: [] }
+  throw new Error(`unexpected route fixture GET ${path}`)
+})
+
+afterEach(() => {
+  cleanup()
+  providerCaptures.hosts.length = 0
+  window.location.hash = ''
+})
 
 describe('Rhythm desktop shell (#5)', () => {
+  it.each(['messages', 'facilities'] as const)('issue-1540-P1-route-%s: workspace selection uses the canonical screen route without a mutation', async destination => {
+    routeFixtureRest.mockClear()
+    render(createElement(RhythmWorkspace, { rest: routeFixtureRest as never, openExternal: vi.fn() }))
+    await screen.findByTestId('rhythm-dashboard-screen')
+    const adapter = providerCaptures.hosts.at(-1)
+    expect(adapter).toBeDefined()
+
+    act(() => adapter?.onNavigateToScreen?.(destination))
+
+    expect(window.location.hash).toBe(`#${rhythmRouteTarget(`?tab=${destination}`)}`)
+    expect(window.location.hash).toBe(`#/rhythm?tab=${destination}`)
+    expect(routeFixtureRest.mock.calls.every(args => args.length === 1)).toBe(true)
+  })
+
+  it('issue-1540-P1-route-roundtrip-ten: every approved canonical link survives workspace reload parsing', async () => {
+    const destinations = [
+      ['overview', 'rhythm-dashboard-screen'],
+      ['tasks', 'rhythm-tasks-screen'],
+      ['planner', 'rhythm-planner-screen'],
+      ['rhythms', 'rhythm-rhythms-screen'],
+      ['projects', 'rhythm-projects-screen'],
+      ['messages', 'rhythm-messages-screen'],
+      ['facilities', 'rhythm-facilities-screen'],
+      ['automations', 'rhythm-automations-screen'],
+      ['integrations', 'rhythm-integrations-screen'],
+      ['artifacts', 'rhythm-artifacts-screen'],
+    ] as const
+
+    for (const [destination, testId] of destinations) {
+      routeFixtureRest.mockClear()
+      window.location.hash = rhythmRouteTarget(`?tab=${destination}&workspace=team_1`)
+      const view = render(createElement(RhythmWorkspace, { rest: routeFixtureRest as never, openExternal: vi.fn() }))
+      expect(await screen.findByTestId(testId)).not.toBeNull()
+      expect(rhythmRouteTarget(window.location.hash.split('?')[1] ? `?${window.location.hash.split('?')[1]}` : '')).toBe(`/rhythm?tab=${destination}&workspace=team_1`)
+      expect(routeFixtureRest.mock.calls.every(args => args.length === 1)).toBe(true)
+      view.unmount()
+    }
+  })
+
+  it('issue-1540-P1-route-sanitization: unknown tabs and unsafe workspace values stay out of the mounted route', async () => {
+    window.location.hash = '/rhythm?tab=admin&workspace=%3Cscript%3E'
+    render(createElement(RhythmWorkspace, { rest: routeFixtureRest as never, openExternal: vi.fn() }))
+
+    expect(await screen.findByTestId('rhythm-dashboard-screen')).not.toBeNull()
+    expect(rhythmRouteTarget('?tab=admin&workspace=<script>')).toBe('/rhythm')
+    expect(providerCaptures.hosts.at(-1)?.onNavigateToScreen).toBeTypeOf('function')
+  })
+
   it('owns exactly one route and one sidebar row, with allowlisted query state', async () => {
     const disposers: Array<() => void> = []
     plugin.register((await import('./plugin')).createPluginContext('rhythm', dispose => disposers.push(dispose)))

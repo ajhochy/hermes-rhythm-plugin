@@ -15,7 +15,13 @@ from typing import Any, Callable
 
 
 PACKAGING_DIR = Path(__file__).resolve().parent
-BUNDLE_EXTERNALS = ("@hermes/plugin-sdk", "react", "react-dom", "react/jsx-runtime", "react-dom/client")
+DESKTOP_BUNDLE_EXTERNALS = (
+    "@hermes/plugin-sdk",
+    "react",
+    "react/jsx-runtime",
+    "react/jsx-dev-runtime",
+)
+DASHBOARD_BUNDLE_EXTERNALS: tuple[str, ...] = ()
 
 
 def bundle_imports(source: str) -> set[str]:
@@ -24,7 +30,7 @@ def bundle_imports(source: str) -> set[str]:
     return set(re.findall(pattern, source))
 
 
-def _validate_bundle_source(source: str) -> None:
+def _validate_bundle_source(source: str, allowed_externals: tuple[str, ...], artifact: str) -> None:
     if re.search(r"sourceMappingURL|sourceURL|\.env\b|jsxDEV|jsx-dev-runtime", source):
         raise PackagingGateError("source map, environment reference, or development JSX found in bundle")
     embedded_react = re.compile(
@@ -37,8 +43,9 @@ def _validate_bundle_source(source: str) -> None:
     imports = bundle_imports(source)
     if any(name.startswith(".") for name in imports):
         raise PackagingGateError("relative import found in the single desktop artifact or dashboard bundle")
-    if imports - set(BUNDLE_EXTERNALS):
-        raise PackagingGateError(f"unexpected bundle imports: {sorted(imports - set(BUNDLE_EXTERNALS))!r}")
+    unexpected = imports - set(allowed_externals)
+    if unexpected:
+        raise PackagingGateError(f"unexpected {artifact} bundle imports: {sorted(unexpected)!r}")
 
 
 class PackagingGateError(ValueError):
@@ -83,7 +90,7 @@ def _ensure_single_desktop_artifact(
     if artifacts != [entry]:
         raise PackagingGateError(f"unexpected desktop artifact set: {artifacts!r}; expected [{entry!r}]")
     source = read_source(entry)
-    _validate_bundle_source(source)
+    _validate_bundle_source(source, DESKTOP_BUNDLE_EXTERNALS, "desktop")
 
 
 def _ensure_no_bundle_drift(root: Path, manifest: dict[str, Any]) -> None:
@@ -118,7 +125,11 @@ def validate_package_tree(root: Path, manifest: dict[str, Any], *, allow_install
                 f"license evidence does not satisfy {license_['spdx']}: {license_['path']}"
             )
     _ensure_no_bundle_drift(root, manifest)
-    _validate_bundle_source((root / "dashboard/dist/index.js").read_text(encoding="utf-8"))
+    _validate_bundle_source(
+        (root / "dashboard/dist/index.js").read_text(encoding="utf-8"),
+        DASHBOARD_BUNDLE_EXTERNALS,
+        "dashboard",
+    )
     declared = set(_required_content(manifest)) | {desktop["entry"]}
     actual = {path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()}
     extra = actual - declared
