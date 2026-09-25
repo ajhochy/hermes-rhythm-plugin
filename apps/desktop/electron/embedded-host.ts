@@ -48,11 +48,20 @@ export interface EmbeddedHermesHostOptions {
     source: 'opencode-auth-json' | 'memory-search'
     authGeneration: string
   }) => Promise<Record<string, string>> | Record<string, string>
+  /** Main-only observation of one owned default-profile spawn attempt. */
+  onOwnedBackendAttempt?: (event: OwnedBackendAttemptEvent) => void
   /** A Rhythm-owned, user-visible microphone/camera consent prompt. */
   mediaConsent?: (request: EmbeddedPermissionRequest) => Promise<boolean> | boolean
   /** Rhythm's narrowly supplied external-browser action (usually shell.openExternal). */
   openExternal?: (url: string) => Promise<void> | void
 }
+
+export type BrokeredKeyName = 'OPENROUTER_API_KEY' | 'ANTHROPIC_API_KEY' | 'OPENAI_API_KEY' | 'GOOGLE_API_KEY'
+
+export type OwnedBackendAttemptEvent =
+  | { attemptId: string; phase: 'starting'; profile: 'default'; acceptedEnvNames: readonly [] }
+  | { attemptId: string; phase: 'accepted'; profile: 'default'; acceptedEnvNames: readonly BrokeredKeyName[] }
+  | { attemptId: string; phase: 'retired'; profile: 'default'; acceptedEnvNames: readonly []; cause: 'failed' | 'exited' | 'disposed' }
 
 export interface EmbeddedPermissionRequest {
   permission: string
@@ -416,20 +425,21 @@ function controlledChildEnv(options: EmbeddedHermesHostOptions, token: string): 
   return env
 }
 
-async function brokeredChildEnv(options: EmbeddedHermesHostOptions, env: NodeJS.ProcessEnv, profile?: string): Promise<string[]> {
-  if (profile && profile !== 'default') return []
+async function brokeredChildEnv(options: EmbeddedHermesHostOptions, env: NodeJS.ProcessEnv, profile?: string): Promise<{ names: BrokeredKeyName[]; values: string[] }> {
+  const empty = () => ({ names: [] as BrokeredKeyName[], values: [] as string[] })
+  if (profile && profile !== 'default') return empty()
   const context = options.backendEnvContext
   if (!options.backendEnv || !context || !validEnvValue(context.serverOrigin) ||
-    !validEnvValue(context.rhythmUserId) || !validEnvValue(context.authGeneration)) return []
+    !validEnvValue(context.rhythmUserId) || !validEnvValue(context.authGeneration)) return empty()
   try {
-    if (fs.realpathSync(env.HERMES_HOME!) !== env.HERMES_HOME) return []
-  } catch { return [] }
+    if (fs.realpathSync(env.HERMES_HOME!) !== env.HERMES_HOME) return empty()
+  } catch { return empty() }
   let origin: string
   try {
     const parsed = new URL(context.serverOrigin)
-    if (!['https:', 'http:'].includes(parsed.protocol) || parsed.origin !== context.serverOrigin) return []
+    if (!['https:', 'http:'].includes(parsed.protocol) || parsed.origin !== context.serverOrigin) return empty()
     origin = parsed.origin
-  } catch { return [] }
+  } catch { return empty() }
 
   try {
     let deadline: ReturnType<typeof setTimeout> | undefined
@@ -444,17 +454,67 @@ async function brokeredChildEnv(options: EmbeddedHermesHostOptions, env: NodeJS.
       })),
       new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new Error('deadline')), 2_000) })
     ]).finally(() => clearTimeout(deadline))
-    if (!result || typeof result !== 'object' || Array.isArray(result)) return []
-    const staged: Array<[string, string]> = []
+    if (!result || typeof result !== 'object' || Array.isArray(result)) return empty()
+    const staged: Array<[BrokeredKeyName, string]> = []
     for (const key of APPROVED_BROKER_KEYS) {
       const value = result[key]
       if (validEnvValue(value)) staged.push([key, value])
     }
     for (const [key, value] of staged) env[key] = value
-    return staged.map(([, value]) => value)
+    return { names: staged.map(([name]) => name), values: staged.map(([, value]) => value) }
   } catch {
     logLine(options.log, 'Credential broker unavailable; starting without grants.')
-    return []
+    return empty()
+  }
+}
+
+async function prepareNativeOwnedAttempt(options: EmbeddedHermesHostOptions, profile: string, token: string, isDisposed: () => boolean) {
+  if (isDisposed()) {throw new Error('Embedded Hermes host is disposed.')}
+  const isDefault = profile === 'default'
+  const attemptId = crypto.randomUUID()
+  let accepted = false
+  let retired = false
+  const observe = (event: OwnedBackendAttemptEvent) => options.onOwnedBackendAttempt?.(Object.freeze(event))
+  if (isDefault && options.onOwnedBackendAttempt) {
+    observe({ attemptId, phase: 'starting', profile: 'default', acceptedEnvNames: Object.freeze([]) })
+  }
+  let env: NodeJS.ProcessEnv
+  let granted: Awaited<ReturnType<typeof brokeredChildEnv>>
+  try {
+    env = controlledChildEnv(options, token)
+    granted = await brokeredChildEnv(options, env, profile)
+    if (isDisposed()) {throw new Error('Embedded Hermes host was disposed while a native backend was starting.')}
+  } catch (error) {
+    if (isDefault && options.onOwnedBackendAttempt) {
+      try {
+        observe({ attemptId, phase: 'retired', profile: 'default', acceptedEnvNames: Object.freeze([]), cause: 'failed' })
+      } catch {logLine(options.log, 'Owned backend lifecycle observer failed during preparation cleanup.')}
+    }
+    throw error
+  }
+  return {
+    env,
+    redactValues: Object.freeze([token, ...granted.values]),
+    assertActive: () => {
+      if (retired || isDisposed()) {throw new Error('Owned Hermes backend is no longer active.')}
+    },
+    accept: () => {
+      if (retired || isDisposed()) {throw new Error('Owned Hermes backend retired before acceptance.')}
+      if (accepted) {return}
+      if (isDefault && options.onOwnedBackendAttempt) {
+        observe({ attemptId, phase: 'accepted', profile: 'default', acceptedEnvNames: Object.freeze([...granted.names]) })
+      }
+      accepted = true
+    },
+    retire: (cause: 'failed' | 'exited' | 'disposed') => {
+      if (retired) {return}
+      retired = true
+      if (isDefault && options.onOwnedBackendAttempt) {
+        try {
+          observe({ attemptId, phase: 'retired', profile: 'default', acceptedEnvNames: Object.freeze([]), cause })
+        } catch {logLine(options.log, 'Owned backend lifecycle observer failed during retirement.')}
+      }
+    }
   }
 }
 
@@ -528,6 +588,16 @@ function fetchJson(url: string, token?: string) {
   })
 }
 
+type OwnedAttemptState = {
+  accept: () => void
+  isRetired: () => boolean
+  onRetired: (listener: () => void) => void
+}
+
+const ownedConnectionAttempts = new WeakMap<object, OwnedAttemptState>()
+
+class DisposedDuringStart extends Error {}
+
 function createSpawnRuntime(options: EmbeddedHermesHostOptions): EmbeddedRuntime {
   const connections = new Map<string, Promise<EmbeddedBackendConnection>>()
 
@@ -536,28 +606,54 @@ function createSpawnRuntime(options: EmbeddedHermesHostOptions): EmbeddedRuntime
       const profileKey = profile || 'default'
       const existing = connections.get(profileKey)
 
-      if (existing) {
-        return existing
-      }
+      if (existing) {return existing}
 
-      const pending = (async () => {
-        const token = crypto.randomBytes(32).toString('base64url')
-        const args = [...(profile && profile !== 'default' ? ['--profile', profile] : []), 'serve', '--host', '127.0.0.1', '--port', '0']
-        const env = controlledChildEnv(options, token)
-        const grantedValues = await brokeredChildEnv(options, env, profile)
-        const hermes = resolveHermesBinary(env.HERMES_HOME)
-
-        const child = spawn(hermes, args, {
-          cwd: env.HERMES_HOME,
-          env,
-          stdio: ['ignore', 'pipe', 'pipe']
-        })
-
-        captureChildOutput(child.stdout!, options.log, [token, ...grantedValues])
-        captureChildOutput(child.stderr!, options.log, [token, ...grantedValues])
+      let pending: Promise<EmbeddedBackendConnection>
+      pending = (async () => {
+        const isDefault = profileKey === 'default'
+        const attemptId = crypto.randomUUID()
+        let started = false
+        let accepted = false
+        let retired = false
+        let child: ChildProcess | undefined
+        let retiredListener: (() => void) | undefined
+        const observe = (event: OwnedBackendAttemptEvent) => options.onOwnedBackendAttempt?.(Object.freeze(event))
+        const retire = (cause: 'failed' | 'exited' | 'disposed') => {
+          if (retired) {return}
+          retired = true
+          if (connections.get(profileKey) === pending) {connections.delete(profileKey)}
+          retiredListener?.()
+          if (started) {
+            observe({ attemptId, phase: 'retired', profile: 'default', acceptedEnvNames: Object.freeze([]), cause })
+          }
+        }
 
         try {
-          const port = await waitForDashboardPortAnnouncement(child)
+          if (isDefault && options.onOwnedBackendAttempt) {
+            observe({ attemptId, phase: 'starting', profile: 'default', acceptedEnvNames: Object.freeze([]) })
+            started = true
+          }
+          const token = crypto.randomBytes(32).toString('base64url')
+          const args = [...(!isDefault ? ['--profile', profileKey] : []), 'serve', '--host', '127.0.0.1', '--port', '0']
+          const env = controlledChildEnv(options, token)
+          const granted = await brokeredChildEnv(options, env, profile)
+          const hermes = resolveHermesBinary(env.HERMES_HOME)
+
+          child = spawn(hermes, args, {
+            cwd: env.HERMES_HOME,
+            env,
+            stdio: ['ignore', 'pipe', 'pipe']
+          })
+          const ownedChild = child
+          const retireFromEvent = (cause: 'failed' | 'exited') => {
+            try {retire(cause)} catch {logLine(options.log, 'Owned backend lifecycle observer failed.')}
+          }
+          ownedChild.once('error', () => retireFromEvent('failed'))
+          ownedChild.once('exit', () => retireFromEvent('exited'))
+          captureChildOutput(ownedChild.stdout!, options.log, [token, ...granted.values])
+          captureChildOutput(ownedChild.stderr!, options.log, [token, ...granted.values])
+
+          const port = await waitForDashboardPortAnnouncement(ownedChild)
           const baseUrl = `http://127.0.0.1:${port}`
 
           // This verifies the exact token-bearing local leg the renderer will use.
@@ -569,28 +665,50 @@ function createSpawnRuntime(options: EmbeddedHermesHostOptions): EmbeddedRuntime
             throw new Error(`Local Hermes backend WebSocket authentication failed: ${wsProbe.reason || 'unknown error'}`)
           }
 
-          return {
+          const connection: EmbeddedBackendConnection = {
             baseUrl,
             endpoint: baseUrl,
             logs: [],
-            mode: 'local' as const,
+            mode: 'local',
             owned: true,
             profile: profile || undefined,
             token,
             wsUrl,
-            stop: () => stopChild(child)
+            stop: async () => {
+              await stopChild(ownedChild)
+              retire('disposed')
+            }
           }
+          ownedConnectionAttempts.set(connection, {
+            accept: () => {
+              if (retired || ownedChild.exitCode !== null || ownedChild.signalCode !== null) {
+                throw new Error('Owned Hermes backend exited before host acceptance.')
+              }
+              if (accepted) {return}
+              if (started) {
+                observe({ attemptId, phase: 'accepted', profile: 'default', acceptedEnvNames: Object.freeze([...granted.names]) })
+              }
+              accepted = true
+            },
+            isRetired: () => retired,
+            onRetired: listener => {
+              retiredListener = listener
+              if (retired) {listener()}
+            }
+          })
+          return connection
         } catch (error) {
-          await stopChild(child)
+          if (child?.pid !== undefined) {
+            await stopChild(child)
+          }
+          retire('failed')
           throw error
         }
       })()
 
       connections.set(profileKey, pending)
       pending.catch(() => {
-        if (connections.get(profileKey) === pending) {
-          connections.delete(profileKey)
-        }
+        if (connections.get(profileKey) === pending) {connections.delete(profileKey)}
       })
 
       return pending
@@ -716,20 +834,26 @@ async function stopChild(child: ChildProcess) {
     })
 
   try {
-    child.kill('SIGTERM')
-  } catch {
-    return
+    if (!child.kill('SIGTERM') && child.exitCode === null && child.signalCode === null) {
+      throw new Error('Owned Hermes child refused termination.')
+    }
+  } catch (error) {
+    throw new Error('Owned Hermes child stop failed.', { cause: error })
   }
 
   if (await waitForExit(2_000)) {return}
 
   try {
-    child.kill('SIGKILL')
-  } catch {
-    return
+    if (!child.kill('SIGKILL') && child.exitCode === null && child.signalCode === null) {
+      throw new Error('Owned Hermes child refused forced termination.')
+    }
+  } catch (error) {
+    throw new Error('Owned Hermes child forced stop failed.', { cause: error })
   }
 
-  await waitForExit(1_000)
+  if (!await waitForExit(1_000)) {
+    throw new Error('Owned Hermes child remained active after forced termination.')
+  }
 }
 
 function connectionForRenderer(connection: EmbeddedBackendConnection, profile?: string) {
@@ -790,6 +914,8 @@ async function proxyApiRequest(connection: EmbeddedBackendConnection, rawRequest
  * Electron/process boundary; it drives this same scoped registration surface.
  */
 export async function createEmbeddedHermesHost(options: EmbeddedHermesHostOptions): Promise<EmbeddedHermesHost> {
+  let nativeOwnedDisposed = false
+  const nativeOwnedPending = new Set<Promise<unknown>>()
   const injectedRuntime = options.hostWindow && typeof options.hostWindow === 'object' ? hostRuntimes.get(options.hostWindow) : undefined
   const discoveredRuntime = injectedRuntime ? undefined : await discoverCompatibleRuntime(options)
   // Only a verified external runtime belongs at the shared runtime's local
@@ -895,18 +1021,19 @@ export async function createEmbeddedHermesHost(options: EmbeddedHermesHostOption
       handleApi: async request => proxyApiRequest(await connect((request as { profile?: string } | null)?.profile), request)
     },
     ipc: runtimeIpc,
-    // `runPrimaryBackendStartup` returns this object through hermes:connection.
-    // Retain EmbeddedBackendConnection (including `owned` and `stop`) inside
-    // this host, and lend the runtime only the normal, structured-cloneable
-    // Desktop connection descriptor. A fallback host spawner is deliberately
-    // not passed here: the extracted Desktop runtime owns that normal path.
+    // Borrowed local connections are accepted before native setup. The native
+    // runtime retains startup and ownership of every newly spawned backend.
     ...(borrowedRuntime
-      ? {
-          localBackend: {
-            connect: async profile => connectionForRenderer(await connect(profile), profile)
-          }
-        }
+      ? { localBackend: { connect: async profile => connectionForRenderer(await connect(profile), profile) } }
       : {}),
+    ownedSpawn: {
+      prepare: (profile, token) => {
+        const pending = prepareNativeOwnedAttempt(options, profile, token, () => nativeOwnedDisposed)
+        nativeOwnedPending.add(pending)
+        pending.then(() => nativeOwnedPending.delete(pending), () => nativeOwnedPending.delete(pending))
+        return pending
+      }
+    },
     mode: 'embedded',
     paths: {
       assetRoot: options.assetRoot,
@@ -917,12 +1044,27 @@ export async function createEmbeddedHermesHost(options: EmbeddedHermesHostOption
     onConnectionDescriptor: recordConnection
   })
 
+  let disposePromise: Promise<void> | undefined
   return {
     ...host,
-    async dispose() {
-      await nativeRuntime.dispose()
-      runtimeIpc.dispose()
-      await host.dispose()
+    dispose() {
+      if (disposePromise) {return disposePromise}
+      nativeOwnedDisposed = true
+      disposePromise = (async () => {
+        await Promise.allSettled([...nativeOwnedPending])
+        let nativeFailure: unknown
+        let ipcFailure: unknown
+        let hostFailure: unknown
+        try {await nativeRuntime.dispose()} catch (error) {nativeFailure = error}
+        try {runtimeIpc.dispose()} catch (error) {ipcFailure = error}
+        // Credential-bearing children belong to the host. Stop them even if an
+        // unrelated native/IPC teardown step failed earlier.
+        try {await host.dispose()} catch (error) {hostFailure = error}
+        if (hostFailure !== undefined) {throw hostFailure}
+        if (nativeFailure !== undefined) {throw nativeFailure}
+        if (ipcFailure !== undefined) {throw ipcFailure}
+      })()
+      return disposePromise
     }
   }
   } catch (error) {
@@ -954,6 +1096,7 @@ export async function createEmbeddedHermesHostForTest(
   const retiredOwnedConnections = new Set<EmbeddedBackendConnection>()
   const sharedConnections = new Map<string, EmbeddedBackendConnection>()
   const connecting = new Map<string, Promise<EmbeddedBackendConnection>>()
+  let disposePromise: Promise<void> | undefined
   const allowedOriginListeners = new Set<(origins: string[]) => void>()
   let microphoneConsentUntil = 0
   let bootProgress = { error: null as null | string, message: 'Hermes Desktop is ready to connect.', phase: 'backend.idle', progress: 0, running: false }
@@ -1121,6 +1264,7 @@ export async function createEmbeddedHermesHostForTest(
   }
 
   const connect = async (profile?: string) => {
+    if (disposed) {throw new Error('Embedded Hermes host is disposed.')}
     const selectedProfile = profile || readProfile(options.userDataPath) || undefined
     const key = selectedProfile || 'default'
     let currentConnection = connections.get(key)
@@ -1144,10 +1288,29 @@ export async function createEmbeddedHermesHostForTest(
               await currentConnection.stop?.()
             }
 
-            throw new Error('Embedded Hermes host was disposed while the backend was starting.')
+            throw new DisposedDuringStart('Embedded Hermes host was disposed while the backend was starting.')
           }
 
+          const attempt = ownedConnectionAttempts.get(currentConnection)
+          if (attempt) {
+            try {
+              attempt.accept()
+            } catch (error) {
+              await currentConnection.stop?.()
+              throw error
+            }
+          }
           connections.set(key, currentConnection)
+          attempt?.onRetired(() => {
+            if (connections.get(key) === currentConnection) {
+              connections.delete(key)
+              publishAllowedOrigins()
+            }
+            retiredOwnedConnections.delete(currentConnection!)
+          })
+          if (attempt?.isRetired()) {
+            throw new Error('Owned Hermes backend exited before host acceptance.')
+          }
           const identity = descriptorIdentity(currentConnection)
 
           if (identity) {
@@ -1243,23 +1406,27 @@ export async function createEmbeddedHermesHostForTest(
 
   const host: EmbeddedHermesHost = {
     async dispose() {
-      if (disposed) {
-        return
-      }
-
+      if (disposePromise) {return disposePromise}
       disposed = true
-      microphoneConsentUntil = 0
-      scopedIpc.dispose()
-      const owned = [...new Set([...connections.values(), ...retiredOwnedConnections])].filter(connection => connection.owned)
-      connections.clear()
-      retiredOwnedConnections.clear()
-      sharedConnections.clear()
-      publishAllowedOrigins()
-      allowedOriginListeners.clear()
+      disposePromise = (async () => {
+        microphoneConsentUntil = 0
+        scopedIpc.dispose()
+        const inFlight = await Promise.allSettled([...connecting.values()])
+        const owned = [...new Set([...connections.values(), ...retiredOwnedConnections])].filter(connection => connection.owned)
+        connections.clear()
+        retiredOwnedConnections.clear()
+        sharedConnections.clear()
+        publishAllowedOrigins()
+        allowedOriginListeners.clear()
 
-      for (const connection of owned) {
-        await connection.stop?.()
-      }
+        const failures = inFlight.filter((result): result is PromiseRejectedResult =>
+          result.status === 'rejected' && !(result.reason instanceof DisposedDuringStart))
+        for (const connection of owned) {
+          try {await connection.stop?.()} catch (error) {failures.push({ status: 'rejected', reason: error })}
+        }
+        if (failures.length > 0) {throw failures[0].reason}
+      })()
+      return disposePromise
     },
     async getAllowedOrigins() {
       if (registerCoreBridge) {await connect()}

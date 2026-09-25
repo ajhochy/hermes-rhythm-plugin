@@ -5,6 +5,7 @@ import http from 'node:http'
 import https from 'node:https'
 import os from 'node:os'
 import path from 'node:path'
+import { StringDecoder } from 'node:string_decoder'
 import tls from 'node:tls'
 import { pathToFileURL } from 'node:url'
 
@@ -393,6 +394,19 @@ export interface DesktopLocalBackendAdapter {
   connect: (profile?: string) => Promise<unknown | null>
 }
 
+export interface DesktopOwnedSpawnAttempt {
+  /** Main-only, already filtered environment for a Rhythm-owned child. */
+  env: NodeJS.ProcessEnv
+  redactValues: readonly string[]
+  assertActive: () => void
+  accept: () => void
+  retire: (cause: 'failed' | 'exited' | 'disposed') => void
+}
+
+export interface DesktopOwnedSpawnAdapter {
+  prepare: (profile: string, token: string) => Promise<DesktopOwnedSpawnAttempt>
+}
+
 export type DesktopConnectionDescriptorEvent =
   | { type: 'upsert'; connection: unknown }
   | { type: 'remove'; connectionId?: string; profile?: string }
@@ -422,6 +436,8 @@ export interface DesktopNativeRuntimeOptions {
   paths?: { assetRoot: string; hermesHome: string; userData: string }
   backend?: DesktopRuntimeBackendAdapter
   localBackend?: DesktopLocalBackendAdapter
+  /** Embedded-only owned spawn policy; standalone launches retain their environment. */
+  ownedSpawn?: DesktopOwnedSpawnAdapter
   /** Lifecycle events let the embedded host revoke stale remote origins. */
   onConnectionDescriptor?: (event: DesktopConnectionDescriptorEvent) => void
 }
@@ -1655,6 +1671,8 @@ const backendConnectionState = createBackendConnectionState<ReturnType<typeof sp
 // The embedded host can lend an already-running primary. Only a child spawned
 // in this runtime is ours to terminate during embedded view disposal.
 let primaryBackendOwnedByRuntime = false
+let ownedBackendCleanupFailure: Error | null = null
+const failedOwnedChildren = new Set<ReturnType<typeof spawn>>()
 const remoteLiveness = new RemoteLivenessTracker()
 const remoteRevalidation = new RemoteRevalidationCoordinator()
 // True while connection-config:apply soft-rehomes the primary — suppresses the
@@ -10002,7 +10020,7 @@ function broadcastConnectionsChanged(payload: { connectionId: string; reason: 'r
   }
 }
 
-async function waitForBackendExit(child, timeoutMs = 5000) {
+async function waitForBackendExit(child, timeoutMs = 5000, strict = false) {
   if (!child || child.exitCode !== null || child.signalCode !== null) {
     return
   }
@@ -10042,13 +10060,31 @@ async function waitForBackendExit(child, timeoutMs = 5000) {
     } else {
       child.kill('SIGKILL')
     }
-  } catch {
+  } catch (error) {
+    if (strict) {throw new Error('Owned Hermes backend could not be stopped.', { cause: error })}
     return
   }
 
   // Await the escalation as well; do not let shutdown or failed adoption race
   // a still-running backend.
   await wait(1000)
+  if (strict && !exited()) {throw new Error('Owned Hermes backend remained alive after forced termination.')}
+}
+
+async function stopFailedOwnedBackend(child) {
+  if (!child) {return}
+  if (failedOwnedChildren.has(child)) {throw ownedBackendCleanupFailure || new Error('Owned Hermes backend cleanup previously failed.')}
+  stopBackendChild(child)
+  try {
+    await waitForBackendExit(child, 5000, embedded)
+  } catch (error) {
+    if (embedded) {
+      const failure = error instanceof Error ? error : new Error(String(error))
+      ownedBackendCleanupFailure ??= failure
+      failedOwnedChildren.add(child)
+    }
+    throw error
+  }
 }
 
 // The profile the primary (window) backend runs as. readActiveDesktopProfile()
@@ -10138,8 +10174,7 @@ async function ensureBackend(profile) {
       backendPool.delete(key)
     }
 
-    stopBackendChild(entry.process)
-    await waitForBackendExit(entry.process)
+    await stopFailedOwnedBackend(entry.process)
     throw error
   })
   backendPool.set(key, entry)
@@ -10224,8 +10259,7 @@ async function ensureRegistryBackend(connectionId, profile) {
         backendPool.delete(localRoute.poolKey)
       }
 
-      stopBackendChild(localEntry.process)
-      await waitForBackendExit(localEntry.process)
+      await stopFailedOwnedBackend(localEntry.process)
       throw error
     })
     backendPool.set(localRoute.poolKey, localEntry)
@@ -10429,6 +10463,60 @@ function startPoolIdleReaper() {
   }
 }
 
+function embeddedBackendPythonEnv(backend, baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  if (backend.kind !== 'python' || !backend.root) {
+    return {}
+  }
+
+  const venvRoot = backend.root === ACTIVE_HERMES_ROOT ? VENV_ROOT : path.join(backend.root, 'venv')
+  return buildDesktopBackendEnv({
+    hermesHome: HERMES_HOME,
+    pythonPathEntries: [backend.root, ...getVenvSitePackagesEntries(venvRoot)],
+    venvRoot,
+    currentEnv: baseEnv
+  })
+}
+
+function captureOwnedBackendOutput(stream, secrets: readonly string[]) {
+  const decoder = new StringDecoder('utf8')
+  const redactions = [...new Set(secrets.filter(Boolean))].sort((a, b) => b.length - a.length)
+  let line = ''
+  let oversized = false
+  const emit = () => {
+    if (oversized) rememberLog('[backend output omitted: oversized line]')
+    else if (line) {
+      let safe = line
+      for (const value of redactions) safe = safe.replaceAll(value, '[redacted]')
+      safe = safe.replace(/([?&](?:access_token|token|session_token)=)[^&#\s]+/gi, '$1[redacted]')
+      rememberLog(safe)
+    }
+    line = ''
+    oversized = false
+  }
+  const append = (text: string) => {
+    const parts = text.split('\n')
+    for (const [index, part] of parts.entries()) {
+      if (!oversized) {
+        line += part
+        if (line.length > 8192) {line = ''; oversized = true}
+      }
+      if (index < parts.length - 1) emit()
+    }
+  }
+  stream.on('data', chunk => append(decoder.write(chunk)))
+  stream.on('end', () => {append(decoder.end()); emit()})
+}
+
+function spawnWithOwnedAttempt(command, args, spawnOptions, ownedAttempt: DesktopOwnedSpawnAttempt | null) {
+  try {
+    ownedAttempt?.assertActive()
+    return spawn(command, args, spawnOptions)
+  } catch (error) {
+    ownedAttempt?.retire('failed')
+    throw error
+  }
+}
+
 // Spawn an additional dashboard backend pinned to a named profile. Mirrors the
 // local-spawn portion of startHermes() but without the boot-progress UI,
 // bootstrap, or remote handling (those belong to the primary backend only).
@@ -10437,6 +10525,7 @@ function startPoolIdleReaper() {
 // is the backendPool key when it differs from the profile name (composite
 // registry scopes) so the exit/error cleanup evicts the right entry.
 async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; poolKey?: string } = {}) {
+  if (embedded && ownedBackendCleanupFailure) {throw ownedBackendCleanupFailure}
   const poolKey = opts.poolKey || profile
 
   await reapOrphanedBackendsOnce()
@@ -10509,16 +10598,18 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   )
   const backendNonce = crypto.randomBytes(16).toString('hex')
   const parentIdentityEnv = parentWatchdogEnv(process.pid, parentStartMarker, backendNonce)
+  const ownedAttempt = embedded && options.ownedSpawn ? await options.ownedSpawn.prepare(profile, token) : null
+  const childBaseEnv = ownedAttempt?.env ?? process.env
 
-  const child = spawn(
+  const child = spawnWithOwnedAttempt(
     backend.command,
     backend.args,
     hiddenWindowsChildOptions({
       cwd: hermesCwd,
       env: {
-        ...process.env,
-        HERMES_HOME,
-        ...backend.env,
+        ...childBaseEnv,
+        HERMES_HOME: ownedAttempt?.env.HERMES_HOME || HERMES_HOME,
+        ...(ownedAttempt ? embeddedBackendPythonEnv(backend, childBaseEnv) : backend.env),
         // Pin the gateway's tool/terminal cwd to the same directory we chose for
         // the child process. Inherited TERMINAL_CWD (or a stale config bridge)
         // can still point at the install dir even when spawn cwd is home.
@@ -10536,15 +10627,21 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
       },
       shell: backend.shell,
       stdio: ['ignore', 'pipe', 'pipe']
-    })
+    }),
+    ownedAttempt
   )
 
   entry.process = child
   entry.token = token
   await claimBackendChild(child, `${backend.command} ${backend.args.join(' ')}`, profile, backendNonce)
 
-  child.stdout.on('data', rememberLog)
-  child.stderr.on('data', rememberLog)
+  if (ownedAttempt) {
+    captureOwnedBackendOutput(child.stdout, ownedAttempt.redactValues)
+    captureOwnedBackendOutput(child.stderr, ownedAttempt.redactValues)
+  } else {
+    child.stdout.on('data', rememberLog)
+    child.stderr.on('data', rememberLog)
+  }
 
   let ready = false
   let rejectStart = null
@@ -10554,12 +10651,14 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   })
 
   child.once('error', error => {
+    ownedAttempt?.retire('failed')
     rememberLog(`Hermes backend for profile "${profile}" failed to start: ${error.message}`)
     releaseBackendChild(child)
     backendPool.delete(poolKey)
     rejectStart?.(error)
   })
   child.once('exit', (code, signal) => {
+    ownedAttempt?.retire('exited')
     rememberLog(`Hermes backend for profile "${profile}" exited (${signal || code})`)
     releaseBackendChild(child)
     backendPool.delete(poolKey)
@@ -10603,6 +10702,14 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
     )
   }
 
+  try {
+    ownedAttempt?.accept()
+  } catch (error) {
+    await stopFailedOwnedBackend(child)
+    ownedAttempt?.retire('failed')
+    throw error
+  }
+
   return {
     baseUrl,
     mode: 'local',
@@ -10625,7 +10732,7 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
 const poolStopper = createPoolStopper({
   pool: backendPool,
   stopChild: child => stopBackendChild(child),
-  waitForExit: child => waitForBackendExit(child)
+  waitForExit: child => waitForBackendExit(child, 5000, embedded)
 })
 
 function stopPoolBackend(profile) {
@@ -10714,6 +10821,7 @@ async function prepareProfileRenameRequest(request) {
 }
 
 async function startHermes() {
+  if (embedded && ownedBackendCleanupFailure) {throw ownedBackendCleanupFailure}
   // Only the single-instance lock holder may reap/spawn/claim the desktop
   // backend. A lock-losing instance must stay inert even if some path reaches
   // here (e.g. the deferred-quit window before `ready`): its reapOrphans()
@@ -10873,14 +10981,18 @@ async function startHermes() {
     const parentStartMarker = await desktopParentStartMarker()
     const backendNonce = crypto.randomBytes(16).toString('hex')
     const parentIdentityEnv = parentWatchdogEnv(process.pid, parentStartMarker, backendNonce)
+    const ownedAttempt = embedded && options.ownedSpawn
+      ? await options.ownedSpawn.prepare(profile, token)
+      : null
+    const childBaseEnv = ownedAttempt?.env ?? process.env
 
-    const hermesProcess = spawn(
+    const hermesProcess = spawnWithOwnedAttempt(
       backend.command,
       backend.args,
       hiddenWindowsChildOptions({
         cwd: hermesCwd,
         env: {
-          ...process.env,
+          ...childBaseEnv,
           // Explicitly pin HERMES_HOME for the child so Python's get_hermes_home()
           // resolves to the SAME location our resolveHermesHome() picked. Without
           // this pin, Python falls back to ~/.hermes on every platform — fine on
@@ -10889,8 +11001,8 @@ async function startHermes() {
           // Mismatch would split config / sessions / .env / logs across two
           // directories. install.ps1 sets HERMES_HOME via setx; the desktop
           // can't reliably do that, so we set it inline for every spawn.
-          HERMES_HOME,
-          ...backend.env,
+          HERMES_HOME: ownedAttempt?.env.HERMES_HOME || HERMES_HOME,
+          ...(ownedAttempt ? embeddedBackendPythonEnv(backend, childBaseEnv) : backend.env),
           TERMINAL_CWD: hermesCwd,
           HERMES_DASHBOARD_SESSION_TOKEN: token,
           // Marks this dashboard backend as desktop-spawned so it runs the cron
@@ -10905,7 +11017,8 @@ async function startHermes() {
         },
         shell: backend.shell,
         stdio: ['ignore', 'pipe', 'pipe']
-      })
+      }),
+      ownedAttempt
     )
 
     await claimBackendChild(hermesProcess, `${backend.command} ${backend.args.join(' ')}`, profile, backendNonce)
@@ -10920,8 +11033,13 @@ async function startHermes() {
 
     primaryBackendOwnedByRuntime = true
 
-    hermesProcess.stdout.on('data', rememberLog)
-    hermesProcess.stderr.on('data', rememberLog)
+    if (ownedAttempt) {
+      captureOwnedBackendOutput(hermesProcess.stdout, ownedAttempt.redactValues)
+      captureOwnedBackendOutput(hermesProcess.stderr, ownedAttempt.redactValues)
+    } else {
+      hermesProcess.stdout.on('data', rememberLog)
+      hermesProcess.stderr.on('data', rememberLog)
+    }
     let backendReady = false
     let rejectBackendStart = null
 
@@ -10930,6 +11048,7 @@ async function startHermes() {
     })
 
     hermesProcess.once('error', error => {
+      ownedAttempt?.retire('failed')
       releaseBackendChild(hermesProcess)
 
       if (!backendConnectionState.clearForCurrentProcess(processOwner)) {
@@ -10955,6 +11074,7 @@ async function startHermes() {
       rejectBackendStart?.(error)
     })
     hermesProcess.once('exit', (code, signal) => {
+      ownedAttempt?.retire('exited')
       releaseBackendChild(hermesProcess)
 
       if (!backendConnectionState.clearForCurrentProcess(processOwner)) {
@@ -11024,6 +11144,8 @@ async function startHermes() {
       )
     }
 
+    ownedAttempt?.accept()
+
     updateBootProgress({
       phase: 'backend.ready',
       message: 'Hermes backend is ready. Finalizing desktop startup',
@@ -11056,8 +11178,7 @@ async function startHermes() {
 
     const failedProcess = backendConnectionState.invalidate()
     primaryBackendOwnedByRuntime = false
-    stopBackendChild(failedProcess)
-    await waitForBackendExit(failedProcess)
+    await stopFailedOwnedBackend(failedProcess)
 
     if (error instanceof FirstRunSetupResetError) {
       throw error
@@ -15408,17 +15529,22 @@ return {
     }
 
     terminalIpc.disposeAllTerminalSessions()
-    await disposeRuntimeOwnedPool({
-      idleReaper: poolIdleReaper,
-      stopAll: stopAllPoolBackends
-    })
+    let backendStopFailure: unknown
+    try {
+      await disposeRuntimeOwnedPool({
+        idleReaper: poolIdleReaper,
+        stopAll: stopAllPoolBackends
+      })
+    } catch (error) {backendStopFailure = error}
     poolIdleReaper = null
-    await disposeRuntimeOwnedPrimary({
-      owned: primaryBackendOwnedByRuntime,
-      invalidate: () => backendConnectionState.invalidate(),
-      stop: stopBackendChild,
-      waitForExit: waitForBackendExit
-    })
+    try {
+      await disposeRuntimeOwnedPrimary({
+        owned: primaryBackendOwnedByRuntime,
+        invalidate: () => backendConnectionState.invalidate(),
+        stop: stopBackendChild,
+        waitForExit: child => waitForBackendExit(child, 5000, embedded)
+      })
+    } catch (error) {backendStopFailure ??= error}
     primaryBackendOwnedByRuntime = false
     publishConnectionReset()
     sshBootstrapCoordinator.cancelAll()
@@ -15438,6 +15564,8 @@ return {
     flushDesktopLogBufferSync()
     await options.backend?.disposeOwned()
     await runtimeWindowAdapter?.dispose()
+    if (ownedBackendCleanupFailure) {backendStopFailure ??= ownedBackendCleanupFailure}
+    if (backendStopFailure !== undefined) {throw backendStopFailure}
   }
 }
 

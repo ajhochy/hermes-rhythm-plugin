@@ -147,9 +147,7 @@ test('production cleanup accepts a renderer that Rhythm already detached', async
 })
 
 test('production leaves local bootstrap to the shared runtime when no compatible backend was borrowed', async () => {
-  // A fresh embedded install must retain Desktop's existing runtime resolution
-  // and first-run flow. Passing the host's fallback spawner as localBackend
-  // skipped that path and created a second lifecycle implementation.
+  // A fresh embedded install retains Desktop's runtime resolution and setup gate.
   fixtures.handlers.clear()
   fixtures.initialize.mockReset()
   fixtures.initialize.mockReturnValue({ dispose: vi.fn() })

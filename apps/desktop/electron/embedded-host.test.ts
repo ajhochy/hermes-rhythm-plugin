@@ -218,8 +218,9 @@ test('issue-1542-desktop-c5: disposal during a shared backend start tears down t
   const second = handler(trustedEvent(contents)) as Promise<unknown>
   assert.equal(connect.mock.calls.length, 1)
 
-  await host.dispose()
+  const disposing = host.dispose()
   starting.resolve({ endpoint: 'http://127.0.0.1:43113', owned: true, stop })
+  await disposing
   await assert.rejects(first, /disposed while the backend was starting/)
   await assert.rejects(second, /disposed while the backend was starting/)
   assert.equal(stop.mock.calls.length, 1)
