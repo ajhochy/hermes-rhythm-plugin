@@ -1,0 +1,35 @@
+{
+  "issue": 1569,
+  "generated": "2026-09-24",
+  "stack": "typescript",
+  "not_tested": [],
+  "criteria": [
+    {
+      "criterion_id": "issue-1569-s4-w5",
+      "text": "Fork real-child synthetic executable records accepted env; callback resolution alone is not applied. Successful owned default start reports only injected names. Borrowed/nondefault, spawn error, probe failure, filtered invalid value, timeout and late callback never become applied.",
+      "mode": "integration",
+      "test_file": "apps/desktop/electron/embedded-host-spawn-receipts.test.ts",
+      "test_id": "issue-1569-s4-w5: actual owned child receipts report only filtered names after host acceptance",
+      "status": "pending",
+      "reason": "Fork receipt and real native hermes:connection IPC tests pass against a synthetic owned child; main broker correlation and packaged child observation are separate acceptance work."
+    },
+    {
+      "criterion_id": "issue-1569-s4-w6",
+      "text": "Failed attempt followed by successful retry, duplicate/reordered lifecycle callbacks, normal exit and detach cannot reuse or retain stale applied status. Configured consent remains after ordinary stop.",
+      "mode": "integration",
+      "test_file": "apps/desktop/electron/embedded-host-spawn-receipts.test.ts",
+      "test_id": "issue-1569-s4-w6: failed attempt, retry, and ordinary exit retire distinct attempts",
+      "status": "pending",
+      "reason": "Fork failure, retry, exit, and fresh-child tests pass; duplicate and reordered callbacks, retained consent, and provider-level applied state require main broker tests."
+    },
+    {
+      "criterion_id": "issue-1569-s4-w7",
+      "text": "Revoke while running shows pending-next-start + retention warning; next owned start lacks key. Identity change while starting disposes eventual child before new identity start; failed disposal stays unavailable. No callback/serial-queue deadlock.",
+      "mode": "integration",
+      "test_file": "apps/desktop/electron/embedded-host-spawn-receipts.test.ts",
+      "test_id": "issue-1569-s4-w7: disposal waits for pending broker and prevents late accepted receipt",
+      "status": "pending",
+      "reason": "Fork in-flight and failed-stop disposal tests pass; revoke status, next-start key exclusion, identity barrier, and queue behavior require main adapter/broker tests."
+    }
+  ]
+}

@@ -1,0 +1,80 @@
+{
+  "schema": 1,
+  "status": "final-automated-gates",
+  "tools": ["rhythm_complete_task", "rhythm_get_dashboard", "rhythm_list_tasks"],
+  "install": {
+    "root": "<HERMES_HOME>/plugins/rhythm",
+    "opt_in": true,
+    "operations": ["install", "upgrade", "force-reinstall", "rollback", "uninstall"]
+  },
+  "desktop": {
+    "entry": "desktop/dist/rhythm.mjs",
+    "format": "esm",
+    "artifact_count": 1,
+    "react": "external-peer-only",
+    "relative_chunks": "forbidden"
+  },
+  "content": {
+    "python_modules": [
+      "__init__.py",
+      "backend/__init__.py",
+      "backend/client.py",
+      "backend/store.py",
+      "contracts/__init__.py",
+      "contracts/validate.py",
+      "dashboard/__init__.py",
+      "dashboard/artifact_host.py",
+      "dashboard/plugin_api.py",
+      "packaging/__init__.py",
+      "packaging/build.py",
+      "packaging/cutover.py",
+      "packaging/lifecycle.py",
+      "packaging/validate.py",
+      "tools.py"
+    ],
+    "assets": [
+      "contracts/api-operations.json",
+      "contracts/architecture.json",
+      "contracts/ownership.json",
+      "contracts/permissions.json",
+      "dashboard/manifest.json",
+      "dashboard/dist/index.js",
+      "dashboard/theme/rhythm.css",
+      "packaging/package-manifest.json",
+      "packaging/RELEASE-GATE.md",
+      "packaging/LIVE-GATE.md",
+      "plugin.yaml"
+    ],
+    "skills": [
+      "skills/rhythm/SKILL.md"
+    ],
+    "package_data": [
+      "contracts/*.json",
+      "dashboard/manifest.json",
+      "dashboard/dist/index.js",
+      "dashboard/theme/rhythm.css",
+      "packaging/package-manifest.json",
+      "packaging/RELEASE-GATE.md",
+      "packaging/LIVE-GATE.md",
+      "plugin.yaml",
+      "skills/rhythm/SKILL.md"
+    ]
+  },
+  "provenance": {
+    "path": "PROVENANCE.md",
+    "required_fields": ["source", "revision", "transformation"]
+  },
+  "licenses": [
+    {"path": "LICENSES/HERMES-MIT.txt", "spdx": "MIT", "scope": "Rhythm feature pack"},
+    {"path": "LICENSES/LUCIDE-ISC.txt", "spdx": "ISC", "scope": "Bundled lucide-react icon runtime"}
+  ],
+  "release_gate": {
+    "mode": "live-release-manual",
+    "status": "pending",
+    "requirements": ["codesign verification", "notarization verification", "staple verification"]
+  },
+  "platforms": {
+    "nix": "directory-plugin via services.hermes.extraPlugins"
+  },
+  "deferred": ["signed/notarized release artifact"]
+}

@@ -333,9 +333,11 @@ def _(rid, params: dict) -> dict:
         # skill turn shows its invocation, so re-expand it here — otherwise
         # re-running `/work fix it` sends the agent nine literal characters
         # instead of the skill it originally loaded.
-        text = _expand_skill_invocation_for_replay(
-            text, str(session.get("session_key") or "")
-        )
+        policy = session.get("session_policy")
+        if policy is None or policy.version != 2:
+            text = _expand_skill_invocation_for_replay(
+                text, str(session.get("session_key") or "")
+            )
     isolation_cfg = _load_dashboard_process_isolation_config()
     turn_isolation = _session_uses_compute_host(session, isolation_cfg)
     # Re-bind to the current client transport for this request. This keeps
@@ -1208,6 +1210,11 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
+    policy_error = _v2_unsupported_response(
+        rid, session, code="projection_unsupported"
+    )
+    if policy_error is not None:
+        return policy_error
     text, parent = params.get("text", ""), params.get("session_id", "")
     if not text:
         return _err(rid, 4012, "text required")
@@ -1270,6 +1277,11 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
+    policy_error = _v2_unsupported_response(
+        rid, session, code="projection_unsupported"
+    )
+    if policy_error is not None:
+        return policy_error
 
     url = str(params.get("url") or "").strip()
     cwd = str(params.get("cwd") or "").strip()

@@ -176,8 +176,18 @@ export async function loadRuntimePlugin(
       // Reload = dispose the previous incarnation, then register fresh.
       unloadRuntimePlugin(plugin.id)
       const disposers: (() => void)[] = []
-      plugin.register(createPluginContext(plugin.id, dispose => disposers.push(dispose)))
-      loaded.set(plugin.id, disposers)
+
+      try {
+        plugin.register(createPluginContext(plugin.id, dispose => disposers.push(dispose)))
+        loaded.set(plugin.id, disposers)
+      } catch (error) {
+        // A register function can install styles/listeners before its next
+        // statement throws. Roll those side effects back before surfacing the
+        // failure; otherwise a broken reload leaves stale UI behind.
+        disposers.forEach(dispose => dispose())
+        throw error
+      }
+
       publishPlugin({ ...record, status: 'loaded' })
     }
 
@@ -235,6 +245,8 @@ interface DiskRoot {
   dir: string
   /** Resolve a scanned folder to its candidate plugin entry file. */
   entry: (folderPath: string) => string
+  /** The expected entry layout, used to inspect directory listings before a read. */
+  layout: 'desktop-child' | 'root'
 }
 
 /** Both scan roots, resolved fresh each pass (Electron-local, never the
@@ -251,7 +263,7 @@ async function diskRoots(): Promise<DiskRoot[]> {
   const standalone = await desktop.desktopPluginsRoot?.()
 
   if (standalone) {
-    roots.push({ dir: standalone, entry: folder => `${folder}/plugin.js` })
+    roots.push({ dir: standalone, entry: folder => `${folder}/plugin.js`, layout: 'root' })
   }
 
   const unified = await desktop.agentPluginsRoot?.()
@@ -261,7 +273,7 @@ async function diskRoots(): Promise<DiskRoot[]> {
     // user allowlists the Python half (plugins.enabled), so the desktop half
     // matches that posture — inventoried in Settings → Plugins, off until
     // toggled. The standalone desktop-plugins door keeps its default-on trust.
-    roots.push({ defaultEnabled: false, dir: unified, entry: folder => `${folder}/desktop/plugin.js` })
+    roots.push({ defaultEnabled: false, dir: unified, entry: folder => `${folder}/desktop/plugin.js`, layout: 'desktop-child' })
   }
 
   return roots
@@ -288,6 +300,11 @@ let scanning = false
  *  of ANOTHER disk entry (two roots can carry same-named folders; a broken one
  *  must not clobber its healthy namesake's inventory row). */
 function dropOriginRecord(origin: string, except: DiskPlugin): void {
+  const record = $pluginRecords.get()[origin]
+  if (record?.kind !== 'disk' || record.file !== except.file) {
+    return
+  }
+
   for (const other of disk.values()) {
     if (other !== except && other.id === origin) {
       return
@@ -329,6 +346,40 @@ async function loadDiskPlugin(entry: DiskPlugin): Promise<void> {
   }
 }
 
+/**
+ * An agent plugin directory commonly contains only Python metadata. Inspect
+ * its entries before reading the optional Desktop module so normal discovery
+ * does not generate Electron ENOENT diagnostics for every headless plugin.
+ */
+async function hasDiskPluginEntry(root: DiskRoot, folderPath: string): Promise<boolean> {
+  const desktop = window.hermesDesktop!
+  let folderEntries: Awaited<ReturnType<typeof desktop.readDir>>['entries']
+
+  try {
+    ;({ entries: folderEntries } = await desktop.readDir(folderPath))
+  } catch {
+    return false
+  }
+
+  if (root.layout === 'root') {
+    return folderEntries.some(entry => !entry.isDirectory && entry.name === 'plugin.js')
+  }
+
+  const desktopDirectory = folderEntries.find(entry => entry.isDirectory && entry.name === 'desktop')
+
+  if (!desktopDirectory) {
+    return false
+  }
+
+  try {
+    const { entries } = await desktop.readDir(desktopDirectory.path)
+
+    return entries.some(entry => !entry.isDirectory && entry.name === 'plugin.js')
+  } catch {
+    return false
+  }
+}
+
 async function scanDiskPlugins(): Promise<void> {
   const desktop = window.hermesDesktop
 
@@ -366,9 +417,7 @@ async function scanDiskPlugins(): Promise<void> {
           continue
         }
 
-        try {
-          await desktop.readFileText(file)
-        } catch {
+        if (!(await hasDiskPluginEntry(root, dir.path))) {
           continue // No entry file (yet) — not a plugin folder for this root.
         }
 
@@ -401,6 +450,15 @@ async function scanDiskPlugins(): Promise<void> {
       if (record.id) {
         unloadRuntimePlugin(record.id)
         dropPlugin(record.id)
+      }
+
+      // A bundled twin makes loadRuntimePlugin publish a visible
+      // `:disk-shadowed` row and return null. That row has no loaded plugin id,
+      // so release inventory records by their owning entry file as well.
+      for (const plugin of Object.values($pluginRecords.get())) {
+        if (plugin.kind === 'disk' && plugin.file === file) {
+          dropPlugin(plugin.id)
+        }
       }
 
       dropOriginRecord(record.origin, record)

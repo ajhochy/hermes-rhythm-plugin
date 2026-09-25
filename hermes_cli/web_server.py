@@ -559,9 +559,7 @@ app.add_middleware(
 # Keep the upstream list minimal — only truly non-sensitive, read-only
 # endpoints belong there.
 # ---------------------------------------------------------------------------
-from hermes_cli.dashboard_auth.public_paths import (
-    PUBLIC_API_PATHS as _PUBLIC_API_PATHS,
-)
+from hermes_cli.dashboard_auth.public_paths import is_public_api_route as _is_public_api_route
 
 
 def _has_valid_session_token(request: Request) -> bool:
@@ -747,21 +745,31 @@ async def _plugin_api_runtime_gate(request: Request, call_next):
     Registered BEFORE the auth middlewares (so it executes AFTER them): a
     request that hasn't cleared auth must get auth's 401 first, never this
     gate's 404 — otherwise an unauthenticated caller could fingerprint which
-    plugins are installed/enabled by reading the status code. We only reach
-    the enabled/disabled check for a request that auth already let through.
+    plugins are installed/enabled by reading the status code. Exact public
+    plugin callbacks are the exception: they bypass auth, so this gate must
+    classify them itself before they reach a router left mounted by a runtime
+    disable.
     """
     path = request.url.path
     if path.startswith("/api/plugins/"):
-        # Only gate authenticated requests. Unauthenticated ones fall
-        # through so auth_middleware / the OAuth gate return 401 first and
-        # this route can't be used as a plugin-name oracle.
+        # Only gate authenticated requests and exact manifest-declared public
+        # plugin routes. Other unauthenticated requests fall through so the
+        # auth middleware returns 401 first and this route cannot be used as
+        # a plugin-name oracle.
+        is_public_plugin_route = _is_public_api_route(request.method, path)
+        app_state = getattr(request.scope.get("app"), "state", None)
+        auth_required = bool(getattr(app_state, "auth_required", False))
         _authed = (
             getattr(request.state, "token_authenticated", False)
-            or getattr(request.app.state, "auth_required", False)
-            or _has_valid_session_token(request)
-            or _has_valid_query_token(request, path)
+            or getattr(request.state, "session", None) is not None
         )
-        if _authed:
+        if not auth_required:
+            _authed = (
+                _authed
+                or _has_valid_session_token(request)
+                or _has_valid_query_token(request, path)
+            )
+        if _authed or is_public_plugin_route:
             # Extract plugin name from /api/plugins/<name>/...
             parts = path.split("/")
             # parts: ['', 'api', 'plugins', '<name>', ...]
@@ -788,15 +796,21 @@ async def _plugin_api_runtime_gate(request: Request, call_next):
                     source = plugin.get("source") if plugin else "user"
                     if source == "user":
                         if plugin_name in disabled_set or plugin_name not in enabled_set:
+                            if auth_required and not _authed:
+                                from hermes_cli.dashboard_auth.middleware import _unauth_response
+                                return _unauth_response(request, reason="no_cookie")
                             return JSONResponse(
-                                status_code=404,
-                                content={"detail": "Plugin not found"},
+                                status_code=404 if _authed else 401,
+                                content={"detail": "Plugin not found" if _authed else "Unauthorized"},
                             )
                     elif source == "bundled":
                         if plugin_name in disabled_set:
+                            if auth_required and not _authed:
+                                from hermes_cli.dashboard_auth.middleware import _unauth_response
+                                return _unauth_response(request, reason="no_cookie")
                             return JSONResponse(
-                                status_code=404,
-                                content={"detail": "Plugin not found"},
+                                status_code=404 if _authed else 401,
+                                content={"detail": "Plugin not found" if _authed else "Unauthorized"},
                             )
     return await call_next(request)
 
@@ -831,7 +845,7 @@ async def auth_middleware(request: Request, call_next):
         return await call_next(request)
     path = request.url.path
     is_mcp_oauth_callback = path.startswith("/api/mcp/oauth/callback/")
-    if path.startswith("/api/") and path not in _PUBLIC_API_PATHS and not is_mcp_oauth_callback:
+    if path.startswith("/api/") and not _is_public_api_route(request.method, path) and not is_mcp_oauth_callback:
         if not _has_valid_session_token(request) and not _has_valid_query_token(request, path):
             return JSONResponse(
                 status_code=401,
@@ -17787,6 +17801,19 @@ async def get_dashboard_themes():
                 "definition": t,
             })
             seen.add(t["name"])
+        for plugin in _get_active_dashboard_plugins(config):
+            theme = plugin.get("_theme")
+            if not theme or theme["name"] in seen:
+                continue
+            plugin_name = urllib.parse.quote(plugin["name"], safe="")
+            stylesheet = urllib.parse.quote(theme["css"], safe="/")
+            themes.append({
+                "name": theme["name"],
+                "label": theme["label"],
+                "description": theme["description"],
+                "stylesheet": f"/dashboard-plugins/{plugin_name}/{stylesheet}",
+            })
+            seen.add(theme["name"])
         return {"themes": themes, "active": active}
 
     return await asyncio.to_thread(_run)
@@ -17898,6 +17925,86 @@ def _safe_plugin_api_relpath(api_field: Any, *, dashboard_dir: Path) -> Optional
     return api_field
 
 
+def _normalise_dashboard_plugin_theme(
+    value: Any,
+    *,
+    plugin_name: str,
+    dashboard_dir: Path,
+) -> Optional[Dict[str, str]]:
+    """Validate an optional dashboard-plugin theme declaration.
+
+    A dashboard manifest may declare either ``"theme": "theme.css"`` or a
+    mapping with ``css`` plus optional name/label/description metadata.  The
+    stylesheet must be a real relative CSS file inside the plugin's
+    ``dashboard/`` directory; external URLs and traversal never reach the
+    browser.
+    """
+    if isinstance(value, str):
+        source: Dict[str, Any] = {"css": value}
+    elif isinstance(value, dict):
+        source = value
+    else:
+        return None
+
+    raw_css = source.get("css")
+    safe_css = _safe_plugin_api_relpath(raw_css, dashboard_dir=dashboard_dir)
+    if safe_css is None or Path(safe_css).suffix.lower() != ".css":
+        return None
+    css_file = (dashboard_dir / safe_css).resolve()
+    if not css_file.is_file():
+        return None
+
+    raw_name = source.get("name", plugin_name)
+    if not isinstance(raw_name, str) or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", raw_name
+    ):
+        return None
+    label = source.get("label", raw_name)
+    description = source.get("description", "")
+    if not isinstance(label, str) or not isinstance(description, str):
+        return None
+
+    return {
+        "name": raw_name,
+        "label": label[:80],
+        "description": description[:240],
+        "css": Path(safe_css).as_posix(),
+    }
+
+
+def _safe_public_plugin_api_routes(value: Any, *, plugin_name: str) -> set[tuple[str, str]]:
+    """Return manifest-declared exact public plugin routes, or no routes.
+
+    Public plugin endpoints are an exception to dashboard session auth for
+    browser-owned callbacks. Keep this declaration deliberately narrow: static
+    absolute API paths and explicit methods only; the mounted router must also
+    expose the same exact route before it is registered.
+    """
+    if not isinstance(value, list):
+        return set()
+    routes: set[tuple[str, str]] = set()
+    prefix = f"/api/plugins/{plugin_name}"
+    for item in value:
+        if not isinstance(item, dict):
+            return set()
+        path, method = item.get("path"), item.get("method")
+        if not isinstance(path, str) or not isinstance(method, str):
+            return set()
+        full_path = f"{prefix}{path}"
+        if (
+            not path.startswith("/")
+            or path.endswith("/")
+            or "{" in path
+            or "?" in path
+            or "#" in path
+            or "//" in path
+            or method.upper() not in {"GET", "HEAD"}
+        ):
+            return set()
+        routes.add((method.upper(), full_path))
+    return routes
+
+
 def _discover_dashboard_plugins() -> list:
     """Scan plugins/*/dashboard/manifest.json for dashboard extensions.
 
@@ -18004,6 +18111,18 @@ def _discover_dashboard_plugins() -> list:
                         "not be mounted",
                         name, raw_api,
                     )
+                raw_theme = data.get("theme")
+                safe_theme = _normalise_dashboard_plugin_theme(
+                    raw_theme,
+                    plugin_name=name,
+                    dashboard_dir=dashboard_dir,
+                )
+                if raw_theme is not None and safe_theme is None:
+                    _log.warning(
+                        "Plugin %s: refusing invalid dashboard theme declaration "
+                        "(css must be a relative .css file inside dashboard/)",
+                        name,
+                    )
                 plugins.append({
                     "name": name,
                     "label": data.get("label", name),
@@ -18018,6 +18137,10 @@ def _discover_dashboard_plugins() -> list:
                     "source": source,
                     "_dir": str(dashboard_dir),
                     "_api_file": safe_api,
+                    "_theme": safe_theme,
+                    "_public_api_routes": _safe_public_plugin_api_routes(
+                        data.get("public_api"), plugin_name=name,
+                    ),
                 })
             except Exception as exc:
                 _log.warning("Bad dashboard plugin manifest %s: %s", manifest_file, exc)
@@ -18039,47 +18162,44 @@ def _get_dashboard_plugins(force_rescan: bool = False) -> list:
     return _dashboard_plugins_cache
 
 
+def _get_active_dashboard_plugins(config: Optional[Dict[str, Any]] = None) -> list:
+    """Return dashboard plugins whose UI contributions are currently active."""
+    plugins = _get_dashboard_plugins()
+    if config is None:
+        config = load_config()
+    hidden: list = cfg_get(config, "dashboard", "hidden_plugins", default=[]) or []
+    try:
+        from hermes_cli.plugins_cmd import _get_enabled_set, _get_disabled_set
+        enabled_set = _get_enabled_set()
+        disabled_set = _get_disabled_set()
+    except Exception:
+        enabled_set = set()
+        disabled_set = set()
+
+    def _is_active(plugin: dict) -> bool:
+        name = plugin.get("name", "")
+        if name in hidden or name in disabled_set:
+            return False
+        if plugin.get("source") == "user" and name not in enabled_set:
+            return False
+        return True
+
+    return [plugin for plugin in plugins if _is_active(plugin)]
+
+
 @app.get("/api/dashboard/plugins")
 async def get_dashboard_plugins():
     """Return discovered dashboard plugins (excludes user-hidden and non-enabled ones)."""
     def _run():
-        plugins = _get_dashboard_plugins()
-        # Read user's hidden plugins list from config.
         config = load_config()
-        hidden: list = cfg_get(config, "dashboard", "hidden_plugins", default=[]) or []
-        # Gate: only serve user plugins that are in plugins.enabled and not
-        # in plugins.disabled.  This prevents the frontend from loading JS/CSS
-        # from plugins the user has not explicitly activated.  (#46435)
-        try:
-            from hermes_cli.plugins_cmd import _get_enabled_set, _get_disabled_set
-            enabled_set = _get_enabled_set()
-            disabled_set = _get_disabled_set()
-        except Exception:
-            enabled_set = set()
-            disabled_set = set()
-        return plugins, hidden, enabled_set, disabled_set
+        return _get_active_dashboard_plugins(config)
 
-    plugins, hidden, enabled_set, disabled_set = await asyncio.to_thread(_run)
-
-    def _is_active(p: dict) -> bool:
-        name = p.get("name", "")
-        if name in hidden:
-            return False
-        if p.get("source") == "user":
-            if name in disabled_set:
-                return False
-            if name not in enabled_set:
-                return False
-        elif p.get("source") == "bundled":
-            if name in disabled_set:
-                return False
-        return True
+    plugins = await asyncio.to_thread(_run)
 
     # Strip internal fields before sending to frontend.
     return [
         {k: v for k, v in p.items() if not k.startswith("_")}
         for p in plugins
-        if _is_active(p)
     ]
 
 
@@ -18644,6 +18764,17 @@ def _mount_plugin_api_routes():
                 _log.warning("Plugin %s api file has no 'router' attribute", plugin["name"])
                 continue
             app.include_router(router, prefix=f"/api/plugins/{plugin['name']}")
+            declared_public_routes = plugin.get("_public_api_routes", set())
+            mounted_routes = {
+                (method, f"/api/plugins/{plugin['name']}{route.path}")
+                for route in router.routes
+                for method in getattr(route, "methods", set())
+            }
+            public_routes = declared_public_routes & mounted_routes
+            if public_routes:
+                from hermes_cli.dashboard_auth.public_paths import register_public_plugin_api_routes
+
+                register_public_plugin_api_routes(public_routes)
             _log.info("Mounted plugin API routes: /api/plugins/%s/", plugin["name"])
         except Exception as exc:
             _log.warning("Failed to load plugin %s API routes: %s", plugin["name"], exc)
@@ -18845,6 +18976,18 @@ def _demo() -> None:
     print("web_server parent-death watchdog self-check: OK")
 
 
+def _initialize_host_runtime() -> None:
+    """Consume parent authority before loading any required host plugins."""
+    from agent import host_capabilities
+
+    host_capabilities.load_from_handoff()
+    host_capabilities.mark_serving_process()
+    if os.environ.get("HERMES_HOST_REQUIRED_PLUGINS", "").strip():
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()
+
+
 def start_server(
     host: str = "127.0.0.1",
     port: int = 9119,
@@ -18869,6 +19012,7 @@ def start_server(
     ``ssh_session_token`` and ``ssh_owner_nonce`` are process-local Desktop SSH
     bootstrap state. Neither is persisted or exported to child processes.
     """
+    _initialize_host_runtime()
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
 

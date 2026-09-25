@@ -12,7 +12,7 @@
 import { build } from 'esbuild'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = resolve(here, '..')
@@ -23,6 +23,8 @@ const mainEntry = resolve(root, 'electron/main.ts')
 const mainOut = resolve(distDir, 'electron-main.mjs')
 const preloadEntry = resolve(root, 'electron/preload.ts')
 const preloadOut = resolve(distDir, 'electron-preload.js')
+const embeddedHostEntry = resolve(root, 'electron/embedded-host.ts')
+const embeddedHostOut = resolve(distDir, 'embedded-host.mjs')
 
 const external = ['electron', 'node-pty', 'get-windows', 'fs']
 // Production bundles bake packaged=true so unpackaged `electron .` still
@@ -63,3 +65,24 @@ await build({
   logLevel: 'info',
 })
 console.log(`bundled ${preloadOut}${isDev ? ' (dev)' : ''}`)
+
+// The embedded host is a library entrypoint, never a standalone app side
+// effect. It is intentionally optional while downstream branches are being
+// rebased; artifact assembly fails closed until the native owner supplies it.
+if (existsSync(embeddedHostEntry)) {
+  await build({
+    entryPoints: [embeddedHostEntry],
+    bundle: true,
+    platform: 'node',
+    format: 'esm',
+    target: 'node20',
+    outfile: embeddedHostOut,
+    external,
+    banner: {
+      js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);"
+    },
+    define,
+    logLevel: 'info'
+  })
+  console.log(`bundled ${embeddedHostOut}${isDev ? ' (dev)' : ''}`)
+}

@@ -1,0 +1,4 @@
+desktop/dist/rhythm.mjs: 439240 bytes
+dashboard/dist/index.js: 70 bytes
+Allowed externals: @hermes/plugin-sdk, react, react-dom, react/jsx-runtime, react-dom/client
+Validated package: /Users/ajhochhalter/Documents/hermes-rhythm-plugin/dist/rhythm-feature-pack-mega-ipc-final

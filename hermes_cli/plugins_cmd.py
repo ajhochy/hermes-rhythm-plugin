@@ -1739,6 +1739,40 @@ def cmd_disable(name: str) -> None:
     )
 
 
+def cmd_reload(name: str) -> None:
+    """Manually reload one already-loaded plugin's runtime code in place.
+
+    Unlike enable/disable (which take effect on the next session), this
+    re-imports the plugin's module and re-runs its ``register()`` against
+    the manager's live registries — for a developer iterating on a single
+    plugin without restarting Hermes. The printed outcome always reflects
+    the receipt's ``ok`` flag; a disposal or reload failure prints as a
+    failure and exits non-zero, never as a false success.
+    """
+    from rich.console import Console
+
+    from hermes_cli.plugins import get_plugin_manager
+
+    console = Console()
+    key = _resolve_plugin_key(name)
+    plugin_id = key if key is not None else name
+
+    receipt = get_plugin_manager().reload_plugin(plugin_id)
+
+    if not receipt.ok:
+        console.print(
+            f"[red]✗[/red] Reload of [bold]{receipt.plugin_id}[/bold] failed: "
+            f"{receipt.error}"
+        )
+        sys.exit(1)
+
+    console.print(f"[green]✓[/green] Plugin [bold]{receipt.plugin_id}[/bold] reloaded.")
+    if receipt.tools_added:
+        console.print(f"  [dim]+ tools:[/dim] {', '.join(receipt.tools_added)}")
+    if receipt.tools_removed:
+        console.print(f"  [dim]- tools:[/dim] {', '.join(receipt.tools_removed)}")
+
+
 def _plugin_exists(name: str) -> bool:
     """Return True if a plugin with *name* (bare name or key) exists."""
     return _resolve_plugin_key(name) is not None
@@ -3157,6 +3191,8 @@ def plugins_command(args) -> None:
         cmd_enable(args.name, allow_tool_override=allow_override)
     elif action == "disable":
         cmd_disable(args.name)
+    elif action == "reload":
+        cmd_reload(args.name)
     elif action == "capabilities":
         cmd_capabilities(getattr(args, "name", None))
     elif action in {"list", "ls"}:

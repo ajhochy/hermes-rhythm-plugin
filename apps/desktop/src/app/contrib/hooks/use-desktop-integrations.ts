@@ -4,6 +4,7 @@ import { closeActiveTab } from '@/app/chat/close-tab'
 import { commandFocusedPreview } from '@/app/chat/right-rail/preview-nav'
 import { openSession } from '@/app/open-session'
 import { resolveDeepLinkAction } from '@/lib/deeplink-routes'
+import { isEmbeddedDesktop } from '@/lib/embedded-mode'
 import { pathFromHermesDeepLink, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
@@ -15,6 +16,7 @@ import {
   respondToApprovalAction
 } from '@/store/native-notifications'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
+import { newSessionInProfile } from '@/store/profile'
 import { openFolderAsProject } from '@/store/projects'
 import {
   getRememberedRoute,
@@ -69,15 +71,24 @@ export function useDesktopIntegrations({
   // statusbar version pill and the update toasts. Also honors the main
   // process's "open updates" menu request.
   useEffect(() => {
-    startUpdatePoller()
+    const embedded = isEmbeddedDesktop()
+
+    if (!embedded) {
+      startUpdatePoller()
+    }
+
     // Background MCP health: HTTP/SSE servers only (never spawns stdio),
     // notifies on transitions into needs-auth/error with a Sign in action.
     startMcpHealthChecker()
-    const unsubscribe = window.hermesDesktop?.onOpenUpdatesRequested?.(() => openUpdatesWindow())
+    const unsubscribe = embedded ? undefined : window.hermesDesktop?.onOpenUpdatesRequested?.(() => openUpdatesWindow())
 
     return () => {
       unsubscribe?.()
-      stopUpdatePoller()
+
+      if (!embedded) {
+        stopUpdatePoller()
+      }
+
       stopMcpHealthChecker()
     }
   }, [])
@@ -193,6 +204,30 @@ export function useDesktopIntegrations({
 
     return () => unsubscribe?.()
   }, [navigate, runtimeIdByStoredSessionId])
+
+  // Rhythm can ask the real Desktop renderer to reveal a session or prepare a
+  // fresh chat. The host passes a draft only; this path never calls the submit
+  // bus, so the user reviews and explicitly sends any supplied context.
+  useEffect(() => {
+    const unsubscribe = window.hermesDesktop?.embedded?.onIntent?.(intent => {
+      const context = intent.type === 'new-chat' && typeof intent.context === 'string' ? intent.context.trim() : ''
+
+      if (intent.type === 'navigate-session' && intent.sessionId.trim()) {
+        openSession(intent.sessionId.trim(), navigate, 'main')
+      } else if (intent.type === 'new-chat') {
+        newSessionInProfile(activeProfile)
+        navigate(NEW_CHAT_ROUTE)
+      } else {
+        return
+      }
+
+      if (context) {
+        requestComposerInsert(context, { mode: 'block', target: 'main' })
+      }
+    })
+
+    return () => unsubscribe?.()
+  }, [activeProfile, navigate])
 
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onNotificationAction?.(({ actionId, sessionId }) => {

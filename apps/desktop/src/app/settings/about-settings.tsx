@@ -5,6 +5,7 @@ import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { type Translations, useI18n } from '@/i18n'
+import { isEmbeddedDesktop } from '@/lib/embedded-mode'
 import { AlertTriangle, CheckCircle2, ExternalLink, Loader2, RefreshCw } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import {
@@ -54,6 +55,7 @@ export function AboutSettings() {
   const apply = useStore($updateApply)
   const checking = useStore($updateChecking)
   const [justChecked, setJustChecked] = useState(false)
+  const embedded = isEmbeddedDesktop()
 
   // The version atom is loaded once at app boot, which makes About show a
   // stale number after a self-update (the running binary is current, the
@@ -134,7 +136,7 @@ export function AboutSettings() {
         )}
       </div>
 
-      <div className="mx-auto mt-4 w-full max-w-2xl">
+      {!embedded && <div className="mx-auto mt-4 w-full max-w-2xl">
         <SectionHeading icon={RefreshCw} title={a.updates} />
 
         <div
@@ -206,7 +208,7 @@ export function AboutSettings() {
         />
 
         <UninstallSection />
-      </div>
+      </div>}
     </SettingsContent>
   )
 }

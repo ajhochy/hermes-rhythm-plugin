@@ -3,7 +3,7 @@
 // repo-first project discovery. Extracted from main.ts; the git/gh binary
 // resolvers stay injected because main.ts also uses them for self-update and
 // plugin installs.
-import { ipcMain } from 'electron'
+import { ipcMain as electronIpcMain } from 'electron'
 
 import { scanGitRepos } from './git-repo-scan'
 import {
@@ -33,11 +33,13 @@ import {
 } from './git-worktree-ops'
 
 export interface GitIpcDeps {
+  /** An embedded host supplies a sender-scoped registrar. */
+  ipcMain?: Pick<typeof electronIpcMain, 'handle'>
   resolveGitBinary: () => string
   resolveGhBinary: () => string
 }
 
-export function registerGitIpc({ resolveGitBinary, resolveGhBinary }: GitIpcDeps) {
+export function registerGitIpc({ ipcMain = electronIpcMain, resolveGitBinary, resolveGhBinary }: GitIpcDeps) {
   // Git-driven worktree management ("Start work" flow). Errors surface to the
   // renderer as rejected promises so it can toast a friendly message.
   ipcMain.handle('hermes:git:worktreeList', async (_event, repoPath) => listWorktrees(repoPath, resolveGitBinary()))

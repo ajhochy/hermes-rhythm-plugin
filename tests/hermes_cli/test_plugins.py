@@ -1011,6 +1011,438 @@ class TestForceReloadSymmetry:
         assert recorded["cfg"] == {"hooks": {}}
 
 
+class TestPluginManualReload:
+    """Tests for PluginManager.reload_plugin — the manual runtime-reload path.
+
+    Unlike ``discover_and_load(force=True)`` (which tears down and reloads
+    every plugin), ``reload_plugin`` targets exactly one already-loaded
+    fixture, returns a structured receipt instead of a bare bool, and never
+    reports success when disposal or reload actually failed.
+    """
+
+    def test_reload_resolves_unique_manifest_name_before_unloading(self, tmp_path, monkeypatch):
+        mgr = PluginManager()
+        manifest = PluginManifest(name="Friendly Name", key="registry-key", source="user")
+        monkeypatch.setattr(mgr, "_collect_directory_manifests", lambda: [manifest])
+        monkeypatch.setattr(mgr, "_scan_entry_points", lambda: [])
+        captured = []
+        monkeypatch.setattr(mgr, "_reload_plugin_locked", lambda key: captured.append(key) or MagicMock(ok=True, plugin_id=key))
+
+        receipt = mgr.reload_plugin("Friendly Name")
+
+        assert receipt.ok is True
+        assert receipt.plugin_id == "registry-key"
+        assert captured == ["registry-key"]
+
+    def test_ambiguous_manifest_name_does_not_unload_any_registry(self, tmp_path, monkeypatch):
+        mgr = PluginManager()
+        manifests = [PluginManifest(name="Duplicated", key=key, source="user") for key in ("first-key", "second-key")]
+        monkeypatch.setattr(mgr, "_collect_directory_manifests", lambda: manifests)
+        monkeypatch.setattr(mgr, "_scan_entry_points", lambda: [])
+        mgr._ownership_ledger["first-key"] = [MagicMock()]
+        mgr._ownership_ledger["second-key"] = [MagicMock()]
+        hooks_before = list(mgr._hooks.get("pre_tool_call", []))
+        ledger_before = {key: list(value) for key, value in mgr._ownership_ledger.items()}
+        reload_locked = MagicMock()
+        monkeypatch.setattr(mgr, "_reload_plugin_locked", reload_locked)
+
+        receipt = mgr.reload_plugin("Duplicated")
+
+        assert receipt.ok is False
+        assert "ambiguous" in (receipt.error or "")
+        assert mgr._hooks.get("pre_tool_call", []) == hooks_before
+        assert {key: list(value) for key, value in mgr._ownership_ledger.items()} == ledger_before
+        reload_locked.assert_not_called()
+
+    def test_reload_reregisters_without_duplicate_hooks(self, tmp_path, monkeypatch):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "reload_plugin_fixture",
+            register_body="ctx.register_hook('pre_tool_call', lambda **kw: None)",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+        assert len(mgr._hooks.get("pre_tool_call", [])) == 1
+        ledger_count_before = len(mgr._ownership_ledger.get("reload_plugin_fixture", []))
+
+        receipt = mgr.reload_plugin("reload_plugin_fixture")
+
+        assert receipt.ok is True
+        assert len(mgr._hooks.get("pre_tool_call", [])) == 1
+        assert (
+            len(mgr._ownership_ledger.get("reload_plugin_fixture", []))
+            == ledger_count_before
+        )
+
+    def test_reload_returns_structured_receipt(self, tmp_path, monkeypatch):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(plugins_dir, "receipt_fixture")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        receipt = mgr.reload_plugin("receipt_fixture")
+
+        assert receipt.plugin_id == "receipt_fixture"
+        assert receipt.ok is True
+        assert receipt.previously_loaded is True
+        assert receipt.root == "user"
+        assert receipt.disposed_clean is True
+        assert receipt.error is None
+        assert receipt.tools_removed == []
+        assert receipt.tools_added == []
+
+    def test_reload_unknown_plugin_is_truthful_failure(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        receipt = mgr.reload_plugin("does-not-exist")
+
+        assert receipt.ok is False
+        assert receipt.previously_loaded is False
+        assert receipt.error is not None
+        assert "not found" in receipt.error
+
+    def test_reload_flags_disposal_survivors_instead_of_false_success(
+        self, tmp_path, monkeypatch
+    ):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "sticky_fixture",
+            register_body="ctx.register_hook('pre_tool_call', lambda **kw: None)",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        # Simulate a registration whose dispose() silently no-ops (a bad
+        # plugin release callback) — it must survive unload and be caught
+        # instead of the reload reporting a clean success.
+        survivor = mgr._ownership_ledger["sticky_fixture"][0]
+        monkeypatch.setattr(survivor, "dispose", lambda: None)
+
+        receipt = mgr.reload_plugin("sticky_fixture")
+
+        assert receipt.ok is False
+        assert receipt.disposed_clean is False
+        assert receipt.error is not None
+
+    def test_reload_detects_broken_hook_release_leaving_stale_entry(
+        self, tmp_path, monkeypatch
+    ):
+        """A release() closure that silently no-ops (e.g. a bug in the
+        removal path) must not be mistaken for a clean disposal just
+        because dispose() was called. This is the real-world shape of the
+        bug: dispose() itself runs unmodified; only the underlying removal
+        primitive is broken, exactly like a plugin's own broken cleanup
+        would look from the manager's perspective."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "broken_release_fixture",
+            register_body="ctx.register_hook('pre_tool_call', lambda **kw: None)",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+        assert len(mgr._hooks.get("pre_tool_call", [])) == 1
+
+        # Break the real removal primitive so release() silently no-ops —
+        # dispose() still runs to completion and still flips `_disposed`.
+        monkeypatch.setattr(mgr, "_remove_callback", lambda mapping, key, callback: None)
+
+        receipt = mgr.reload_plugin("broken_release_fixture")
+
+        assert receipt.ok is False
+        assert receipt.disposed_clean is False
+        assert receipt.error is not None
+        # The stale hook must never coexist with a freshly-registered one —
+        # reload must refuse before re-registering, not just after.
+        assert len(mgr._hooks.get("pre_tool_call", [])) == 1
+
+    def test_reload_detects_broken_middleware_release_leaving_stale_entry(
+        self, tmp_path, monkeypatch
+    ):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "broken_middleware_fixture",
+            register_body="ctx.register_middleware('tool_request', lambda **kw: None)",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+        assert len(mgr._middleware.get("tool_request", [])) == 1
+
+        monkeypatch.setattr(mgr, "_remove_callback", lambda mapping, key, callback: None)
+
+        receipt = mgr.reload_plugin("broken_middleware_fixture")
+
+        assert receipt.ok is False
+        assert receipt.disposed_clean is False
+        assert len(mgr._middleware.get("tool_request", [])) == 1
+
+    def test_reload_detects_broken_tool_release_leaving_stale_entry(
+        self, tmp_path, monkeypatch
+    ):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "broken_tool_fixture",
+            register_body=(
+                "ctx.register_tool('broken_tool_fixture_tool', 'misc', "
+                "{'name': 'broken_tool_fixture_tool', 'description': 'd', "
+                "'parameters': {'type': 'object', 'properties': {}}}, "
+                "lambda **kw: '{}')"
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+        assert "broken_tool_fixture_tool" in mgr._plugin_tool_names
+
+        from tools.registry import registry as tool_registry
+
+        monkeypatch.setattr(
+            tool_registry, "restore_registration", lambda *a, **kw: False
+        )
+
+        receipt = mgr.reload_plugin("broken_tool_fixture")
+
+        assert receipt.ok is False
+        assert receipt.disposed_clean is False
+
+    def test_reload_broken_register_is_truthful_failure(self, tmp_path, monkeypatch):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        plugin_dir = _make_plugin_dir(plugins_dir, "flaky_fixture")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+        assert "flaky_fixture" in mgr._plugins
+
+        # A code change introduced a crash in register() before the reload.
+        (plugin_dir / "__init__.py").write_text(
+            "def register(ctx):\n    raise RuntimeError('boom')\n"
+        )
+        sys_modules_key = "hermes_plugins.flaky_fixture"
+        sys.modules.pop(sys_modules_key, None)
+
+        receipt = mgr.reload_plugin("flaky_fixture")
+
+        assert receipt.ok is False
+        assert receipt.error is not None
+        assert "boom" in receipt.error
+
+    def test_reload_covers_both_bundled_and_user_roots(self, tmp_path, monkeypatch):
+        bundled_root = tmp_path / "bundled_plugins"
+        home = tmp_path / "hermes_test"
+        user_root = home / "plugins"
+
+        _make_plugin_dir(bundled_root, "bundled_fixture", home=home)
+        _make_plugin_dir(user_root, "user_fixture", home=home)
+
+        monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(bundled_root))
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        bundled_receipt = mgr.reload_plugin("bundled_fixture")
+        user_receipt = mgr.reload_plugin("user_fixture")
+
+        assert bundled_receipt.ok is True
+        assert bundled_receipt.root == "bundled"
+        assert user_receipt.ok is True
+        assert user_receipt.root == "user"
+
+    def test_reload_refuses_plugin_not_in_enabled_allowlist(self, tmp_path, monkeypatch):
+        """A plugin that was never opted into ``plugins.enabled`` must not
+        be activated by reload_plugin — it must be refused exactly like a
+        fresh discovery pass would refuse it, not bypassed because
+        ``_load_plugin_scoped`` performs no policy checks of its own."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "never_enabled_fixture",
+            register_body="ctx.register_hook('pre_tool_call', lambda **kw: None)",
+            auto_enable=False,
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+        assert mgr._plugins["never_enabled_fixture"].enabled is False
+
+        receipt = mgr.reload_plugin("never_enabled_fixture")
+
+        assert receipt.ok is False
+        assert receipt.previously_loaded is False
+        assert receipt.error is not None
+        assert "not enabled" in receipt.error
+        assert mgr._hooks.get("pre_tool_call", []) == []
+
+    def test_reload_refuses_explicitly_disabled_plugin(self, tmp_path, monkeypatch):
+        """Adding a previously-enabled plugin to ``plugins.disabled`` and
+        reloading it must not reactivate it — explicit disable always
+        wins, matching discovery."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "disable_after_load_fixture",
+            register_body="ctx.register_hook('pre_tool_call', lambda **kw: None)",
+        )
+        home = tmp_path / "hermes_test"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+        assert len(mgr._hooks.get("pre_tool_call", [])) == 1
+
+        cfg_path = home / "config.yaml"
+        cfg = yaml.safe_load(cfg_path.read_text()) or {}
+        cfg.setdefault("plugins", {})["disabled"] = ["disable_after_load_fixture"]
+        cfg_path.write_text(yaml.safe_dump(cfg))
+
+        receipt = mgr.reload_plugin("disable_after_load_fixture")
+
+        assert receipt.ok is False
+        assert receipt.error == "disabled via config"
+        # The plugin's own hook was unloaded (the plugin no longer runs);
+        # a disabled plugin must not be reactivated by the reload attempt.
+        assert mgr._hooks.get("pre_tool_call", []) == []
+
+    def test_reload_refuses_removed_relay_plugin_identity(self, tmp_path, monkeypatch):
+        """A manifest whose key/name matches a removed legacy Relay plugin
+        must be refused by reload just as it is refused by discovery —
+        loading it would let plugin.initialize() compete for the same
+        process-global Relay registries Hermes core now owns."""
+        from hermes_cli import plugins as plugins_mod
+
+        home = tmp_path / "hermes_test"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        manifest = PluginManifest(
+            name="nemo_relay",
+            key="observability/nemo_relay",
+            source="user",
+        )
+        mgr = PluginManager()
+        monkeypatch.setattr(mgr, "_find_manifest_for_reload", lambda plugin_id: manifest)
+        loaded: list = []
+        monkeypatch.setattr(mgr, "_load_plugin_scoped", loaded.append)
+
+        receipt = mgr.reload_plugin("observability/nemo_relay")
+
+        assert receipt.ok is False
+        assert loaded == []
+        assert "Relay lifecycle is owned by Hermes core" in receipt.error
+
+    def test_reload_refuses_exclusive_kind_plugin(self, tmp_path, monkeypatch):
+        """Exclusive-category plugins (memory providers) are activated by
+        name through <category>.provider config, never through the general
+        loader — reload must not import/register() them directly either."""
+        home = tmp_path / "hermes_test"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        manifest = PluginManifest(
+            name="some_memory_provider",
+            key="memory/some_memory_provider",
+            source="user",
+            kind="exclusive",
+        )
+        mgr = PluginManager()
+        monkeypatch.setattr(mgr, "_find_manifest_for_reload", lambda plugin_id: manifest)
+        loaded: list = []
+        monkeypatch.setattr(mgr, "_load_plugin_scoped", loaded.append)
+
+        receipt = mgr.reload_plugin("memory/some_memory_provider")
+
+        assert receipt.ok is False
+        assert loaded == []
+        assert "exclusive" in receipt.error
+
+    def test_reload_previously_loaded_is_false_for_discovered_disabled_plugin(
+        self, tmp_path, monkeypatch
+    ):
+        """``previously_loaded`` must mean "was genuinely active", not
+        merely "discovery recorded a LoadedPlugin entry for this key" —
+        a disabled plugin gets exactly such an entry (enabled=False,
+        error='disabled via config') without ever having been loaded."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "discovered_disabled_fixture", auto_enable=False,
+        )
+        home = tmp_path / "hermes_test"
+        (home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"disabled": ["discovered_disabled_fixture"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+        assert "discovered_disabled_fixture" in mgr._plugins
+
+        receipt = mgr.reload_plugin("discovered_disabled_fixture")
+
+        assert receipt.previously_loaded is False
+
+    def test_reload_calls_are_queued_not_interleaved(self, tmp_path, monkeypatch):
+        import threading
+        import time
+
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(plugins_dir, "queue_fixture")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        concurrent = {"count": 0, "max": 0}
+        guard = threading.Lock()
+        real_reload_locked = mgr._reload_plugin_locked
+
+        def _instrumented(plugin_id):
+            with guard:
+                concurrent["count"] += 1
+                concurrent["max"] = max(concurrent["max"], concurrent["count"])
+            try:
+                time.sleep(0.05)
+                return real_reload_locked(plugin_id)
+            finally:
+                with guard:
+                    concurrent["count"] -= 1
+
+        monkeypatch.setattr(mgr, "_reload_plugin_locked", _instrumented)
+
+        receipts = []
+        threads = [
+            threading.Thread(
+                target=lambda: receipts.append(mgr.reload_plugin("queue_fixture"))
+            )
+            for _ in range(4)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+
+        assert len(receipts) == 4
+        assert all(receipt.ok for receipt in receipts)
+        assert concurrent["max"] == 1
+
+
 class TestPreToolCallBlocking:
     """Tests for the pre_tool_call block directive helper."""
 

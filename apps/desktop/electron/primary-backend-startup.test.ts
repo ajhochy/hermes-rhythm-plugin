@@ -102,6 +102,38 @@ test('an already-saved remote bypasses every local startup step', async () => {
   assert.equal(options.ensureLocalRuntime.mock.calls.length, 0)
 })
 
+test('an embedded borrowed local connection bypasses update, bootstrap, and first-run setup only after remote routing', async () => {
+  const borrowed = { baseUrl: 'http://127.0.0.1:4411', mode: 'local' as const, wsUrl: 'ws://127.0.0.1:4411/ws' }
+
+  const options = startupOptions({
+    connectLocal: vi.fn(async () => borrowed)
+  })
+
+  const connectLocal = (options as typeof options & { connectLocal: ReturnType<typeof vi.fn> }).connectLocal
+
+  assert.deepEqual(await runPrimaryBackendStartup(options), { kind: 'connection', connection: borrowed })
+  assert.deepEqual(options.resolveRemote.mock.calls, [[]])
+  assert.deepEqual(connectLocal.mock.calls, [[]])
+  assert.equal(options.waitForLocalStart.mock.calls.length, 0)
+  assert.equal(options.prepareLocalBackend.mock.calls.length, 0)
+  assert.equal(options.waitForDecision.mock.calls.length, 0)
+  assert.equal(options.ensureLocalRuntime.mock.calls.length, 0)
+})
+
+test('an unavailable borrowed local candidate falls through to the real installer path', async () => {
+  const runtimeBackend = { ...bootstrapBackend, command: 'hermes' }
+  const options = startupOptions({
+    connectLocal: vi.fn(async () => null),
+    ensureLocalRuntime: vi.fn(async () => runtimeBackend)
+  })
+
+  assert.deepEqual(await runPrimaryBackendStartup(options), { kind: 'local', backend: runtimeBackend })
+  assert.equal((options as typeof options & { connectLocal: ReturnType<typeof vi.fn> }).connectLocal.mock.calls.length, 1)
+  assert.equal(options.waitForLocalStart.mock.calls.length, 1)
+  assert.equal(options.prepareLocalBackend.mock.calls.length, 1)
+  assert.equal(options.ensureLocalRuntime.mock.calls.length, 1)
+})
+
 test('remote apply fails clearly when no saved remote can be resolved', async () => {
   const gate = createFirstRunSetupGate({ stuckAfterMs: 0 })
   const options = startupOptions({ waitForDecision: gate.wait })

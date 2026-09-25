@@ -1,0 +1,19 @@
+{
+  "name": "rhythm",
+  "label": "Rhythm",
+  "description": "Rhythm workspace connection",
+  "icon": "Pulse",
+  "version": "0.1.0",
+  "tab": {"path": "/rhythm", "hidden": true},
+  "entry": "dist/index.js",
+  "theme": {
+    "name": "rhythm",
+    "label": "Rhythm",
+    "description": "Rhythm workspace colors for the Hermes dashboard",
+    "css": "theme/rhythm.css"
+  },
+  "api": "plugin_api.py",
+  "public_api": [
+    {"path": "/oauth/callback", "method": "GET"}
+  ]
+}

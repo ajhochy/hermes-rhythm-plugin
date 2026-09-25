@@ -1,0 +1,40 @@
+{
+  "issue": 11,
+  "generated": "2026-08-21",
+  "stack": "python",
+  "criteria": [
+    {
+      "criterion_id": "issue-11-c1",
+      "text": "The shared ArtifactsScreen accepts a typed host-only artifact port and renders selected sanitized documents in an opaque-origin iframe with only allow-scripts.",
+      "mode": "ui",
+      "test_file": "tests/plugins/test_rhythm_m7_contract.py",
+      "test_id": "test_issue_11_vendor_artifact_runtime_is_exact_and_opaque_origin",
+      "status": "pass"
+    },
+    {
+      "criterion_id": "issue-11-c2",
+      "text": "The iframe document uses default-src none and denies network, forms, frames, objects, base URLs, popups, downloads, and top navigation through its sandbox/CSP boundary.",
+      "mode": "ui",
+      "test_file": "tests/plugins/test_rhythm_m7_contract.py",
+      "test_id": "test_issue_11_vendor_artifact_runtime_is_exact_and_opaque_origin",
+      "status": "pass"
+    },
+    {
+      "criterion_id": "issue-11-c3",
+      "text": "Capability messages are accepted only from the mounted frame with matching artifact session, bundle generation, state generation, and declared capability; stale or unknown messages never reach the host.",
+      "mode": "integration",
+      "test_file": "tests/plugins/test_rhythm_m7_contract.py",
+      "test_id": "test_issue_11_artifact_capabilities_are_session_bound_and_preserve_conflicts",
+      "status": "pass"
+    },
+    {
+      "criterion_id": "issue-11-c4",
+      "text": "Hermes exposes only classified read paths for automation catalog/rule/preview and integration status/settings/read-only sync; write actions and external messaging remain unavailable.",
+      "mode": "integration",
+      "test_file": "tests/plugins/test_rhythm_m7_contract.py",
+      "test_id": "test_issue_11_allowlist_contains_only_classified_reads",
+      "status": "pass"
+    }
+  ],
+  "not_tested": []
+}

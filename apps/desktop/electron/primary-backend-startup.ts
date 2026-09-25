@@ -2,6 +2,13 @@ import type { FirstRunSetupDecision } from './first-run-setup-gate'
 
 export interface PrimaryBackendStartupOptions<Backend, RuntimeBackend, Remote, Connection> {
   connectRemote: (remote: Remote) => Promise<Connection>
+  /**
+   * An embedded host may offer a compatible, already-running local backend.
+   * `null` is an intentional miss: continue through the normal local
+   * installer/bootstrap path instead of turning an absent host runtime into a
+   * permanently unavailable Desktop backend.
+   */
+  connectLocal?: () => Promise<Connection | null>
   ensureLocalRuntime: (backend: Backend) => Promise<RuntimeBackend>
   prepareLocalBackend: () => Backend | Promise<Backend>
   resolveRemote: () => Promise<Remote | null>
@@ -10,7 +17,7 @@ export interface PrimaryBackendStartupOptions<Backend, RuntimeBackend, Remote, C
 }
 
 export type PrimaryBackendStartupResult<RuntimeBackend, Connection> =
-  { kind: 'local'; backend: RuntimeBackend } | { kind: 'remote'; connection: Connection }
+  { kind: 'local'; backend: RuntimeBackend } | { kind: 'remote' | 'connection'; connection: Connection }
 
 interface ResolvedPrimaryRemote {
   authMode?: 'oauth' | 'token'
@@ -66,6 +73,7 @@ export class FirstRunSetupResetError extends Error {
 // re-resolves persisted config without ever entering ensureRuntime/bootstrap.
 export async function runPrimaryBackendStartup<Backend, RuntimeBackend, Remote, Connection>({
   connectRemote,
+  connectLocal,
   ensureLocalRuntime,
   prepareLocalBackend,
   resolveRemote,
@@ -78,6 +86,17 @@ export async function runPrimaryBackendStartup<Backend, RuntimeBackend, Remote, 
 
   if (savedRemote) {
     return { kind: 'remote', connection: await connectRemote(savedRemote) }
+  }
+
+  // An embedded host may lend an already-authenticated local runtime. This
+  // runs only after the real persisted remote/SSH route has been ruled out,
+  // and before update/bootstrap/first-run machinery can mutate host state.
+  if (connectLocal) {
+    const borrowed = await connectLocal()
+
+    if (borrowed) {
+      return { kind: 'connection', connection: borrowed }
+    }
   }
 
   await waitForLocalStart()

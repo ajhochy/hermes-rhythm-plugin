@@ -207,12 +207,13 @@ class ToolEntry:
     __slots__ = (
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
-        "max_result_size_chars", "dynamic_schema_overrides",
+        "max_result_size_chars", "dynamic_schema_overrides", "policy_scoped",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
                  requires_env, is_async, description, emoji,
-                 max_result_size_chars=None, dynamic_schema_overrides=None):
+                 max_result_size_chars=None, dynamic_schema_overrides=None,
+                 policy_scoped=False):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -231,6 +232,7 @@ class ToolEntry:
         # on every get_definitions() call; results are merged shallow on top
         # of the base schema before the {"type": "function", ...} wrap.
         self.dynamic_schema_overrides = dynamic_schema_overrides
+        self.policy_scoped = bool(policy_scoped)
 
 
 class _PluginOverridePolicy:
@@ -747,6 +749,7 @@ class ToolRegistry:
         emoji: str = "",
         max_result_size_chars: int | float | None = None,
         dynamic_schema_overrides: Callable = None,
+        policy_scoped: bool = False,
         override: bool = False,
         scope: Optional[str] = None,
     ):
@@ -844,6 +847,7 @@ class ToolRegistry:
                 emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
                 dynamic_schema_overrides=dynamic_schema_overrides,
+                policy_scoped=policy_scoped,
             )
             # Availability is now derived per-tool (_toolset_has_exposable_tools),
             # so this map no longer gates a toolset. It is still consumed by
@@ -1015,7 +1019,12 @@ class ToolRegistry:
     # Schema retrieval
     # ------------------------------------------------------------------
 
-    def get_definitions(self, tool_names: Set[str], quiet: bool = False) -> List[dict]:
+    def get_definitions(
+        self,
+        tool_names: Set[str],
+        quiet: bool = False,
+        session_policy=None,
+    ) -> List[dict]:
         """Return OpenAI-format tool schemas for the requested tool names.
 
         Only tools whose ``check_fn()`` returns True (or have no check_fn)
@@ -1036,6 +1045,11 @@ class ToolRegistry:
             entry = entries_by_name.get(name)
             if not entry:
                 continue
+            if entry.policy_scoped:
+                from agent.session_policy import policy_scoped_tool_available
+
+                if not policy_scoped_tool_available(name, session_policy):
+                    continue
             if entry.check_fn:
                 if entry.check_fn not in check_results:
                     check_results[entry.check_fn] = _check_fn_cached(entry.check_fn)
@@ -1118,6 +1132,14 @@ class ToolRegistry:
         entry = self.get_entry(name, scope=scope)
         if not entry:
             return tool_error(f"Unknown tool: {name}")
+        if entry.policy_scoped:
+            from agent.session_policy import policy_scoped_tool_available
+
+            if not policy_scoped_tool_available(name):
+                return tool_error(
+                    "policy_scoped_tool_unavailable",
+                    code="policy_scoped_tool_unavailable",
+                )
         try:
             if entry.is_async:
                 from model_tools import _run_async

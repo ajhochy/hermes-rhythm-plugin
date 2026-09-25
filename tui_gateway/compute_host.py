@@ -266,7 +266,12 @@ class ComputeHost:
 
     def handle_frame(self, frame: dict[str, Any]) -> None:
         kind = str(frame.get("type") or "")
-        if kind == "session.seed":
+        if kind == "host_capabilities":
+            from agent.host_capabilities import install_from_parent
+
+            mapping = frame.get("capabilities")
+            install_from_parent(mapping if isinstance(mapping, dict) else {})
+        elif kind == "session.seed":
             self._handle_seed(frame)
         elif kind == "turn.start":
             self._handle_turn_start(frame)
@@ -440,10 +445,12 @@ class ComputeHost:
         if not sid:
             self.emit({"type": "turn.error", "sid": sid, "request_id": request_id, "message": "sid required"})
             return
+        session = None
         try:
             from tui_gateway import server
 
             session = self._ensure_server_session(server, frame)
+            server.session_policy_turn_gate(session)
             with session["history_lock"]:
                 queued_prompt_generation = frame.get("queued_prompt_generation")
                 if (
@@ -457,6 +464,10 @@ class ComputeHost:
                             "sid": sid,
                             "request_id": request_id,
                             "interrupted": True,
+                            "policy_tainted": bool(
+                                session.get("policy_tainted")
+                                or getattr(session.get("agent"), "session_policy_tainted", False)
+                            ),
                             "ended_ns": now_ns(),
                         }
                     )
@@ -510,6 +521,10 @@ class ComputeHost:
                     "session_key": session_key,
                     "message_count": message_count,
                     "interrupted": interrupted,
+                    "policy_tainted": bool(
+                        session.get("policy_tainted")
+                        or getattr(session.get("agent"), "session_policy_tainted", False)
+                    ),
                     "ended_ns": now_ns(),
                     "session_info": session_info,
                     "session_info_emitted": True,
@@ -526,11 +541,25 @@ class ComputeHost:
                         server._clear_inflight_turn(session)
             except Exception:
                 pass
-            self.emit({"type": "turn.error", "sid": sid, "request_id": request_id, "reason": "exception", "message": str(exc)})
+            self.emit({
+                "type": "turn.error",
+                "sid": sid,
+                "request_id": request_id,
+                "reason": "exception",
+                "message": str(exc),
+                "policy_tainted": bool(
+                    session is not None
+                    and (
+                        session.get("policy_tainted")
+                        or getattr(session.get("agent"), "session_policy_tainted", False)
+                    )
+                ),
+            })
 
     def _ensure_server_session(self, server: Any, frame: dict[str, Any]) -> dict:
         sid = str(frame.get("sid") or "")
         key = str(frame.get("session_key") or sid)
+        policy_entry = frame.get("native_session_policy")
         session = server._sessions.get(sid)
         if session is not None:
             session["transport"] = self._transport
@@ -542,6 +571,8 @@ class ComputeHost:
                 session["profile_home"] = str(frame.get("profile_home"))
             if isinstance(frame.get("attached_images"), list):
                 session["attached_images"] = list(frame.get("attached_images") or [])
+            if isinstance(policy_entry, dict):
+                session["native_session_policy_entry"] = dict(policy_entry)
             return session
 
         history = frame.get("history") if isinstance(frame.get("history"), list) else []
@@ -565,6 +596,42 @@ class ComputeHost:
                 # _make_agent that RAISES is the one path where nothing takes it.
                 session_db = SessionDB(db_path=Path(profile_home) / "state.db")
                 owns_db = True
+            restored_policy = None
+            if policy_entry is not None:
+                profile_id = policy_entry["profile_id"]
+                row = {"model_config": {"native_session_policy": policy_entry}}
+                payload = policy_entry.get("payload") if isinstance(policy_entry, dict) else None
+                if isinstance(payload, dict) and payload.get("version") == 2:
+                    # A fresh compute interpreter can restore a v2 session
+                    # before model_tools has triggered plugin discovery.
+                    from hermes_cli.plugins import discover_plugins
+
+                    discover_plugins()
+                try:
+                    restored_policy = server._restore_session_policy(row, key, profile_id)
+                except ValueError:
+                    # Older restore validators require an exact entry shape.
+                    # Preserve the opaque frame on the host session, while
+                    # passing only the version's recognized envelope fields to
+                    # that validator. Payload validation remains unchanged.
+                    if not isinstance(policy_entry, dict):
+                        raise
+                    payload = policy_entry.get("payload")
+                    version = payload.get("version") if isinstance(payload, dict) else None
+                    known = {"payload", "owner_id", "profile_id"}
+                    if version == 2:
+                        known.update({"lineage_root", "tainted"})
+                    if not set(policy_entry) - known:
+                        raise
+                    projected_entry = {
+                        name: value for name, value in policy_entry.items() if name in known
+                    }
+                    restored_policy = server._restore_session_policy(
+                        {"model_config": {"native_session_policy": projected_entry}},
+                        key,
+                        profile_id,
+                    )
+
             agent = server._make_agent(
                 sid,
                 key,
@@ -574,6 +641,7 @@ class ComputeHost:
                 service_tier_override=frame.get("service_tier_override"),
                 platform_override=frame.get("source"),
                 session_db=session_db,
+                session_policy=restored_policy,
             )
             if server._transfer_db_to_agent(agent, session_db):
                 owns_db = False
@@ -641,6 +709,8 @@ class ComputeHost:
             session["attached_images"] = list(frame.get("attached_images") or [])
         if frame.get("model_override") is not None:
             session["model_override"] = frame.get("model_override")
+        if isinstance(policy_entry, dict):
+            session["native_session_policy_entry"] = dict(policy_entry)
         return session
 
     def _handle_reload_mcp(self, frame: dict[str, Any]) -> None:

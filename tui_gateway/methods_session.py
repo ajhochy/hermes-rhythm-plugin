@@ -41,20 +41,41 @@ def _(rid, params: dict) -> dict:
     # and each turn re-bind HERMES_HOME. None/own profile → launch (unchanged).
     profile = (params.get("profile") or "").strip() or None
     profile_home = _profile_home(profile)
+    session_policy = None
+    if "policy_selection" in params:
+        try:
+            from agent.session_policy import resolve_session_policy
+            from hermes_cli.plugins import discover_plugins
+
+            discover_plugins()
+            session_policy = resolve_session_policy(
+                params["policy_selection"], session_id=key,
+                profile_id=_response_profile_name(profile),
+                runtime_generation=_SESSION_POLICY_RUNTIME_GENERATION,
+                transport=current_transport() or _stdio_transport,
+                cwd=os.path.realpath(resolved_cwd) if explicit_cwd else None,
+            )
+        except Exception as exc:
+            message, code = _unsupported_policy_error(exc)
+            return _err(rid, 4000, message, {"code": code})
 
     # The desktop composer owns its model/effort/fast as plain UI state and ships
     # it on every session.create. Honor each as a PER-SESSION override (built into
     # the agent below) — never a global config write, so picking a model/effort
     # for a new chat can't mutate the profile default. provider is optional
     # (resolved at build).
-    create_model = str(params.get("model") or "").strip()
+    create_model = (
+        "" if getattr(session_policy, "version", None) == 2
+        else str(params.get("model") or "").strip()
+    )
     session_model_override = (
         {"model": create_model, "provider": str(params.get("provider") or "").strip() or None}
         if create_model
         else None
     )
     create_reasoning_override = None
-    if effort := str(params.get("reasoning_effort") or "").strip():
+    if (getattr(session_policy, "version", None) != 2 and
+            (effort := str(params.get("reasoning_effort") or "").strip())):
         try:
             from hermes_constants import parse_reasoning_effort
 
@@ -94,6 +115,10 @@ def _(rid, params: dict) -> dict:
             "inflight_turn": None,
             "last_active": now,
             "model_override": session_model_override,
+            "session_policy": session_policy,
+            "policy_tainted": bool(
+                getattr(session_policy, "restored_tainted", False)
+            ),
             "create_reasoning_override": create_reasoning_override,
             "create_service_tier_override": create_service_tier_override,
             "parent_session_id": parent_session_id,
@@ -138,9 +163,13 @@ def _(rid, params: dict) -> dict:
                 # its sticky pick with the global default before the deferred
                 # build's session.info lands.
                 "model": (
-                    session_model_override.get("model")
-                    if session_model_override
-                    else _resolve_model()
+                    session_policy.model.model
+                    if getattr(session_policy, "version", None) == 2
+                    else (
+                        session_model_override.get("model")
+                        if session_model_override
+                        else _resolve_model()
+                    )
                 ),
                 **(
                     {"provider": session_model_override["provider"]}
@@ -420,6 +449,13 @@ def _(rid, params: dict) -> dict:
         profile_resume_cwd = str(found.get("cwd") or "").strip() or _profile_configured_cwd(
             profile_home
         )
+        try:
+            restored_policy = _restore_session_policy(
+                found, target, _response_profile_name(profile)
+            )
+        except Exception as exc:
+            message, code = _unsupported_policy_error(exc)
+            return _err(rid, 4000, message, {"code": code})
 
         def _reuse_live_payload(sid: str, session: dict) -> dict:
             payload = _live_session_payload(
@@ -489,6 +525,7 @@ def _(rid, params: dict) -> dict:
                 profile_home=profile_home,
                 lazy=True,
             )
+            record["session_policy"] = restored_policy
             if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
                 return _ok(rid, _reuse_live_payload(*live))
             # A delegated child mid-run emits no session events of its own — report
@@ -557,6 +594,7 @@ def _(rid, params: dict) -> dict:
                 model_override=overrides.get("model_override"),
                 resume_runtime_overrides=overrides or None,
             )
+            record["session_policy"] = restored_policy
             record["resume_history_ready"] = threading.Event()
             record["resume_hydrating"] = True
             record["resume_message_count"] = int(found.get("message_count") or 0)
@@ -653,6 +691,7 @@ def _(rid, params: dict) -> dict:
                 model_override=overrides.get("model_override"),
                 resume_runtime_overrides=overrides or None,
             )
+            record["session_policy"] = restored_policy
             if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
                 return _ok(rid, _reuse_live_payload(*live))
 
@@ -737,6 +776,7 @@ def _(rid, params: dict) -> dict:
                     session_id=target,
                     session_db=db,
                     platform_override=source,
+                    session_policy=restored_policy,
                     **stored_runtime_overrides,
                 )
             finally:
@@ -2915,6 +2955,11 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
+    policy_error = _v2_unsupported_response(
+        rid, session, code="projection_unsupported"
+    )
+    if policy_error is not None:
+        return policy_error
     # Branch must write into the parent's profile-scoped state.db (app-global
     # remote mode). Using the launch handle would orphan branch rows + history.
     with _session_db(session) as db:

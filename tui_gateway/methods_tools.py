@@ -510,6 +510,10 @@ def _(rid, params: dict) -> dict:
         bundle_key = None
 
     if bundle_key is not None:
+        if session and getattr(session.get("session_policy"), "version", None) == 2:
+            return _v2_unsupported_response(
+                rid, session, code="projection_unsupported"
+            )
         try:
             bundle_result = build_bundle_invocation_message(
                 bundle_key,
@@ -550,6 +554,10 @@ def _(rid, params: dict) -> dict:
         cmds = scan_skill_commands()
         key = f"/{name}"
         if key in cmds:
+            if session and getattr(session.get("session_policy"), "version", None) == 2:
+                return _v2_unsupported_response(
+                    rid, session, code="projection_unsupported"
+                )
             msg = build_skill_invocation_message(
                 key, arg, task_id=session.get("session_key", "") if session else ""
             )
@@ -598,6 +606,11 @@ def _(rid, params: dict) -> dict:
         # MoA preset, then restore the prior model. To *switch* to a MoA preset
         # for the rest of the session, pick it from the model picker (MoA
         # presets surface as a virtual "Mixture of Agents" provider).
+        policy_error = _v2_unsupported_response(
+            rid, session, code="projection_unsupported"
+        )
+        if policy_error is not None:
+            return policy_error
         try:
             from hermes_cli.moa_config import moa_usage, normalize_moa_config
 
@@ -1175,6 +1188,10 @@ def _(rid, params: dict) -> dict:
             else None
         )
         if _bundle_key is not None:
+            if getattr(session.get("session_policy"), "version", None) == 2:
+                return _v2_unsupported_response(
+                    rid, session, code="projection_unsupported"
+                )
             return _methods["command.dispatch"](
                 rid,
                 {
@@ -1202,6 +1219,10 @@ def _(rid, params: dict) -> dict:
         try:
             _cmd_key = f"/{_cmd_base}"
             if _cmd_key in get_skill_commands():
+                if getattr(session.get("session_policy"), "version", None) == 2:
+                    return _v2_unsupported_response(
+                        rid, session, code="projection_unsupported"
+                    )
                 return _err(
                     rid, 4018, f"skill command: use command.dispatch for {_cmd_key}"
                 )
@@ -1531,7 +1552,11 @@ def _(rid, params: dict) -> dict:
         # Pre-assembly list: /tools is a discovery surface and must show
         # tools deferred behind the tool_search bridge (same as the CLI).
         tools = get_tool_definitions(enabled_toolsets=enabled, quiet_mode=True,
-                                     skip_tool_search_assembly=True)
+                                     skip_tool_search_assembly=True,
+                                     session_policy=(
+                                         session.get("session_policy")
+                                         if session else None
+                                     ))
         sections = {}
 
         for tool in sorted(tools, key=lambda t: t["function"]["name"]):
@@ -2396,6 +2421,8 @@ def _(rid, params: dict) -> dict:
     Actions:
       - ``list``   → {"plugins": [{name, key, version, description, source,
                        status, portable}], "user_count": N, "bundled_count": M}
+      - ``reconcile`` → dispose user/project plugins removed on disk, then
+                        return the refreshed inventory and removed keys.
       - ``toggle`` → flip ``key`` (or ``name``) based on ``enable`` (bool).
                        Returns the refreshed row plus {"ok", "unchanged"}.
       - ``install`` → git-clone into ``~/.hermes/plugins/`` (non-interactive).
@@ -2467,6 +2494,19 @@ def _(rid, params: dict) -> dict:
                     "bundled_count": len(rows) - user_count,
                 },
             )
+
+        if action == "reconcile":
+            from hermes_cli.plugins import get_plugin_manager
+
+            removed = get_plugin_manager().reconcile_removed_plugins()
+            rows = _rows()
+            user_count = sum(1 for row in rows if row["source"] != "bundled")
+            return _ok(rid, {
+                "plugins": rows,
+                "removed": removed,
+                "user_count": user_count,
+                "bundled_count": len(rows) - user_count,
+            })
 
         if action == "toggle":
             from hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled

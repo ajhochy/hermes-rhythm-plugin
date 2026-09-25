@@ -13,6 +13,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
 import { displayPath, pathLeaf } from '@/lib/display-path'
+import { isEmbeddedDesktop } from '@/lib/embedded-mode'
 import { Activity, AlertCircle, Clock, Command, FolderOpen, Globe, Hash, Loader2, Terminal } from '@/lib/icons'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
@@ -303,7 +304,13 @@ export function useStatusbarItems({
       ? 'text-amber-600 hover:text-amber-600'
       : 'text-destructive hover:text-destructive'
 
-  const clientVersionItem = useMemo<StatusbarItem>(() => {
+  const embedded = isEmbeddedDesktop()
+
+  const clientVersionItem = useMemo<StatusbarItem | null>(() => {
+    if (embedded) {
+      return null
+    }
+
     const applying = updateApply.applying || updateApply.stage === 'restart'
 
     const status = resolveVersionStatus({
@@ -345,7 +352,8 @@ export function useStatusbarItems({
     updateStatus?.behind,
     updateStatus?.branch,
     updateStatus?.currentSha,
-    updateStatus?.updateAvailable
+    updateStatus?.updateAvailable,
+    embedded
   ])
 
   const backendVersionItem = useMemo<StatusbarItem | null>(() => {
@@ -579,7 +587,7 @@ export function useStatusbarItems({
         toggleLabel: copy.toggleTerminal,
         variant: 'action'
       },
-      clientVersionItem,
+      ...(clientVersionItem ? [clientVersionItem] : []),
       ...(backendVersionItem ? [backendVersionItem] : [])
     ],
     [

@@ -325,6 +325,7 @@ def get_tool_definitions(
     disabled_toolsets: Optional[List[str]] = None,
     quiet_mode: bool = False,
     skip_tool_search_assembly: bool = False,
+    session_policy=None,
 ) -> List[Dict[str, Any]]:
     """
     Get tool definitions for model API calls with toolset-based filtering.
@@ -340,10 +341,25 @@ def get_tool_definitions(
             tool_search / tool_describe bridge handlers so they can read the
             real catalog, not the already-collapsed one. Public callers should
             leave this False.
+        session_policy: Bound frozen session policy. Policy-scoped tools are
+            offered only to v2 snapshots whose allowlist includes them.
 
     Returns:
         Filtered list of OpenAI-format tool definitions.
     """
+    if session_policy is None:
+        from agent.session_policy import current_policy
+
+        active_policy = current_policy()
+        if active_policy is not None:
+            session_policy = active_policy[0]
+
+    # A v2 projection already has a bounded, immutable allowlist. Deferring
+    # its scoped tools would hide both those tools and the tool-search bridge,
+    # which is intentionally absent from the frozen allowlist.
+    if getattr(session_policy, "version", None) == 2:
+        skip_tool_search_assembly = True
+
     # Fast path: memoized result when the caller doesn't need stdout prints.
     # The cache key captures every argument-level input; the registry
     # generation captures registry mutations (MCP refresh, plugin load).
@@ -374,6 +390,12 @@ def get_tool_definitions(
                 _is_delegated_child_context(),
                 _is_dispatcher_owned_worker(),
                 profile_scope,
+                (
+                    2,
+                    tuple(session_policy.allowed_tools or ()),
+                )
+                if getattr(session_policy, "version", None) == 2
+                else None,
             )
         with _tool_defs_cache_lock:
             cached = _tool_defs_cache.get(cache_key) if cache_key is not None else None
@@ -386,8 +408,13 @@ def get_tool_definitions(
             # schemas are treated as read-only by all known callers.
             return list(cached)
 
-    result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode,
-                                       skip_tool_search_assembly=skip_tool_search_assembly)
+    result = _compute_tool_definitions(
+        enabled_toolsets,
+        disabled_toolsets,
+        quiet_mode,
+        skip_tool_search_assembly=skip_tool_search_assembly,
+        session_policy=session_policy,
+    )
     if quiet_mode and cache_key is not None:
         # Cache the freshly-computed list, but hand callers a shallow copy so
         # downstream mutations (e.g. run_agent appending memory/LCM tool
@@ -419,6 +446,7 @@ def _compute_tool_definitions(
     disabled_toolsets: Optional[List[str]] = None,
     quiet_mode: bool = False,
     skip_tool_search_assembly: bool = False,
+    session_policy=None,
 ) -> List[Dict[str, Any]]:
     """Uncached implementation of :func:`get_tool_definitions`."""
     # Determine which tool names the caller wants
@@ -506,8 +534,14 @@ def _compute_tool_definitions(
     # needed; plugins respect enabled_toolsets / disabled_toolsets like any
     # other toolset.
 
-    # Ask the registry for schemas (only returns tools whose check_fn passes)
-    filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
+    # Ask the registry for schemas. It owns both check_fn availability and the
+    # fail-closed policy-scoped registration gate so direct schema consumers
+    # cannot bypass the session-aware model_tools path.
+    filtered_tools = registry.get_definitions(
+        tools_to_include,
+        quiet=quiet_mode,
+        session_policy=session_policy,
+    )
 
     # The set of tool names that actually passed check_fn filtering.
     # Use this (not tools_to_include) for any downstream schema that references
@@ -1205,6 +1239,10 @@ def handle_function_call(
     tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
+    session_policy=None,
+    policy_binding=None,
+    policy_approval_callback=None,
+    policy_tainted: bool = False,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -1235,6 +1273,16 @@ def handle_function_call(
     if not isinstance(function_args, dict):
         function_args = {}
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
+
+    entry = registry.get_entry(function_name)
+    if entry is not None and entry.policy_scoped:
+        from agent.session_policy import policy_scoped_tool_available
+
+        if not policy_scoped_tool_available(function_name, session_policy):
+            return tool_error(
+                "policy_scoped_tool_unavailable",
+                code="policy_scoped_tool_unavailable",
+            )
 
     # ── Tool Search bridge dispatch ──────────────────────────────────
     # tool_search and tool_describe are pure catalog reads — handle them
@@ -1282,8 +1330,14 @@ def handle_function_call(
             current_defs = get_tool_definitions(
                 enabled_toolsets=enabled_toolsets,
                 disabled_toolsets=disabled_toolsets,
-                quiet_mode=True, skip_tool_search_assembly=True,
+                quiet_mode=True,
+                skip_tool_search_assembly=True,
+                session_policy=session_policy,
             ) or []
+            if session_policy is not None:
+                current_defs = session_policy.filter_tool_schemas(
+                    current_defs, binding=policy_binding,
+                )
         except Exception:
             current_defs = []
         if function_name == _ts_mod.TOOL_SEARCH_NAME:
@@ -1344,6 +1398,10 @@ def handle_function_call(
                 tool_request_middleware_trace=list(_tool_middleware_trace),
                 enabled_toolsets=enabled_toolsets,
                 disabled_toolsets=disabled_toolsets,
+                session_policy=session_policy,
+                policy_binding=policy_binding,
+                policy_approval_callback=policy_approval_callback,
+                policy_tainted=policy_tainted,
             )
 
     _tool_original_args = dict(function_args)
@@ -1490,21 +1548,59 @@ def handle_function_call(
         except Exception:
             reset_current_observability_context = None
         try:
+            def _policy_dispatch(next_args: Dict[str, Any], **dispatch_kwargs: Any) -> Any:
+                # Execution middleware may rewrite arguments. Authorize the
+                # exact payload crossing into the registry, once per dispatch.
+                if session_policy is not None:
+                    try:
+                        decision = session_policy.authorize_tool_call(
+                            tool_name=function_name, arguments=next_args,
+                            binding=policy_binding,
+                            lineage_root=session_policy.binding.session_id,
+                            task_id=task_id or "default",
+                            tainted=policy_tainted,
+                        )
+                        if decision.effect == "ask":
+                            approved = (policy_approval_callback(function_name, dict(next_args))
+                                        if policy_approval_callback else False)
+                            if approved is not True:
+                                return tool_error("Session policy approval required")
+                        elif decision.effect != "allow":
+                            return tool_error("Session policy denied tool call")
+                    except Exception:
+                        return tool_error("Session policy evaluation failed")
+                if session_policy is None:
+                    return registry.dispatch(function_name, next_args, **dispatch_kwargs)
+                from agent.session_policy import bind_active_policy, reset_active_policy
+                token = bind_active_policy(
+                    session_policy,
+                    session_policy.binding.session_id,
+                )
+                try:
+                    result = registry.dispatch(function_name, next_args, **dispatch_kwargs)
+                    if function_name == "search_files":
+                        result = session_policy.filter_search_result(
+                            result, task_id=task_id or "default"
+                        )
+                    return result
+                finally:
+                    reset_active_policy(token)
+
             if function_name == "execute_code":
                 # Prefer the caller-provided list so subagents can't overwrite
                 # the parent's tool set via the process-global.
                 sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
-                    return registry.dispatch(
-                        function_name, next_args,
+                    return _policy_dispatch(
+                        next_args,
                         task_id=task_id,
                         session_id=session_id,
                         enabled_tools=sandbox_enabled,
                     )
             else:
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
-                    return registry.dispatch(
-                        function_name, next_args,
+                    return _policy_dispatch(
+                        next_args,
                         task_id=task_id,
                         session_id=session_id,
                         user_task=user_task,

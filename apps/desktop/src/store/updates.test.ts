@@ -350,6 +350,21 @@ describe('requestActiveUpdate', () => {
     expect(updateHermesSpy).not.toHaveBeenCalled()
   })
 
+  it('does not invoke Hermes app-update IPC from the embedded renderer', () => {
+    setRemote(false)
+    $updateStatus.set(status({ behind: 3 }))
+    ;(globalThis as unknown as { window: unknown }).window = {
+      hermesDesktop: { updates: { apply: applyClientMock, check: checkClientMock } },
+      location: { search: '?embedded=1' }
+    }
+
+    requestActiveUpdate()
+
+    expect($updateOverlayOpen.get()).toBe(false)
+    expect(applyClientMock).not.toHaveBeenCalled()
+    expect(checkClientMock).not.toHaveBeenCalled()
+  })
+
   it('applies on a backend that reports an update it cannot count commits for', async () => {
     setRemote(true)
     $backendUpdateStatus.set(status({ behind: 0, updateAvailable: true }))

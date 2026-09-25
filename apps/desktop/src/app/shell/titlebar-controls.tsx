@@ -9,6 +9,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { isEmbeddedDesktop } from '@/lib/embedded-mode'
 import { compactNumber } from '@/lib/format'
 import { triggerHaptic } from '@/lib/haptics'
 import { formatModifierToken } from '@/lib/keybinds/combo'
@@ -226,6 +227,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       // crowds the ⌘⇧H hint off the tooltip. Label only — the hint is appended
       // from the action registry, same as every other tool here.
       actionId: 'view.toggleHud',
+      hidden: isEmbeddedDesktop(),
       icon: <TitlebarIcon name="comment-discussion" />,
       id: 'hud',
       label: t.titlebar.enterHud,

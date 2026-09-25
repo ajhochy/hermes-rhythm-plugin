@@ -37,7 +37,7 @@ from hermes_cli.dashboard_auth.cookies import (
     set_session_provider_cookie,
     set_sso_attempt_cookie,
 )
-from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
+from hermes_cli.dashboard_auth.public_paths import is_public_api_route
 
 _log = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
 )
 
 
-def _path_is_public(path: str) -> bool:
+def _path_is_public(path: str, method: str = "GET") -> bool:
     """True if ``path`` bypasses the OAuth auth gate.
 
     Two sources of public-ness:
@@ -78,7 +78,7 @@ def _path_is_public(path: str) -> bool:
       mounts. Prefix-matched so ``/assets/foo.css`` lights up via
       ``/assets/``.
     """
-    if path in PUBLIC_API_PATHS:
+    if is_public_api_route(method, path):
         return True
     return any(
         path == prefix or path.startswith(prefix)
@@ -340,7 +340,7 @@ async def gated_auth_middleware(
         return await call_next(request)
 
     path = request.url.path
-    if _path_is_public(path):
+    if _path_is_public(path, request.method):
         return await call_next(request)
 
     # RFC 8252 native-app bearer path (goal: no session cookies). The desktop

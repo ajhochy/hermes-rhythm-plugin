@@ -30,6 +30,8 @@ the SPA should bootstrap it after login instead.
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 PUBLIC_API_PATHS: frozenset[str] = frozenset({
     # Minimal process liveness probe for desktop/backend boot handshakes. It
     # intentionally avoids gateway config, platform discovery, MCP setup, and
@@ -58,3 +60,16 @@ PUBLIC_API_PATHS: frozenset[str] = frozenset({
     # 401 no_cookie. The JWT — not this allowlist — is the security boundary.
     "/api/cron/fire",
 })
+
+# Public plugin routes are intentionally method-and-path exact.  They are
+# registered only after a trusted dashboard plugin has been imported and its
+# manifest declaration has been checked against the router it exports.
+_PUBLIC_PLUGIN_API_ROUTES: set[tuple[str, str]] = set()
+
+
+def register_public_plugin_api_routes(routes: Iterable[tuple[str, str]]) -> None:
+    _PUBLIC_PLUGIN_API_ROUTES.update((method.upper(), path) for method, path in routes)
+
+
+def is_public_api_route(method: str, path: str) -> bool:
+    return path in PUBLIC_API_PATHS or (method.upper(), path) in _PUBLIC_PLUGIN_API_ROUTES

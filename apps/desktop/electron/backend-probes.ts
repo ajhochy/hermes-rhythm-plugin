@@ -141,14 +141,14 @@ function hermesRuntimeImportProbe() {
  * @param {object} [opts.env] - Additional environment for the probe.
  * @returns {boolean}
  */
-function canImportHermesCli(pythonPath: string, opts: { env?: Record<string, string> } = {}) {
+function canImportHermesCli(pythonPath: string, opts: { env?: Record<string, string>; baseEnv?: NodeJS.ProcessEnv } = {}) {
   if (!pythonPath) {
     return false
   }
 
   try {
     execProbeSync(pythonPath, ['-c', hermesRuntimeImportProbe()], {
-      env: { ...process.env, ...(opts.env || {}) },
+      env: { ...(opts.baseEnv ?? process.env), ...(opts.env || {}) },
       stdio: 'ignore',
       timeout: PROBE_TIMEOUT_MS,
       windowsHide: true
@@ -190,7 +190,7 @@ function shouldTrustHermesOverride(hermesOverride?: string) {
   return typeof hermesOverride === 'string' && hermesOverride.trim().length > 0
 }
 
-function verifyHermesCli(hermesCommand: string, opts?: { shell?: boolean }) {
+function verifyHermesCli(hermesCommand: string, opts?: { shell?: boolean; env?: NodeJS.ProcessEnv }) {
   if (!hermesCommand) {
     return false
   }
@@ -200,6 +200,7 @@ function verifyHermesCli(hermesCommand: string, opts?: { shell?: boolean }) {
       stdio: 'ignore',
       timeout: PROBE_TIMEOUT_MS,
       shell: Boolean(opts?.shell),
+      env: opts?.env,
       windowsHide: true
     })
 

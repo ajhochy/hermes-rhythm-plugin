@@ -692,7 +692,11 @@ class TestRegisterSessionMcpServers:
             quiet_mode=True,
         )
         assert state.agent.enabled_toolsets == ["hermes-acp", "mcp-srv"]
-        assert state.agent.tools is fake_tools
+        # The shared rebuild (refresh_agent_mcp_tools) publishes a fresh
+        # list rather than mutating the registry-derived list in place —
+        # deliberately safer than aliasing a list the caller doesn't own —
+        # so this checks content, not object identity.
+        assert state.agent.tools[:-1] == fake_tools
         assert state.agent.tools[-1] == {
             "type": "function",
             "function": {

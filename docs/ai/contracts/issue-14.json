@@ -1,0 +1,13 @@
+{
+  "issue": 14,
+  "generated": "2026-08-21",
+  "stack": "mixed",
+  "criteria": [
+    {"criterion_id":"issue-14-c1","text":"Build/install the final feature pack only into a dedicated temporary Hermes home/profile, exercise one fixture-backed planning cycle through dashboard, tasks, planner, rhythms, projects, messages, facilities, automations, integrations, artifacts, and exactly three native tools.","mode":"integration","test_file":"tests/plugins/test_rhythm_m10_cutover.py","test_id":"test_issue_14_c1_final_fixture_cutover_exercises_every_approved_destination_and_only_three_tools","status":"pass"},
+    {"criterion_id":"issue-14-c2","text":"Create a machine-readable parity ledger containing fixture, canonical read, allowed-write confirmation, responsive/a11y, and failure-state evidence per module; reject credentials and unapproved writes.","mode":"unit","test_file":"tests/plugins/test_rhythm_m10_cutover.py","test_id":"test_issue_14_c2_ledger_rejects_missing_proof_secret_leaks_or_unapproved_writes","status":"pass"},
+    {"criterion_id":"issue-14-c3","text":"Cover auth expiry, restart signal, profile switch/generation invalidation, update/reinstall/rollback/uninstall, performance budget, secret redaction, and uncertain writes.","mode":"integration","test_file":"tests/plugins/test_rhythm_m10_cutover.py","test_id":"test_issue_14_c3_auth_expiry_restart_profile_generation_uncertain_and_performance_are_recorded","status":"pass"},
+    {"criterion_id":"issue-14-c4","text":"Explicitly list policy-disabled actions and prove absent; preserve Electron code and agent navigation, with deletion only documented in a separate plan.","mode":"unit","test_file":"tests/plugins/test_rhythm_m10_cutover.py","test_id":"test_issue_14_c4_policy_disabled_actions_are_explicit_and_proven_absent","status":"pass"},
+    {"criterion_id":"issue-14-c5","text":"Where credentialed live reads cannot safely run, use the actual mounted backend transport against sanitized canonical fixtures and mark external credentialed live-read/manual evidence pending; keep AJ cutover/merge and signed/notarized release gates pending.","mode":"manual","status":"pending","reason":"Requires AJ-operated credentialed environment and release signing/notarization authority; the deterministic fixture transport is automated separately."}
+  ],
+  "not_tested": ["issue-14-c5"]
+}

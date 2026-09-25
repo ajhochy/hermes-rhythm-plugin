@@ -54,6 +54,27 @@ from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context
 logger = logging.getLogger(__name__)
 
 
+def _mark_session_policy_tainted(agent) -> None:
+    """Mirror taint into both live state and compression-child persistence."""
+    agent.session_policy_tainted = True
+    policy = getattr(agent, "session_policy", None)
+    model_config = getattr(agent, "_session_init_model_config", None)
+    if policy is not None and isinstance(model_config, dict):
+        model_config["native_session_policy"] = policy.persistence_entry(
+            tainted=True
+        )
+    callback = getattr(agent, "session_policy_taint_callback", None)
+    if callback is not None:
+        callback()
+
+
+def _filter_session_policy_result(agent, function_name: str, result: Any, task_id: str):
+    policy = getattr(agent, "session_policy", None)
+    if policy is not None and function_name == "search_files":
+        return policy.filter_search_result(result, task_id=task_id or "default")
+    return result
+
+
 def _ensure_file_checkpoint(
     agent,
     function_name: str,
@@ -356,11 +377,18 @@ def _tool_search_scoped_names(agent) -> frozenset:
 
     enabled = getattr(agent, "enabled_toolsets", None)
     disabled = getattr(agent, "disabled_toolsets", None)
+    session_policy = getattr(agent, "session_policy", None)
     cache_key = (
         _registry.current_scope_key(),
         getattr(_registry, "_generation", 0),
         frozenset(enabled) if enabled is not None else None,
         frozenset(disabled) if disabled is not None else None,
+        (
+            2,
+            tuple(getattr(session_policy, "allowed_tools", ()) or ()),
+        )
+        if getattr(session_policy, "version", None) == 2
+        else None,
     )
     cached = getattr(agent, "_tool_search_scope_cache", None)
     if cached is not None and cached[0] == cache_key:
@@ -371,6 +399,7 @@ def _tool_search_scoped_names(agent) -> frozenset:
             disabled_toolsets=disabled,
             quiet_mode=True,
             skip_tool_search_assembly=True,
+            session_policy=session_policy,
         ) or []
         names = _ts.scoped_deferrable_names(scoped_defs)
     except Exception:
@@ -598,7 +627,22 @@ def _run_agent_tool_execution_middleware(
             begin_execution(callback)
 
         block_message = scope_block
+        block_code = None
         block_error_type = "tool_scope_block"
+        from agent.session_policy import policy_scoped_tool_available
+        from tools.registry import registry
+
+        entry = registry.get_entry(function_name)
+        if (
+            entry is not None
+            and entry.policy_scoped
+            and not policy_scoped_tool_available(
+                function_name, getattr(agent, "session_policy", None)
+            )
+        ):
+            block_message = "policy_scoped_tool_unavailable"
+            block_code = "policy_scoped_tool_unavailable"
+            block_error_type = "policy_scoped_tool_unavailable"
         if block_message is None:
             block_error_type = "plugin_block"
 
@@ -631,6 +675,36 @@ def _run_agent_tool_execution_middleware(
                 else authorization_gate.run(_resolve_pre_tool_block)
             )
 
+        # Mandatory session authorization sees the final arguments after Relay,
+        # request/execution middleware, and ordinary plugin rewrites.  It is
+        # independent of the fail-soft observer hook above.
+        policy = getattr(agent, "session_policy", None)
+        if policy is not None:
+            try:
+                decision = policy.authorize_tool_call(
+                    tool_name=function_name, arguments=final_args,
+                    binding={
+                        "session_id": policy.binding.session_id,
+                        "owner_id": policy.binding.owner_id,
+                        "profile_id": policy.binding.profile_id,
+                        "runtime_generation": policy.binding.runtime_generation,
+                    },
+                    lineage_root=policy.binding.session_id,
+                    task_id=effective_task_id or "default",
+                    tainted=bool(getattr(agent, "session_policy_tainted", False)),
+                )
+                if decision.effect == "ask":
+                    callback = getattr(agent, "policy_approval_callback", None)
+                    approved = callback(function_name, dict(final_args)) if callback else False
+                    if approved is not True:
+                        block_message = "Session policy approval required"
+                elif decision.effect != "allow":
+                    block_message = "Session policy denied tool call"
+            except Exception:
+                block_message = "Session policy evaluation failed"
+            if block_message is not None:
+                block_error_type = "session_policy_block"
+
         guardrail_decision = None
         if block_message is None:
             guardrail_decision = agent._tool_guardrails.before_call(
@@ -643,7 +717,10 @@ def _run_agent_tool_execution_middleware(
             _advance_start_order()
             state["blocked"] = True
             if block_message is not None:
-                result = json.dumps({"error": block_message}, ensure_ascii=False)
+                result_payload = {"error": block_message}
+                if block_code is not None:
+                    result_payload["code"] = block_code
+                result = json.dumps(result_payload, ensure_ascii=False)
                 error_type = block_error_type
                 error_message = block_message
             else:
@@ -690,7 +767,14 @@ def _run_agent_tool_execution_middleware(
         )
         _hb_thread.start()
         try:
-            return execute(final_args)
+            if policy is None:
+                return execute(final_args)
+            from agent.session_policy import bind_active_policy, reset_active_policy
+            token = bind_active_policy(policy, policy.binding.session_id)
+            try:
+                return execute(final_args)
+            finally:
+                reset_active_policy(token)
         finally:
             _hb_stop.set()
             _hb_thread.join(timeout=2.0)
@@ -2528,6 +2612,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
             tool_duration = time.time() - tool_start_time
 
+        function_result = _filter_session_policy_result(
+            agent, function_name, function_result, effective_task_id
+        )
         _execution_timed_out = isinstance(
             function_result, (_ToolTimeoutResult, _ToolCancelledResult)
         )
@@ -2544,6 +2631,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Log tool errors to the persistent error log so [error] tags
         # in the UI always have a corresponding detailed entry on disk.
         _is_error_result, _ = _detect_tool_failure(function_name, function_result)
+        policy = getattr(agent, "session_policy", None)
+        if (not _is_error_result and policy is not None and
+                policy.taints(function_name)):
+            _mark_session_policy_tainted(agent)
         # The agent-runtime tools above (todo, session_search, memory,
         # context-engine, memory-manager, clarify, delegate_task) are
         # dispatched inline — they never reach handle_function_call, so the

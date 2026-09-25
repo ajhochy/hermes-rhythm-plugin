@@ -13,6 +13,7 @@ import contextvars
 import fnmatch
 import functools
 import hashlib
+import json
 import logging
 import os
 import re
@@ -3883,6 +3884,43 @@ def request_tool_approval(
             "A plugin flagged this action for human confirmation."
         ),
     )
+
+
+def request_mandatory_policy_approval(tool_name: str, arguments: dict,
+                                      *, session_key: str) -> bool:
+    """Ask the existing gateway panel for one protected tool call.
+
+    Unlike ordinary dangerous-command approval, this authorization cannot use
+    YOLO, saved allowlists, cron defaults, or session/always grants. An absent
+    gateway listener and every non-once response fail closed.
+    """
+    with _lock:
+        notify_cb = _gateway_notify_cbs.get(session_key)
+    if notify_cb is None or get_current_session_key("") != session_key:
+        return False
+    from agent.redact import redact_sensitive_text
+
+    serialized = json.dumps(arguments, ensure_ascii=False)
+    if len(serialized) > 2048:
+        return False
+    preview = redact_sensitive_text(serialized)
+    if preview != serialized:
+        return False
+    request_id = uuid.uuid4().hex
+    data = {
+        "request_id": request_id,
+        "command": f"<{tool_name}> {preview}",
+        "description": "Native session policy requires approval for this call",
+        "pattern_key": f"native_session_policy:{request_id}",
+        "pattern_keys": [f"native_session_policy:{request_id}"],
+        "allow_permanent": False,
+        "allow_session": False,
+        "choices": ["once", "deny"],
+    }
+    decision = _await_gateway_decision(
+        session_key, notify_cb, data, surface="gateway"
+    )
+    return decision.get("resolved") is True and decision.get("choice") == "once"
 
 
 # =========================================================================

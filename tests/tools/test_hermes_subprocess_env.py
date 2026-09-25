@@ -67,6 +67,10 @@ class TestStripByDefault:
         result = _build()
         assert result.get("PYTHONUTF8") == "1"
 
+    def test_required_host_plugins_do_not_escape_serving_process(self):
+        result = _build({"HERMES_HOST_REQUIRED_PLUGINS": "rhythm"})
+        assert "HERMES_HOST_REQUIRED_PLUGINS" not in result
+
 
 class TestInheritCredentials:
     def test_provider_keys_preserved_when_inheriting(self):
@@ -88,6 +92,13 @@ class TestInheritCredentials:
 
     def test_pythonutf8_set_when_inheriting(self):
         assert _build(inherit_credentials=True).get("PYTHONUTF8") == "1"
+
+    def test_required_host_plugins_stripped_when_inheriting(self):
+        result = _build(
+            {"HERMES_HOST_REQUIRED_PLUGINS": "rhythm"},
+            inherit_credentials=True,
+        )
+        assert "HERMES_HOST_REQUIRED_PLUGINS" not in result
 
 
 class TestTierInvariants:

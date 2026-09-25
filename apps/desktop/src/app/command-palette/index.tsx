@@ -21,6 +21,7 @@ import { getHermesConfigRecord, listAllProfileSessions } from '@/hermes'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
+import { isEmbeddedDesktop } from '@/lib/embedded-mode'
 import {
   Activity,
   AppWindow,
@@ -556,6 +557,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   const projectTree = useStore($projectTree)
   const dismissedAutoProjects = useStore($dismissedAutoProjectIds)
   const navigate = useNavigate()
+  const embedded = isEmbeddedDesktop()
 
   const { availableThemes, clearThemePreview, mode, previewTheme, resolvedMode, setMode, setTheme, themeName } =
     useTheme()
@@ -922,14 +924,18 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             label: cc.restartGateway,
             run: () => void runGatewayRestart()
           },
-          {
-            detail: updateVersionLabel,
-            icon: Download,
-            id: 'cc-update-hermes',
-            keywords: ['update', 'upgrade', 'hermes', 'version', 'system', 'restart'],
-            label: cc.updateHermes,
-            run: () => requestActiveUpdate()
-          },
+          ...(embedded && connection?.mode !== 'remote'
+            ? []
+            : [
+                {
+                  detail: updateVersionLabel,
+                  icon: Download,
+                  id: 'cc-update-hermes',
+                  keywords: ['update', 'upgrade', 'hermes', 'version', 'system', 'restart'],
+                  label: cc.updateHermes,
+                  run: () => requestActiveUpdate()
+                }
+              ]),
           {
             icon: RefreshCw,
             id: 'cc-reload-window',
