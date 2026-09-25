@@ -523,7 +523,8 @@ def test_resolver_and_agent_executor_failure_fail_closed(native_gateway, local_m
     try:
         invalid = server.handle_request({"id": "invalid", "method": "session.create",
                                          "params": {"policy_selection": "unknown-binding"}})
-        assert invalid["error"]["message"] == "unsupported_policy"
+        assert invalid["error"]["message"] == "unsupported_policy:provider_failed"
+        assert invalid["error"]["data"]["code"] == "provider_failed"
         assert not local_model.requests
 
         def fail_evaluator(_self, **_kwargs):
@@ -592,7 +593,8 @@ def test_policy_replay_and_oversize_input_fail_before_model(native_gateway, loca
         provider.instructions = "x" * 65537
         invalid = server.handle_request({"id": "oversize", "method": "session.create",
                                          "params": {"policy_selection": "fixture-native-agent"}})
-        assert invalid["error"]["message"] == "unsupported_policy"
+        assert invalid["error"]["message"] == "unsupported_policy:provider_failed"
+        assert invalid["error"]["data"]["code"] == "provider_failed"
         assert not local_model.requests
     finally:
         dispose()

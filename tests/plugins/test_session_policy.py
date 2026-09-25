@@ -326,6 +326,33 @@ def test_n0_ac8_unbound_native_session_has_no_shared_policy_authority():
     assert snapshot_type.native_tool_schemas(native_tools) is not native_tools
 
 
+def test_review_v1_keeps_the_frozen_n0_blocklist():
+    """review:agent/session_policy.py:337: v2-only blocks cannot tighten v1."""
+    snapshot = _snapshot_type().from_mapping(
+        _payload(allowed_tools=None), binding=_binding()
+    )
+    native = [
+        {"name": "memory"},
+        {"name": "browser_navigate"},
+        {"name": "mcp__github__search"},
+        {"name": "send_message"},
+        {"name": "vision_analyze"},
+        {"name": "terminal"},
+        {"name": "delegate_task"},
+    ]
+    offered = snapshot.filter_tool_schemas(native, binding=_binding())
+    assert [tool["name"] for tool in offered] == [
+        "memory",
+        "browser_navigate",
+        "mcp__github__search",
+        "send_message",
+        "vision_analyze",
+        "terminal",
+    ]
+    assert _decision(snapshot, "memory", {}).effect == "allow"
+    assert _decision(snapshot, "delegate_task", {}).effect == "deny"
+
+
 
 def test_n0_ac7_binding_is_constructor_authority_and_payload_is_copied():
     snapshot_type = _snapshot_type()

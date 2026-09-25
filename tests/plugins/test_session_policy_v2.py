@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import json
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -160,12 +161,108 @@ def test_n1_ac3_gates_terminal_paths_redirects_workdir_and_parser_limit(tmp_path
     import tools.file_tools as file_tools
 
     monkeypatch.setattr(file_tools, "_resolve_base_dir", lambda task_id: tmp_path)
-    (tmp_path / "~").mkdir()
+    home = tmp_path / "home"
+    protected_home = home / "protected"
+    protected_home.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
     assert _effect(snapshot, "terminal", {"command": "cat ../outside"}) == "ask"
     assert _effect(snapshot, "terminal", {"command": f"echo x > {tmp_path / 'protected' / 'x'}"}) == "deny"
     assert _effect(snapshot, "terminal", {"command": "git status", "workdir": "../outside"}) == "ask"
-    assert _effect(snapshot, "terminal", {"command": "git status", "workdir": "~"}) == "allow"
+    payload = _payload(tmp_path)
+    payload["paths"]["protected"].append(str(home))
+    protected_snapshot = SessionPolicySnapshot.from_mapping(payload, binding=_binding())
+    assert _effect(protected_snapshot, "terminal", {"command": "git status", "workdir": "~"}) == "deny"
+    assert _effect(protected_snapshot, "terminal", {"command": "git status", "workdir": "~/protected"}) == "deny"
     assert _effect(snapshot, "terminal", {"command": "x" * 5000}) == "deny"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "true <> protected/secret",
+        "true 1<> protected/secret",
+        "true &>> protected/secret",
+        "true 2>> protected/secret",
+        "true >| protected/secret",
+    ],
+)
+def test_review_redirection_grammar_gates_every_target(tmp_path, monkeypatch, command):
+    """review:agent/session_policy.py:398: no redirect form bypasses path gates."""
+    import tools.file_tools as file_tools
+
+    (tmp_path / "protected").mkdir()
+    monkeypatch.setattr(file_tools, "_resolve_base_dir", lambda task_id: tmp_path)
+    payload = _payload(tmp_path)
+    payload["rules"] = [
+        {"tool": "terminal", "argument": "command", "pattern": "*", "effect": "allow"}
+    ]
+    snapshot = SessionPolicySnapshot.from_mapping(payload, binding=_binding())
+    assert _effect(snapshot, "terminal", {"command": command}) == "deny"
+
+
+def test_review_env_assignment_before_cd_is_dynamic_and_not_tracked(tmp_path, monkeypatch):
+    """review:agent/session_policy.py:407: CDPATH can redirect cd away from lexical cwd."""
+    import tools.file_tools as file_tools
+
+    monkeypatch.setattr(file_tools, "_resolve_base_dir", lambda task_id: tmp_path)
+    payload = _payload(tmp_path)
+    payload["rules"] = [
+        {"tool": "terminal", "argument": "command", "pattern": "*", "effect": "allow"}
+    ]
+    snapshot = SessionPolicySnapshot.from_mapping(payload, binding=_binding())
+    command = "CDPATH=../outside cd Vault; cat secret.txt"
+    assert _effect(snapshot, "terminal", {"command": command}) == "ask"
+
+
+def test_review_search_results_are_gated_individually(tmp_path, monkeypatch):
+    """review:agent/session_policy.py:459: a broad root cannot leak protected hits."""
+    import model_tools
+
+    protected = tmp_path / "protected"
+    protected.mkdir()
+    visible = tmp_path / "visible.txt"
+    secret = protected / "secret.txt"
+    payload = _payload(tmp_path)
+    snapshot = SessionPolicySnapshot.from_mapping(payload, binding=_binding())
+    raw = json.dumps({
+        "total_count": 2,
+        "matches": [
+            {"path": str(visible), "line": 1, "content": "VISIBLE"},
+            {"path": str(secret), "line": 1, "content": "SECRET-MARKER"},
+        ],
+        "files": [str(visible), str(secret)],
+        "counts": {str(visible): 1, str(secret): 1},
+    })
+    monkeypatch.setattr(model_tools.registry, "dispatch", lambda *_a, **_k: raw)
+    result = model_tools.handle_function_call(
+        "search_files",
+        {"path": str(tmp_path), "pattern": "MARKER"},
+        task_id="fixture",
+        session_id="lineage-root",
+        session_policy=snapshot,
+        policy_binding=_binding(),
+        skip_pre_tool_call_hook=True,
+        skip_tool_request_middleware=True,
+        skip_tool_execution_middleware=True,
+    )
+    assert "VISIBLE" in result
+    assert "SECRET-MARKER" not in result
+    assert str(secret) not in result
+
+    from agent.tool_executor import _filter_session_policy_result
+    filtered = _filter_session_policy_result(
+        SimpleNamespace(session_policy=snapshot), "search_files", raw, "fixture"
+    )
+    assert "VISIBLE" in filtered
+    assert "SECRET-MARKER" not in filtered
+
+
+def test_review_delegated_sessions_resolve_ask_to_deny(tmp_path):
+    """review:tui_gateway/server.py:2433: delegated/headless approvals fail closed."""
+    payload = _payload(tmp_path)
+    payload["launch"] = {"kind": "delegated", "cwd": str(tmp_path)}
+    snapshot = SessionPolicySnapshot.from_mapping(payload, binding=_binding())
+    assert _effect(snapshot, "clarify", {}) == "deny"
 
 
 def test_n1_ac3_denied_segment_never_reaches_terminal_dispatch(tmp_path, monkeypatch):

@@ -1210,6 +1210,11 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
+    policy_error = _v2_unsupported_response(
+        rid, session, code="projection_unsupported"
+    )
+    if policy_error is not None:
+        return policy_error
     text, parent = params.get("text", ""), params.get("session_id", "")
     if not text:
         return _err(rid, 4012, "text required")
@@ -1272,6 +1277,11 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
+    policy_error = _v2_unsupported_response(
+        rid, session, code="projection_unsupported"
+    )
+    if policy_error is not None:
+        return policy_error
 
     url = str(params.get("url") or "").strip()
     cwd = str(params.get("cwd") or "").strip()

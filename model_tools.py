@@ -1531,7 +1531,12 @@ def handle_function_call(
                     session_policy.binding.session_id,
                 )
                 try:
-                    return registry.dispatch(function_name, next_args, **dispatch_kwargs)
+                    result = registry.dispatch(function_name, next_args, **dispatch_kwargs)
+                    if function_name == "search_files":
+                        result = session_policy.filter_search_result(
+                            result, task_id=task_id or "default"
+                        )
+                    return result
                 finally:
                     reset_active_policy(token)
 

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import json
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -61,6 +63,16 @@ class Provider:
             raise self.check_error
 
 
+class PayloadProvider(Provider):
+    def __init__(self, root: Path, payload):
+        super().__init__(root)
+        self.payload = payload
+
+    def resolve(self, selection, **context):
+        self.resolve_calls.append((selection, context))
+        return self.payload, "owner-v2"
+
+
 def _install_session(server, snapshot, sid="v2-session"):
     server._sessions[sid] = {
         "session_policy": snapshot,
@@ -118,13 +130,84 @@ def test_n1_ac9_surfaces_only_bounded_provider_codes(tmp_path, monkeypatch, erro
         dispose()
 
 
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (ValueError("private detail"), "unsupported_policy:provider_failed"),
+        (json.JSONDecodeError("bad json", "{", 0), "unsupported_policy:provider_failed"),
+        (UnicodeDecodeError("utf-8", b"x", 0, 1, "bad"), "unsupported_policy:provider_failed"),
+        (UnsupportedPolicy("not_in_closed_enum"), "unsupported_policy:provider_failed"),
+    ],
+)
+def test_review_create_normalizes_every_policy_refusal(tmp_path, monkeypatch, error, expected):
+    """review:tui_gateway/methods_session.py:58: every refusal has a closed code."""
+    from tui_gateway import server
+
+    provider = Provider(tmp_path)
+    provider.resolve_error = error
+    dispose = register_session_policy_provider(provider)
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda _sid: None)
+    try:
+        response = server.handle_request({
+            "id": "create", "method": "session.create",
+            "params": {"policy_selection": "fixture"},
+        })
+        assert response["error"]["message"] == expected
+        assert response["error"]["data"]["code"] == expected.split(":", 1)[1]
+    finally:
+        dispose()
+
+
+@pytest.mark.parametrize(
+    ("payload", "code"),
+    [
+        ({"version": 3}, "projection_version_unsupported"),
+        ({"source": {}}, "policy_shape_invalid"),
+    ],
+)
+def test_review_create_rejects_bad_projection_versions_with_closed_codes(
+    tmp_path, monkeypatch, payload, code
+):
+    """review:tui_gateway/methods_session.py:58: bad versions retain their reason."""
+    from tui_gateway import server
+
+    dispose = register_session_policy_provider(PayloadProvider(tmp_path, payload))
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda _sid: None)
+    try:
+        response = server.handle_request({
+            "id": "create", "method": "session.create",
+            "params": {"policy_selection": "fixture"},
+        })
+        assert response["error"]["message"] == f"unsupported_policy:{code}"
+        assert response["error"]["data"]["code"] == code
+    finally:
+        dispose()
+
+
+def test_review_missing_provider_and_invalid_selection_have_closed_codes(monkeypatch):
+    """review:tui_gateway/methods_session.py:58: local launch refusals are actionable."""
+    from tui_gateway import server
+
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda _sid: None)
+    missing = server.handle_request({
+        "id": "missing", "method": "session.create",
+        "params": {"policy_selection": "fixture"},
+    })
+    invalid = server.handle_request({
+        "id": "invalid", "method": "session.create",
+        "params": {"policy_selection": ""},
+    })
+    assert missing["error"]["message"] == "unsupported_policy:provider_failed"
+    assert invalid["error"]["message"] == "unsupported_policy:selection_invalid"
+
+
 def test_n1_ac9_builder_binding_failure_uses_closed_code(tmp_path, monkeypatch):
     from tui_gateway import server
 
     snapshot = SessionPolicySnapshot.from_mapping(_payload(tmp_path), binding={
         **_binding(), "runtime_generation": server._SESSION_POLICY_RUNTIME_GENERATION,
     })
-    monkeypatch.setattr(server, "_current_profile_name", lambda: "default")
+    monkeypatch.setattr(server, "_current_profile_name", lambda: "other-profile")
     with pytest.raises(UnsupportedPolicy) as exc:
         server._make_agent(
             "ui-session",
@@ -132,6 +215,14 @@ def test_n1_ac9_builder_binding_failure_uses_closed_code(tmp_path, monkeypatch):
             session_policy=snapshot,
         )
     assert exc.value.code == "binding_mismatch"
+
+    response = server._wait_agent({
+        "session_policy": snapshot,
+        "agent_ready": SimpleNamespace(wait=lambda timeout: True),
+        "agent_error": "unsupported_policy:binding_mismatch",
+    }, "deferred")
+    assert response["error"]["message"] == "unsupported_policy:binding_mismatch"
+    assert response["error"]["data"]["code"] == "binding_mismatch"
 
 
 def test_n1_ac10_passes_realpath_cwd_only_when_explicit(tmp_path, monkeypatch):
@@ -229,6 +320,215 @@ def test_n1_ac14_taint_is_part_of_v2_persistence_entry(tmp_path):
     entry = server._native_session_policy_entry(snapshot, tainted=True)
     assert entry["lineage_root"] == "lineage-root"
     assert entry["tainted"] is True
+
+
+def test_review_taint_mirrors_to_session_and_persisted_runtime(tmp_path, monkeypatch):
+    """review:tui_gateway/server.py:2981: acquired taint survives persistence."""
+    from tui_gateway import server
+
+    snapshot = SessionPolicySnapshot.from_mapping(_payload(tmp_path), binding={
+        **_binding(), "runtime_generation": server._SESSION_POLICY_RUNTIME_GENERATION,
+    })
+    persisted = []
+    agent = SimpleNamespace(
+        session_policy=snapshot,
+        session_policy_tainted=True,
+        model="fixture-model",
+        provider="openrouter",
+        base_url="",
+        api_mode="chat_completions",
+        reasoning_config=None,
+        service_tier=None,
+        _session_db=SimpleNamespace(
+            get_session=lambda _key: {"model_config": {}},
+            update_session_meta=lambda key, config, model: persisted.append(
+                (key, json.loads(config), model)
+            ),
+        ),
+    )
+    session = {"agent": agent, "session_key": "rotated-child", "policy_tainted": False}
+    server._sync_session_policy_taint(session)
+    assert session["policy_tainted"] is True
+    assert persisted[-1][1]["native_session_policy"]["tainted"] is True
+
+    from agent.tool_executor import _mark_session_policy_tainted
+    callbacks = []
+    agent._session_init_model_config = {}
+    agent.session_policy_taint_callback = lambda: callbacks.append(True)
+    _mark_session_policy_tainted(agent)
+    assert agent._session_init_model_config["native_session_policy"]["tainted"] is True
+    assert callbacks == [True]
+
+    host_persisted = []
+    host_db = SimpleNamespace(
+        get_session=lambda _key: {"model_config": {}},
+        update_session_meta=lambda key, config, model: host_persisted.append(
+            (key, json.loads(config), model)
+        ),
+    )
+    monkeypatch.setattr(server, "_get_db", lambda: host_db)
+    host_session = {
+        "agent": None,
+        "session_policy": snapshot,
+        "session_key": "compute-child",
+        "policy_tainted": False,
+        "history_lock": threading.Lock(),
+    }
+    server._apply_compute_host_metadata_mirror(
+        host_session, {"policy_tainted": True}
+    )
+    assert host_session["policy_tainted"] is True
+    assert host_persisted[-1][1]["native_session_policy"]["tainted"] is True
+
+
+def test_review_v2_persistence_preserves_unknown_entry_keys(tmp_path):
+    """review:tui_gateway/server.py:4262: host-private entry data round-trips."""
+    from tui_gateway import server
+
+    snapshot = SessionPolicySnapshot.from_mapping(_payload(tmp_path), binding={
+        **_binding(), "runtime_generation": server._SESSION_POLICY_RUNTIME_GENERATION,
+    })
+    entry = server._native_session_policy_entry(snapshot, tainted=False)
+    entry["host_private"] = {"opaque": "KEEP-ME"}
+    dispose = register_session_policy_provider(Provider(tmp_path))
+    try:
+        restored = server._restore_session_policy(
+            {"model_config": {"native_session_policy": entry}},
+            "rotated-child",
+            "default",
+        )
+        rebuilt = server._native_session_policy_entry(restored, tainted=False)
+        assert rebuilt["host_private"] == {"opaque": "KEEP-ME"}
+    finally:
+        dispose()
+
+
+def test_review_v2_persistence_entry_is_rotation_safe(tmp_path):
+    """review:agent/agent_init.py:1744: compression children receive five-key entries."""
+    snapshot = SessionPolicySnapshot.from_mapping(_payload(tmp_path), binding=_binding())
+    entry = snapshot.persistence_entry(tainted=True)
+    assert set(entry) == {"payload", "owner_id", "profile_id", "lineage_root", "tainted"}
+    assert entry["lineage_root"] == "lineage-root"
+    assert entry["tainted"] is True
+
+
+@pytest.mark.parametrize("method,extra", [
+    ("prompt.background", {"text": "escape"}),
+    ("preview.restart", {"url": "http://127.0.0.1:7350"}),
+    ("session.branch", {}),
+])
+def test_review_v2_gateway_side_agents_are_refused(tmp_path, method, extra):
+    """review:tui_gateway/server.py:6764: no agent can be built without the snapshot."""
+    from tui_gateway import server
+
+    snapshot = SessionPolicySnapshot.from_mapping(_payload(tmp_path), binding={
+        **_binding(), "runtime_generation": server._SESSION_POLICY_RUNTIME_GENERATION,
+    })
+    sid = _install_session(server, snapshot)
+    try:
+        response = server.handle_request({
+            "id": "bypass", "method": method,
+            "params": {"session_id": sid, **extra},
+        })
+        assert response["error"]["message"] == "unsupported_policy:projection_unsupported"
+        assert response["error"]["data"]["code"] == "projection_unsupported"
+    finally:
+        server._sessions.pop(sid, None)
+
+
+def test_review_approval_callback_uses_rotated_session_key(tmp_path, monkeypatch):
+    """review:tui_gateway/server.py:7303: approvals follow compression rotation."""
+    from tui_gateway import server
+    from tools import approval
+
+    snapshot = SessionPolicySnapshot.from_mapping(_payload(tmp_path), binding={
+        **_binding(), "runtime_generation": server._SESSION_POLICY_RUNTIME_GENERATION,
+    })
+    sid = _install_session(server, snapshot)
+    session = server._sessions[sid]
+    session["session_key"] = "rotated-child"
+    seen = []
+    def notify(data):
+        seen.append(data)
+        approval.resolve_gateway_approval(
+            "rotated-child", "once", request_id=data["request_id"]
+        )
+    monkeypatch.setitem(approval._gateway_notify_cbs, "rotated-child", notify)
+    token = approval.set_current_session_key("rotated-child")
+    try:
+        callback = server._session_policy_approval_callback(sid, "lineage-root")
+        assert callback("read_file", {"path": "visible.txt"}) is True
+        assert seen and seen[0]["request_id"]
+        assert seen[0]["choices"] == ["once", "deny"]
+    finally:
+        server._sessions.pop(sid, None)
+        approval._gateway_notify_cbs.pop("rotated-child", None)
+        approval.reset_current_session_key(token)
+
+
+def test_review_v2_create_ignores_client_model_and_reasoning_overrides(tmp_path, monkeypatch):
+    """review:tui_gateway/server.py:5012: snapshot owns model and reasoning."""
+    from tui_gateway import server
+
+    provider = PayloadProvider(tmp_path, _payload(tmp_path, reasoning=None))
+    dispose = register_session_policy_provider(provider)
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda _sid: None)
+    try:
+        response = server.handle_request({
+            "id": "create", "method": "session.create",
+            "params": {
+                "policy_selection": "fixture",
+                "model": "attacker-model",
+                "provider": "attacker-provider",
+                "reasoning_effort": "high",
+            },
+        })
+        sid = response["result"]["session_id"]
+        session = server._sessions[sid]
+        assert session["model_override"] is None
+        assert session["create_reasoning_override"] is None
+        assert response["result"]["info"]["model"] == "fixture-model"
+    finally:
+        dispose()
+        if "sid" in locals():
+            server._sessions.pop(sid, None)
+
+
+def test_review_v2_model_switch_is_refused_before_mutation(tmp_path):
+    """review:tui_gateway/server.py:5012: one-turn and persistent switches are blocked."""
+    from tui_gateway import server
+
+    snapshot = SessionPolicySnapshot.from_mapping(_payload(tmp_path), binding={
+        **_binding(), "runtime_generation": server._SESSION_POLICY_RUNTIME_GENERATION,
+    })
+    session = {"session_policy": snapshot, "agent": None}
+    with pytest.raises(UnsupportedPolicy) as exc:
+        server._apply_model_switch("sid", session, "attacker-model --once")
+    assert exc.value.code == "projection_unsupported"
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [("model", "attacker-model --once"), ("reasoning", "high")],
+)
+def test_review_v2_config_cannot_mutate_snapshot_runtime(tmp_path, key, value):
+    """review:tui_gateway/server.py:5012: config RPCs cannot alter v2 runtime."""
+    from tui_gateway import server
+
+    snapshot = SessionPolicySnapshot.from_mapping(_payload(tmp_path), binding={
+        **_binding(), "runtime_generation": server._SESSION_POLICY_RUNTIME_GENERATION,
+    })
+    sid = _install_session(server, snapshot)
+    server._sessions[sid]["running"] = True
+    try:
+        response = server.handle_request({
+            "id": "mutate", "method": "config.set",
+            "params": {"session_id": sid, "key": key, "value": value},
+        })
+        assert response["error"]["message"] == "unsupported_policy:projection_unsupported"
+        assert "pending_model_switch" not in server._sessions[sid]
+    finally:
+        server._sessions.pop(sid, None)
 
 
 def test_n1_ac15_v2_batches_execute_in_model_order(tmp_path):

@@ -54,6 +54,27 @@ from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context
 logger = logging.getLogger(__name__)
 
 
+def _mark_session_policy_tainted(agent) -> None:
+    """Mirror taint into both live state and compression-child persistence."""
+    agent.session_policy_tainted = True
+    policy = getattr(agent, "session_policy", None)
+    model_config = getattr(agent, "_session_init_model_config", None)
+    if policy is not None and isinstance(model_config, dict):
+        model_config["native_session_policy"] = policy.persistence_entry(
+            tainted=True
+        )
+    callback = getattr(agent, "session_policy_taint_callback", None)
+    if callback is not None:
+        callback()
+
+
+def _filter_session_policy_result(agent, function_name: str, result: Any, task_id: str):
+    policy = getattr(agent, "session_policy", None)
+    if policy is not None and function_name == "search_files":
+        return policy.filter_search_result(result, task_id=task_id or "default")
+    return result
+
+
 def _ensure_file_checkpoint(
     agent,
     function_name: str,
@@ -2565,6 +2586,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
             tool_duration = time.time() - tool_start_time
 
+        function_result = _filter_session_policy_result(
+            agent, function_name, function_result, effective_task_id
+        )
         _execution_timed_out = isinstance(
             function_result, (_ToolTimeoutResult, _ToolCancelledResult)
         )
@@ -2584,7 +2608,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         policy = getattr(agent, "session_policy", None)
         if (not _is_error_result and policy is not None and
                 policy.taints(function_name)):
-            agent.session_policy_tainted = True
+            _mark_session_policy_tainted(agent)
         # The agent-runtime tools above (todo, session_search, memory,
         # context-engine, memory-manager, clarify, delegate_task) are
         # dispatched inline — they never reach handle_function_call, so the

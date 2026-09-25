@@ -602,6 +602,11 @@ def _(rid, params: dict) -> dict:
         # MoA preset, then restore the prior model. To *switch* to a MoA preset
         # for the rest of the session, pick it from the model picker (MoA
         # presets surface as a virtual "Mixture of Agents" provider).
+        policy_error = _v2_unsupported_response(
+            rid, session, code="projection_unsupported"
+        )
+        if policy_error is not None:
+            return policy_error
         try:
             from hermes_cli.moa_config import moa_usage, normalize_moa_config
 

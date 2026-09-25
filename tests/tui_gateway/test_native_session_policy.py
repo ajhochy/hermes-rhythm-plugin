@@ -58,7 +58,8 @@ def test_no_provider_returns_bounded_policy_error(monkeypatch):
         "id": "n0", "method": "session.create",
         "params": {"policy_selection": "opaque-fixture-selection"},
     })
-    assert result["error"]["message"] == "unsupported_policy"
+    assert result["error"]["message"] == "unsupported_policy:provider_failed"
+    assert result["error"]["data"]["code"] == "provider_failed"
 
 
 def test_real_agent_constructor_filters_offered_tools(tmp_path):

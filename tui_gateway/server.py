@@ -1766,6 +1766,7 @@ def _compute_host_turn_frame(
     queued_prompt_generation: int | None = None,
     display_kind: str | None = None,
 ) -> dict:
+    _sync_session_policy_taint(session)
     with session["history_lock"]:
         history = list(session.get("history", []))
         history_version = int(session.get("history_version", 0))
@@ -1838,6 +1839,9 @@ def _apply_compute_host_metadata_mirror(session: dict, frame: dict | None) -> No
         mirror.update(info)
         session["_metadata_mirror"] = mirror
         session["_metadata_mirror_updated_at"] = time.time()
+    if frame.get("policy_tainted") is True:
+        session["policy_tainted"] = True
+        _persist_policy_session_entry(session)
 
 
 def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -> None:
@@ -1858,6 +1862,13 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
         _clear_inflight_turn(session)
     if is_error:
         message = str(frame.get("message") or "compute host turn failed")
+        from agent.session_policy import POLICY_REASON_CODES
+        if frame.get("policy_error_code"):
+            message, _ = _unsupported_policy_error(
+                None, str(frame["policy_error_code"])
+            )
+        elif message in POLICY_REASON_CODES:
+            message, _ = _unsupported_policy_error(None, message)
         _emit("message.complete", sid, {"text": f"Error: {message}", "status": "error"})
     _apply_compute_host_metadata_mirror(session, frame)
     try:
@@ -2050,6 +2061,19 @@ def _err(rid, code: int, msg: str, data=None) -> dict:
     return {"jsonrpc": "2.0", "id": rid, "error": error}
 
 
+def _unsupported_policy_error(exc=None, default: str = "provider_failed") -> tuple[str, str]:
+    from agent.session_policy import unsupported_policy_message
+
+    return unsupported_policy_message(exc, default)
+
+
+def _v2_unsupported_response(rid, session: dict | None, *, code: str) -> dict | None:
+    if getattr((session or {}).get("session_policy"), "version", None) != 2:
+        return None
+    message, normalized = _unsupported_policy_error(None, code)
+    return _err(rid, 4000, message, {"code": normalized})
+
+
 def method(name: str):
     def dec(fn):
         _methods[name] = fn
@@ -2155,12 +2179,22 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
         reset_transport(token)
 
 
+def _agent_init_error_response(rid, session: dict, error: Any) -> dict:
+    message = str(error or "agent initialization failed")
+    if (getattr(session.get("session_policy"), "version", None) == 2 and
+            message.startswith("unsupported_policy:")):
+        code = message.split(":", 1)[1]
+        _, code = _unsupported_policy_error(None, code)
+        return _err(rid, 5032, f"unsupported_policy:{code}", {"code": code})
+    return _err(rid, 5032, message)
+
+
 def _wait_agent(session: dict, rid: str, timeout: float = 30.0) -> dict | None:
     ready = session.get("agent_ready")
     if ready is not None and not ready.wait(timeout=timeout):
         return _err(rid, 5032, "agent initialization timed out")
     err = session.get("agent_error")
-    return _err(rid, 5032, err) if err else None
+    return _agent_init_error_response(rid, session, err) if err else None
 
 
 # The deferred prompt path waits in short slices so a cancel is honored
@@ -2278,7 +2312,7 @@ def _wait_agent_for_prompt(session: dict, rid: str, sid: str) -> dict | None:
     if notified_slow:
         _emit("notification.clear", sid, {"key": _AGENT_BUILD_SLOW_NOTICE_KEY})
     err = session.get("agent_error")
-    return _err(rid, 5032, err) if err else None
+    return _agent_init_error_response(rid, session, err) if err else None
 
 
 def _start_agent_build(sid: str, session: dict) -> None:
@@ -2478,8 +2512,12 @@ def _start_agent_build(sid: str, session: dict) -> None:
             # _schedule_mcp_late_refresh. Cache-safe (pre-first-turn only).
             _schedule_mcp_late_refresh(sid, agent)
         except Exception as e:
-            current["agent_error"] = str(e)
-            _emit("error", sid, {"message": f"agent init failed: {e}"})
+            if getattr(current.get("session_policy"), "version", None) == 2:
+                message, _ = _unsupported_policy_error(e)
+            else:
+                message = f"agent init failed: {e}"
+            current["agent_error"] = message
+            _emit("error", sid, {"message": message})
         finally:
             if home_token is not None:
                 reset_hermes_home_override(home_token)
@@ -4258,10 +4296,11 @@ def _restore_session_policy(row: dict, session_key: str, profile_id: str):
         raise ValueError("unsupported_policy")
     payload = entry.get("payload")
     version = payload.get("version") if isinstance(payload, dict) else None
-    if version == 2 or set(entry) == {"payload", "owner_id", "profile_id", "lineage_root", "tainted"}:
+    required_v2 = {"payload", "owner_id", "profile_id", "lineage_root", "tainted"}
+    if version == 2 or required_v2.issubset(entry):
         from agent.session_policy import UnsupportedPolicy
 
-        if set(entry) != {"payload", "owner_id", "profile_id", "lineage_root", "tainted"}:
+        if not required_v2.issubset(entry):
             raise UnsupportedPolicy("policy_shape_invalid")
         if entry["profile_id"] != profile_id:
             raise UnsupportedPolicy("binding_mismatch")
@@ -4282,7 +4321,13 @@ def _restore_session_policy(row: dict, session_key: str, profile_id: str):
             profile_id=profile_id,
             runtime_generation=_SESSION_POLICY_RUNTIME_GENERATION,
         )
-        return replace(restored, restored_tainted=entry["tainted"] is True)
+        return replace(
+            restored,
+            restored_tainted=entry["tainted"] is True,
+            persistence_extras={
+                key: value for key, value in entry.items() if key not in required_v2
+            },
+        )
     if entry["profile_id"] != profile_id:
         raise ValueError("policy profile mismatch")
     if set(entry) != {"payload", "owner_id", "profile_id"}:
@@ -4297,17 +4342,7 @@ def _restore_session_policy(row: dict, session_key: str, profile_id: str):
 
 
 def _native_session_policy_entry(policy, *, tainted: bool = False) -> dict:
-    entry = {
-        "payload": policy.to_mapping(),
-        "owner_id": policy.binding.owner_id,
-        "profile_id": policy.binding.profile_id,
-    }
-    if policy.version == 2:
-        entry.update({
-            "lineage_root": policy.binding.session_id,
-            "tainted": bool(tainted or getattr(policy, "restored_tainted", False)),
-        })
-    return entry
+    return policy.persistence_entry(tainted=tainted)
 
 
 def session_policy_turn_gate(session: dict) -> None:
@@ -4426,6 +4461,45 @@ def _persist_live_session_runtime(session: dict | None) -> None:
             db.update_session_model(session_key, model)
     except Exception:
         logger.debug("failed to persist live session runtime", exc_info=True)
+
+
+def _persist_policy_session_entry(session: dict) -> None:
+    agent = session.get("agent")
+    policy = session.get("session_policy") or getattr(agent, "session_policy", None)
+    session_key = str(session.get("session_key") or "").strip()
+    if policy is None or policy.version != 2 or not session_key:
+        return
+    db = getattr(agent, "_session_db", None) or _get_db()
+    if db is None or not hasattr(db, "update_session_meta"):
+        return
+    try:
+        row = db.get_session(session_key) or {}
+        raw = row.get("model_config")
+        if isinstance(raw, str) and raw.strip():
+            raw = json.loads(raw)
+        existing = raw if isinstance(raw, dict) else {}
+        config = (
+            _runtime_model_config(agent, existing)
+            if agent is not None
+            else dict(existing)
+        )
+        config["native_session_policy"] = _native_session_policy_entry(
+            policy, tainted=bool(session.get("policy_tainted"))
+        )
+        model = str(getattr(agent, "model", "") or policy.model.model or "")
+        db.update_session_meta(session_key, json.dumps(config), model or None)
+    except Exception:
+        logger.debug("failed to persist session policy entry", exc_info=True)
+
+
+def _sync_session_policy_taint(session: dict) -> None:
+    agent = session.get("agent")
+    if agent is None or not bool(getattr(agent, "session_policy_tainted", False)):
+        return
+    was_tainted = bool(session.get("policy_tainted"))
+    session["policy_tainted"] = True
+    if not was_tainted:
+        _persist_policy_session_entry(session)
 
 
 def _persist_live_session_system_prompt(session: dict | None) -> None:
@@ -5019,6 +5093,10 @@ def _apply_model_switch(
     parsed_flags: Any | None = None,
     persist_override: bool | None = None,
 ) -> dict:
+    if getattr(session.get("session_policy"), "version", None) == 2:
+        from agent.session_policy import UnsupportedPolicy
+
+        raise UnsupportedPolicy("projection_unsupported")
     from hermes_cli.model_switch import (
         parse_model_switch_args,
         resolve_persist_behavior,
@@ -7112,6 +7190,20 @@ def _resolve_runtime_with_fallback(
         raise
 
 
+def _session_policy_approval_callback(sid: str, fallback_key: str):
+    def approve(tool_name: str, arguments: dict) -> bool:
+        from tools.approval import request_mandatory_policy_approval
+
+        with _sessions_lock:
+            live = _sessions.get(sid)
+            session_key = str((live or {}).get("session_key") or fallback_key)
+        return request_mandatory_policy_approval(
+            tool_name, arguments, session_key=session_key
+        )
+
+    return approve
+
+
 def _make_agent(
     sid: str,
     key: str,
@@ -7132,7 +7224,8 @@ def _make_agent(
                 raise UnsupportedPolicy("binding_mismatch")
             raise ValueError(message)
 
-        if session_policy.binding.session_id != (session_id or key):
+        if (session_policy.version == 1 and
+                session_policy.binding.session_id != (session_id or key)):
             _binding_error("unsupported_policy: session binding mismatch")
         if session_policy.binding.runtime_generation != _SESSION_POLICY_RUNTIME_GENERATION:
             _binding_error("unsupported_policy: runtime generation mismatch")
@@ -7300,12 +7393,7 @@ def _make_agent(
                 raise RuntimeError("Auth fallback resolved without a model")
             model = resolution.selected_model
     _pr = _load_provider_routing()
-    def _policy_approve(tool_name: str, arguments: dict) -> bool:
-        from tools.approval import request_mandatory_policy_approval
-
-        return request_mandatory_policy_approval(
-            tool_name, arguments, session_key=session_id or key
-        )
+    _policy_approve = _session_policy_approval_callback(sid, session_id or key)
 
     agent = AIAgent(
         model=model,
@@ -7324,9 +7412,14 @@ def _make_agent(
         # change on the classic CLI side.
         verbose_logging=False,
         reasoning_config=(
-            reasoning_config_override
-            if reasoning_config_override is not None
-            else _load_reasoning_config(str(model or ""))
+            None
+            if (getattr(session_policy, "version", None) == 2 and
+                session_policy.model.reasoning is None)
+            else (
+                reasoning_config_override
+                if reasoning_config_override is not None
+                else _load_reasoning_config(str(model or ""))
+            )
         ),
         service_tier=(
             service_tier_override
@@ -7362,6 +7455,9 @@ def _make_agent(
         agent.session_policy_tainted = bool(
             getattr(session_policy, "restored_tainted", False)
         )
+        agent.session_policy_taint_callback = lambda: _sync_session_policy_taint(
+            _sessions.get(sid, {})
+        )
     return agent
 
 
@@ -7380,6 +7476,10 @@ def _init_session(
     with _sessions_lock:
         _sessions[sid] = {
             "agent": agent,
+            "session_policy": getattr(agent, "session_policy", None),
+            "policy_tainted": bool(
+                getattr(agent, "session_policy_tainted", False)
+            ),
             "session_key": key,
             "history": history,
             "history_lock": threading.Lock(),
@@ -10833,8 +10933,8 @@ def _run_prompt_submit(
     try:
         session_policy_turn_gate(session)
     except Exception as exc:
-        code = getattr(exc, "code", "provider_failed")
-        _emit("error", sid, {"message": f"unsupported_policy:{code}"})
+        message, _ = _unsupported_policy_error(exc)
+        _emit("error", sid, {"message": message})
         session["running"] = False
         return False
     with session["history_lock"]:
@@ -11191,6 +11291,7 @@ def _run_prompt_submit(
                 # message.complete.
                 _usage_stop.set()
                 _usage_thread.join()
+            _sync_session_policy_taint(session)
             if display_kind and isinstance(text, str):
                 db = getattr(agent, "_session_db", None)
                 current_session_id = getattr(agent, "session_id", None) or session.get("session_key")
@@ -12107,6 +12208,11 @@ def _(rid, params: dict) -> dict:
     session = _sessions.get(params.get("session_id", ""))
 
     if key == "model":
+        policy_error = _v2_unsupported_response(
+            rid, session, code="projection_unsupported"
+        )
+        if policy_error is not None:
+            return policy_error
         try:
             if not value:
                 return _err(rid, 4002, "model value required")
@@ -12559,6 +12665,11 @@ def _(rid, params: dict) -> dict:
                 _save_cfg(cfg)
                 return _ok(rid, {"key": key, "value": "clamp"})
 
+            policy_error = _v2_unsupported_response(
+                rid, session, code="projection_unsupported"
+            )
+            if policy_error is not None:
+                return policy_error
             parsed = parse_reasoning_effort(arg)
             if parsed is None:
                 return _err(rid, 4002, f"unknown reasoning value: {value}")

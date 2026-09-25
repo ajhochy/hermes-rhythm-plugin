@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from contextvars import ContextVar
 from dataclasses import dataclass
+import copy
+import json
 import os
 import re
 import stat
@@ -15,6 +17,44 @@ class UnsupportedPolicy(ValueError):
     def __init__(self, code: str, message: str = ""):
         self.code = code
         super().__init__(message or code)
+
+
+POLICY_REASON_CODES = frozenset({
+    "permission_shape_unsupported", "external_directory_pattern_unsupported",
+    "oc_agent_unsupported", "account_binding_unmapped",
+    "instructions_blocked_by_scanner", "model_unpinned",
+    "model_provider_unmapped", "reasoning_invalid",
+    "terminal_backend_unsupported", "agent_id_unsupported", "agent_locked",
+    "agent_disabled", "agent_not_runnable", "viewer_unauthenticated",
+    "runtime_unowned", "bridge_unavailable", "runtime_not_connected",
+    "runtime_not_reported", "model_provider_unavailable",
+    "launch_kind_not_allowed", "executor_not_ready", "policy_shape_invalid",
+    "mcp_inherit_restricted", "mcp_unmapped", "skills_not_applied",
+    "path_pattern_inert", "permission_key_not_applied", "write_permission_inert",
+    "process_tool_not_applied", "image_generation_not_applied",
+    "auto_approve_not_applied", "model_tier_hint_ignored",
+    "schedulable_not_applied", "ask_headless_denied",
+    "revision_newer_than_session",
+    "projection_version_unsupported", "selection_invalid", "profile_unsupported",
+    "transport_not_allowed", "revision_conflict", "projection_unsupported",
+    "job_not_claimed", "lease_invalid", "target_revision_changed", "cwd_mismatch",
+    "cwd_invalid", "session_key_reused", "binding_mismatch",
+    "provider_runtime_mismatch", "projection_revoked", "rate_limited",
+    "provider_failed",
+})
+
+
+def policy_error_code(exc: BaseException | None, default: str = "provider_failed") -> str:
+    """Return only SA-v1 reason codes; arbitrary provider text never escapes."""
+    code = getattr(exc, "code", None)
+    if isinstance(code, str) and code in POLICY_REASON_CODES:
+        return code
+    return default if default in POLICY_REASON_CODES else "provider_failed"
+
+
+def unsupported_policy_message(exc: BaseException | None, default: str = "provider_failed") -> tuple[str, str]:
+    code = policy_error_code(exc, default)
+    return f"unsupported_policy:{code}", code
 
 
 def _rhythm_wildcard_match(value: str, pattern: str) -> bool:
@@ -206,13 +246,21 @@ class SessionPolicySnapshot:
     taint_gate: PolicyTaintGate | None = None
     launch: PolicyLaunch | None = None
     restored_tainted: bool = False
+    persistence_extras: Mapping[str, Any] | None = None
 
     @classmethod
     def from_mapping(cls, payload: Mapping[str, Any], *, binding: Mapping[str, Any]) -> "SessionPolicySnapshot":
         bound = PolicyBinding.from_mapping(binding)
         if not isinstance(payload, Mapping):
             raise _v2_invalid("invalid policy")
-        return cls._from_v2(payload, bound) if payload.get("version") == 2 else cls._from_v1(payload, bound)
+        version = payload.get("version")
+        if version == 2:
+            return cls._from_v2(payload, bound)
+        if version == 1:
+            return cls._from_v1(payload, bound)
+        if "version" not in payload:
+            raise UnsupportedPolicy("policy_shape_invalid")
+        raise UnsupportedPolicy("projection_version_unsupported")
 
     @classmethod
     def _from_v1(cls, payload: Mapping[str, Any], bound: PolicyBinding) -> "SessionPolicySnapshot":
@@ -331,11 +379,34 @@ class SessionPolicySnapshot:
         self._check_binding(binding, lineage_root=self.binding.session_id if self.version == 2 else None)
         if len(native) > 1024:
             raise UnsupportedPolicy("policy_shape_invalid" if self.version == 2 else "invalid native tool catalog")
-        return [dict(tool) for tool in native if not self.blocks_native_tool(str(tool.get("name") or tool.get("function", {}).get("name") or "")) and (self.allowed_tools is None or (tool.get("name") or tool.get("function", {}).get("name")) in self.allowed_tools)]
+        return [dict(tool) for tool in native if not self._blocks_tool(str(tool.get("name") or tool.get("function", {}).get("name") or "")) and (self.allowed_tools is None or (tool.get("name") or tool.get("function", {}).get("name")) in self.allowed_tools)]
 
     @staticmethod
     def blocks_native_tool(name: str) -> bool:
         return name in {"delegate_task", "delegate", "execute_code", "skill", "skill_view", "skill_manage", "load_skill", "memory", "session_search", "cronjob", "send_message", "process", "vision_analyze", "text_to_speech", "image_generate"} or name.startswith(("delegate_", "subagent_", "skills_", "browser_", "ha_", "mcp__"))
+
+    def _blocks_tool(self, name: str) -> bool:
+        if self.version == 2:
+            return self.blocks_native_tool(name)
+        return (
+            name in {"skill", "load_skill", "skill_manage", "delegate", "execute_code"}
+            or name.startswith(("skills_", "delegate_", "subagent_"))
+        )
+
+    def persistence_entry(self, *, tainted: bool = False) -> dict[str, Any]:
+        """Build the durable entry used by initial and compression child rows."""
+        entry = copy.deepcopy(dict(self.persistence_extras or {}))
+        entry.update({
+            "payload": self.to_mapping(),
+            "owner_id": self.binding.owner_id,
+            "profile_id": self.binding.profile_id,
+        })
+        if self.version == 2:
+            entry.update({
+                "lineage_root": self.binding.session_id,
+                "tainted": bool(tainted or self.restored_tainted),
+            })
+        return entry
 
     @staticmethod
     def native_tool_schemas(native: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -364,6 +435,80 @@ class SessionPolicySnapshot:
             return "ask"
         return self._path_gate(os.path.realpath(os.path.join(cwd, value)))
 
+    def _redirection_effect(self, command: str, cwd: str) -> tuple[str, bool]:
+        """Gate unquoted shell redirect targets and flag malformed grammar."""
+        effect = "allow"
+        uncertain = False
+        index = 0
+        quote = None
+        escaped = False
+        operators = ("&>>", "&>", "<<<", "<<", "<>", ">>", ">|", "<&", ">&", ">", "<")
+        while index < len(command):
+            char = command[index]
+            if escaped:
+                escaped = False
+                index += 1
+                continue
+            if char == "\\" and quote != "'":
+                escaped = True
+                index += 1
+                continue
+            if quote:
+                if char == quote:
+                    quote = None
+                index += 1
+                continue
+            if char in {"'", '"'}:
+                quote = char
+                index += 1
+                continue
+            start = index
+            if char.isdigit() and (index == 0 or command[index - 1].isspace() or command[index - 1] in ";|&"):
+                while index < len(command) and command[index].isdigit():
+                    index += 1
+            operator = next((op for op in operators if command.startswith(op, index)), None)
+            if operator is None:
+                index = start + 1
+                continue
+            index += len(operator)
+            if operator in {"<<", "<<<"}:
+                uncertain = True
+            while index < len(command) and command[index].isspace():
+                index += 1
+            target_start = index
+            target_quote = None
+            target_escaped = False
+            while index < len(command):
+                current = command[index]
+                if target_escaped:
+                    target_escaped = False
+                elif current == "\\" and target_quote != "'":
+                    target_escaped = True
+                elif target_quote:
+                    if current == target_quote:
+                        target_quote = None
+                elif current in {"'", '"'}:
+                    target_quote = current
+                elif current.isspace() or current in ";|&<>":
+                    break
+                index += 1
+            raw_target = command[target_start:index]
+            if not raw_target or target_quote:
+                uncertain = True
+                continue
+            try:
+                import shlex
+                parsed = shlex.split(raw_target, posix=True)
+            except ValueError:
+                parsed = []
+            if len(parsed) != 1:
+                uncertain = True
+                continue
+            target = parsed[0]
+            if not re.fullmatch(r"&\d+", target) and target != "/dev/null":
+                effect = _strictest(effect, self._argument_gate(target, cwd))
+        return effect, uncertain
+
     def _terminal_effect(self, arguments: Mapping[str, Any], task_id: str, rules: Sequence[PolicyRule]) -> str:
         from tools.approval import _command_parser_limit_exceeded, _iter_top_level_shell_segments, _shell_segment_tokens
         from tools.file_tools import _resolve_base_dir
@@ -377,10 +522,13 @@ class SessionPolicySnapshot:
         if workdir:
             if not isinstance(workdir, str):
                 return "deny"
-            # Deliberately do not expand ``~`` here.  The frozen evaluator
-            # treats workdir as a literal path relative to the live cwd.
-            cwd = os.path.realpath(os.path.join(cwd, workdir))
+            expanded_workdir = os.path.expanduser(workdir)
+            cwd = os.path.realpath(os.path.join(cwd, expanded_workdir))
             effect = _strictest(effect, self._path_gate(cwd))
+        redirect_effect, uncertain_redirect = self._redirection_effect(command, cwd)
+        effect = _strictest(effect, redirect_effect)
+        if uncertain_redirect:
+            floor = "ask"
         for segment in _iter_top_level_shell_segments(command):
             text = segment.strip()
             if not text:
@@ -404,15 +552,19 @@ class SessionPolicySnapshot:
                         continue
                 words.append(token)
                 index += 1
+            had_assignment_prefix = False
             while words and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0]):
                 words.pop(0)
+                had_assignment_prefix = True
             if not words:
                 continue
             command_name = words[0].lower()
             if command_name in _CWD_COMMANDS:
                 target = next((word for word in words[1:] if not word.startswith("-")), "~")
                 effect = _strictest(effect, self._argument_gate(target, cwd))
-                if not any(char in target for char in "$*?~`"):
+                if had_assignment_prefix:
+                    floor = "ask"
+                elif not any(char in target for char in "$*?~`"):
                     cwd = os.path.realpath(os.path.join(cwd, target))
                 continue
             effect = _strictest(effect, self._last_match(rules, text))
@@ -429,7 +581,7 @@ class SessionPolicySnapshot:
         args = final_arguments if final_arguments is not None else arguments
         if not isinstance(args, Mapping) or len(str(args)) > 65536:
             raise UnsupportedPolicy("policy_shape_invalid" if self.version == 2 else "invalid policy tool input")
-        if self.allowed_tools is not None and tool_name not in self.allowed_tools or self.blocks_native_tool(tool_name):
+        if self.allowed_tools is not None and tool_name not in self.allowed_tools or self._blocks_tool(tool_name):
             return PolicyDecision("deny")
         if self.version == 1:
             effect = "deny" if any(rule.tool == tool_name for rule in self.rules) else "allow"
@@ -466,7 +618,58 @@ class SessionPolicySnapshot:
             effect = _strictest(effect, self._last_match(rules, value))
         if tainted and tool_name in self.taint_gate.gated:
             effect = _strictest(effect, "ask")
+        if self.launch.kind == "delegated" and effect == "ask":
+            effect = "deny"
         return PolicyDecision(effect)
+
+    def filter_search_result(self, result: Any, *, task_id: str) -> Any:
+        """Remove protected/external-denied hits returned beneath an allowed root."""
+        if self.version != 2:
+            return result
+        was_text = isinstance(result, str)
+        try:
+            data = json.loads(result) if was_text else copy.deepcopy(result)
+        except (TypeError, ValueError):
+            return result
+        if not isinstance(data, dict):
+            return result
+        from tools.file_tools import _resolve_path_for_task
+
+        def allowed(raw: Any) -> bool:
+            if not isinstance(raw, str):
+                return False
+            try:
+                path = os.path.realpath(str(_resolve_path_for_task(raw, task_id)))
+            except Exception:
+                return False
+            return self._path_gate(path) == "allow"
+
+        omitted = 0
+        if isinstance(data.get("matches"), list):
+            kept = []
+            for item in data["matches"]:
+                if isinstance(item, dict) and allowed(item.get("path")):
+                    kept.append(item)
+                else:
+                    omitted += 1
+            data["matches"] = kept
+        if isinstance(data.get("files"), list):
+            kept = [path for path in data["files"] if allowed(path)]
+            omitted += len(data["files"]) - len(kept)
+            data["files"] = kept
+        if isinstance(data.get("counts"), dict):
+            kept = {path: count for path, count in data["counts"].items() if allowed(path)}
+            omitted += len(data["counts"]) - len(kept)
+            data["counts"] = kept
+        # Dense results cannot be safely separated without re-parsing their
+        # display encoding. Refuse the block rather than leak an unverified hit.
+        if "matches_text" in data:
+            data.pop("matches_text", None)
+            data.pop("matches_format", None)
+            omitted += 1
+        if omitted:
+            data["_policy_omitted"] = omitted
+        return json.dumps(data, ensure_ascii=False) if was_text else data
 
 
 _provider_lock = threading.RLock()
@@ -493,20 +696,15 @@ def _registered_provider():
 
 
 def _provider_failure(exc: Exception) -> UnsupportedPolicy:
-    if isinstance(exc, UnsupportedPolicy):
-        return exc
-    # Legacy v1 providers used ValueError for an unknown selection. Preserve
-    # N0's bounded bare error while v2 provider/runtime failures use a code.
-    if isinstance(exc, ValueError):
-        return UnsupportedPolicy("unsupported_policy")
-    return UnsupportedPolicy("provider_failed")
+    return UnsupportedPolicy(policy_error_code(exc))
 
 
 def resolve_session_policy(selection: str, *, session_id: str, profile_id: str, runtime_generation: str, transport, cwd: str | None = None) -> SessionPolicySnapshot:
-    _text(selection, "policy selection", 1024)
+    if not isinstance(selection, str) or not selection or len(selection) > 1024 or "\x00" in selection:
+        raise UnsupportedPolicy("selection_invalid")
     provider = _registered_provider()
     if provider is None:
-        raise UnsupportedPolicy("unsupported_policy", "session policy provider unavailable")
+        raise UnsupportedPolicy("provider_failed", "session policy provider unavailable")
     try:
         payload, owner_id = provider.resolve(selection, session_id=session_id, profile_id=profile_id, runtime_generation=runtime_generation, transport=transport, cwd=cwd)
         return SessionPolicySnapshot.from_mapping(payload, binding={"session_id": session_id, "owner_id": owner_id, "profile_id": profile_id, "runtime_generation": runtime_generation})

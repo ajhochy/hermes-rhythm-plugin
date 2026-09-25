@@ -56,27 +56,26 @@ def _(rid, params: dict) -> dict:
                 cwd=os.path.realpath(resolved_cwd) if explicit_cwd else None,
             )
         except Exception as exc:
-            code = getattr(exc, "code", "provider_failed")
-            message = (
-                "unsupported_policy"
-                if code == "unsupported_policy" or " " in code
-                else f"unsupported_policy:{code}"
-            )
-            return _err(rid, 4000, message)
+            message, code = _unsupported_policy_error(exc)
+            return _err(rid, 4000, message, {"code": code})
 
     # The desktop composer owns its model/effort/fast as plain UI state and ships
     # it on every session.create. Honor each as a PER-SESSION override (built into
     # the agent below) — never a global config write, so picking a model/effort
     # for a new chat can't mutate the profile default. provider is optional
     # (resolved at build).
-    create_model = str(params.get("model") or "").strip()
+    create_model = (
+        "" if getattr(session_policy, "version", None) == 2
+        else str(params.get("model") or "").strip()
+    )
     session_model_override = (
         {"model": create_model, "provider": str(params.get("provider") or "").strip() or None}
         if create_model
         else None
     )
     create_reasoning_override = None
-    if effort := str(params.get("reasoning_effort") or "").strip():
+    if (getattr(session_policy, "version", None) != 2 and
+            (effort := str(params.get("reasoning_effort") or "").strip())):
         try:
             from hermes_constants import parse_reasoning_effort
 
@@ -117,6 +116,9 @@ def _(rid, params: dict) -> dict:
             "last_active": now,
             "model_override": session_model_override,
             "session_policy": session_policy,
+            "policy_tainted": bool(
+                getattr(session_policy, "restored_tainted", False)
+            ),
             "create_reasoning_override": create_reasoning_override,
             "create_service_tier_override": create_service_tier_override,
             "parent_session_id": parent_session_id,
@@ -161,9 +163,13 @@ def _(rid, params: dict) -> dict:
                 # its sticky pick with the global default before the deferred
                 # build's session.info lands.
                 "model": (
-                    session_model_override.get("model")
-                    if session_model_override
-                    else _resolve_model()
+                    session_policy.model.model
+                    if getattr(session_policy, "version", None) == 2
+                    else (
+                        session_model_override.get("model")
+                        if session_model_override
+                        else _resolve_model()
+                    )
                 ),
                 **(
                     {"provider": session_model_override["provider"]}
@@ -447,8 +453,9 @@ def _(rid, params: dict) -> dict:
             restored_policy = _restore_session_policy(
                 found, target, _response_profile_name(profile)
             )
-        except Exception:
-            return _err(rid, 4000, "unsupported_policy")
+        except Exception as exc:
+            message, code = _unsupported_policy_error(exc)
+            return _err(rid, 4000, message, {"code": code})
 
         def _reuse_live_payload(sid: str, session: dict) -> dict:
             payload = _live_session_payload(
@@ -2948,6 +2955,11 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
+    policy_error = _v2_unsupported_response(
+        rid, session, code="projection_unsupported"
+    )
+    if policy_error is not None:
+        return policy_error
     # Branch must write into the parent's profile-scoped state.db (app-global
     # remote mode). Using the launch handle would orphan branch rows + history.
     with _session_db(session) as db:

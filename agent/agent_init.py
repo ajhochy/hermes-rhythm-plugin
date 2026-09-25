@@ -1561,7 +1561,7 @@ def init_agent(
         quiet_mode=agent.quiet_mode,
     )
     if session_policy is not None:
-        if session_policy.binding.session_id != session_id:
+        if session_policy.version == 1 and session_policy.binding.session_id != session_id:
             raise ValueError("policy binding mismatch")
         # Tool schemas use the OpenAI function wrapper, not a flat name.
         agent.tools = session_policy.filter_tool_schemas(
@@ -1741,11 +1741,11 @@ def init_agent(
         "max_tokens": max_tokens,
     }
     if session_policy is not None:
-        agent._session_init_model_config["native_session_policy"] = {
-            "payload": session_policy.to_mapping(),
-            "owner_id": session_policy.binding.owner_id,
-            "profile_id": session_policy.binding.profile_id,
-        }
+        agent._session_init_model_config["native_session_policy"] = (
+            session_policy.persistence_entry(
+                tainted=bool(getattr(agent, "session_policy_tainted", False))
+            )
+        )
     # Persist a process-scoped --yolo launch into the session row so a later
     # `hermes --resume <id>` can restore the bypass (CLI resume paths read
     # model_config.yolo_mode back via SessionDB.session_yolo_enabled).
