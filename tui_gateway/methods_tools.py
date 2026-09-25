@@ -510,6 +510,8 @@ def _(rid, params: dict) -> dict:
         bundle_key = None
 
     if bundle_key is not None:
+        if session and getattr(session.get("session_policy"), "version", None) == 2:
+            return _err(rid, 4018, "unsupported_policy:skill_not_allowed")
         try:
             bundle_result = build_bundle_invocation_message(
                 bundle_key,
@@ -550,6 +552,8 @@ def _(rid, params: dict) -> dict:
         cmds = scan_skill_commands()
         key = f"/{name}"
         if key in cmds:
+            if session and getattr(session.get("session_policy"), "version", None) == 2:
+                return _err(rid, 4018, "unsupported_policy:skill_not_allowed")
             msg = build_skill_invocation_message(
                 key, arg, task_id=session.get("session_key", "") if session else ""
             )
@@ -1175,6 +1179,8 @@ def _(rid, params: dict) -> dict:
             else None
         )
         if _bundle_key is not None:
+            if getattr(session.get("session_policy"), "version", None) == 2:
+                return _err(rid, 4018, "unsupported_policy:skill_not_allowed")
             return _methods["command.dispatch"](
                 rid,
                 {
@@ -1202,6 +1208,8 @@ def _(rid, params: dict) -> dict:
         try:
             _cmd_key = f"/{_cmd_base}"
             if _cmd_key in get_skill_commands():
+                if getattr(session.get("session_policy"), "version", None) == 2:
+                    return _err(rid, 4018, "unsupported_policy:skill_not_allowed")
                 return _err(
                     rid, 4018, f"skill command: use command.dispatch for {_cmd_key}"
                 )

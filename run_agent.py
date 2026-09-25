@@ -8300,6 +8300,10 @@ class AIAgent:
                 return self._execute_tool_calls_sequential(
                     assistant_message, messages, effective_task_id, api_call_count
                 )
+            if getattr(getattr(self, "session_policy", None), "version", None) == 2:
+                return self._execute_tool_calls_sequential(
+                    assistant_message, messages, effective_task_id, api_call_count
+                )
 
             from agent.tool_dispatch_helpers import _plan_tool_batch_segments
             _active_env = get_active_env(effective_task_id)

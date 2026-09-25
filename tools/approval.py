@@ -3900,7 +3900,12 @@ def request_mandatory_policy_approval(tool_name: str, arguments: dict,
         return False
     from agent.redact import redact_sensitive_text
 
-    preview = redact_sensitive_text(json.dumps(arguments, ensure_ascii=False))[:2048]
+    serialized = json.dumps(arguments, ensure_ascii=False)
+    if len(serialized) > 2048:
+        return False
+    preview = redact_sensitive_text(serialized)
+    if preview != serialized:
+        return False
     request_id = uuid.uuid4().hex
     data = {
         "request_id": request_id,

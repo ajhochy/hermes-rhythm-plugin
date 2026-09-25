@@ -51,6 +51,42 @@ class _PolicyProvider:
         }, "fixture-owner")
 
 
+class _V2PolicyProvider:
+    def __init__(self, root):
+        self.root = os.path.realpath(root)
+        self.checks = []
+
+    def _payload(self):
+        return {
+            "version": 2,
+            "source": {"agent_id": "fixture-native-agent", "revision": 2,
+                       "reference": "fixture-projection-v2"},
+            "instructions": "N1_FROZEN_INSTRUCTIONS",
+            "model": {"provider": "custom:rhythm-n0-loopback",
+                      "model": "rhythm-n0-fixture-model", "reasoning": None},
+            "allowed_tools": ["read_file"],
+            "tool_effects": {},
+            "paths": {"root": self.root, "boundary": [self.root],
+                      "external": "deny", "protected": []},
+            "rules": [{"tool": "read_file", "argument": "path",
+                       "pattern": "*", "effect": "allow"}],
+            "taint_gate": {"sources": ["read_file"], "gated": []},
+            "launch": {"kind": "interactive", "cwd": self.root},
+        }
+
+    def resolve(self, selection, **context):
+        assert selection == "fixture-native-agent"
+        assert context["cwd"] == self.root
+        return self._payload(), "fixture-owner"
+
+    def restore(self, _reference, **_context):
+        return self._payload(), "fixture-owner"
+
+    def check(self, reference, **context):
+        assert reference == "fixture-projection-v2"
+        self.checks.append(context)
+
+
 class _ModelHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         owner = self.server  # type: ignore[attr-defined]
@@ -184,10 +220,10 @@ def _working_hashes(home):
             for name in ("config.yaml", ".env", "auth.json", "MEMORY.md", "USER.md")}
 
 
-def _create(server, created, *, selection="fixture-native-agent"):
+def _create(server, created, *, selection="fixture-native-agent", cwd=None):
     created_response = server.handle_request({
         "id": "n0-create", "method": "session.create",
-        "params": {"policy_selection": selection, "cwd": str(Path.cwd()),
+        "params": {"policy_selection": selection, "cwd": str(cwd or Path.cwd()),
                    "title": "N0 fixture session"},
     })
     assert "error" not in created_response, created_response
@@ -221,6 +257,46 @@ def _submit(server, sid, text="Use the fixture model now", *, expect_agent=True)
 
 def _create_and_submit(server, created, text="Use the fixture model now"):
     return _submit(server, _create(server, created), text)
+
+
+def test_n1_live_1_real_v2_session_enforces_offered_and_forged_tools(
+    native_gateway, local_model, tmp_path
+):
+    """N1-LIVE-1: a real v2 gateway turn executes allow and observes deny."""
+    from hermes_cli.plugins import register_session_policy_provider
+
+    server, created, _home = native_gateway
+    allowed = tmp_path / "allowed.txt"
+    allowed.write_text("N1_LIVE_ALLOWED_MARKER")
+    forbidden = tmp_path / "must-not-exist"
+    provider = _V2PolicyProvider(tmp_path)
+
+    def scripted(request):
+        if len(local_model.requests) == 1:
+            calls = [
+                {"index": 0, "id": "call-read-n1", "type": "function",
+                 "function": {"name": "read_file", "arguments": json.dumps({"path": str(allowed)})}},
+                {"index": 1, "id": "call-terminal-n1", "type": "function",
+                 "function": {"name": "terminal", "arguments": json.dumps({"command": f"touch {forbidden}"})}},
+            ]
+            return [_chunk({"role": "assistant", "tool_calls": calls}), _chunk({}, "tool_calls")]
+        return [_chunk({"role": "assistant", "content": "n1-denial-observed"}), _chunk({}, "stop")]
+
+    local_model.respond = scripted
+    dispose = register_session_policy_provider(provider)
+    try:
+        sid = _create(server, created, cwd=tmp_path)
+        _submit(server, sid)
+    finally:
+        dispose()
+
+    assert provider.checks, "v2 per-turn provider check did not run"
+    assert _offered_tools(local_model.requests[0]) == {"read_file"}
+    second = json.dumps(local_model.requests[1].get("messages", []))
+    assert "N1_LIVE_ALLOWED_MARKER" in second
+    assert "call-terminal-n1" in second
+    assert "policy" in second.lower() or "does not exist" in second.lower()
+    assert not forbidden.exists()
 
 
 def _offered_tools(request):

@@ -640,11 +640,14 @@ def _run_agent_tool_execution_middleware(
                 decision = policy.authorize_tool_call(
                     tool_name=function_name, arguments=final_args,
                     binding={
-                        "session_id": agent.session_id,
+                        "session_id": policy.binding.session_id,
                         "owner_id": policy.binding.owner_id,
                         "profile_id": policy.binding.profile_id,
                         "runtime_generation": policy.binding.runtime_generation,
                     },
+                    lineage_root=policy.binding.session_id,
+                    task_id=effective_task_id or "default",
+                    tainted=bool(getattr(agent, "session_policy_tainted", False)),
                 )
                 if decision.effect == "ask":
                     callback = getattr(agent, "policy_approval_callback", None)
@@ -717,7 +720,14 @@ def _run_agent_tool_execution_middleware(
         )
         _hb_thread.start()
         try:
-            return execute(final_args)
+            if policy is None:
+                return execute(final_args)
+            from agent.session_policy import bind_active_policy, reset_active_policy
+            token = bind_active_policy(policy, policy.binding.session_id)
+            try:
+                return execute(final_args)
+            finally:
+                reset_active_policy(token)
         finally:
             _hb_stop.set()
             _hb_thread.join(timeout=2.0)
@@ -2571,6 +2581,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Log tool errors to the persistent error log so [error] tags
         # in the UI always have a corresponding detailed entry on disk.
         _is_error_result, _ = _detect_tool_failure(function_name, function_result)
+        policy = getattr(agent, "session_policy", None)
+        if (not _is_error_result and policy is not None and
+                policy.taints(function_name)):
+            agent.session_policy_tainted = True
         # The agent-runtime tools above (todo, session_search, memory,
         # context-engine, memory-manager, clarify, delegate_task) are
         # dispatched inline — they never reach handle_function_call, so the
