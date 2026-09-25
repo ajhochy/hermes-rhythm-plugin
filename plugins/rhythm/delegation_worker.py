@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import re
 import threading
 import time
 from typing import Any, Callable
 
 from agent import host_capabilities
-from tui_gateway.session_driver import create_session
 
 from .agent_bridge import BridgeClient, BridgeError
 from .shared_agents import worker_claim
@@ -17,8 +18,47 @@ RUNTIME_REPORT_INTERVAL_SECONDS = 300
 PROGRESS_INTERVAL_SECONDS = 20
 MAX_CONCURRENT_JOBS = 2
 _CLAIM_WAIT_MS = 20_000
+_RESULT_CHARS = 16_384
+_REPORT_BODY_BYTES = 65_536
+_TRUNCATION_MARKER = "\n[truncated]"
+_ERROR_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_TERMINAL_REPORT_BACKOFF_SECONDS = (1, 2, 4, 8, 16, 30, 30, 30, 30, 30)
+_TERMINAL_REPORT_RETRY_CODES = frozenset(
+    {"bridge_unavailable", "bridge_capability_unknown", "bridge_rate_limited"}
+)
 _worker_lock = threading.RLock()
 _worker = None
+
+
+def _report_size(body: dict[str, Any]) -> int:
+    return len(
+        json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    )
+
+
+def _bounded_result_text(value: str, body: dict[str, Any]) -> str:
+    """Fit stored-result and bridge-body limits with an explicit marker."""
+    if len(value) <= _RESULT_CHARS:
+        if _report_size({**body, "resultText": value}) <= _REPORT_BODY_BYTES:
+            return value
+
+    high = min(len(value), _RESULT_CHARS - len(_TRUNCATION_MARKER))
+    low = 0
+    while low < high:
+        midpoint = (low + high + 1) // 2
+        candidate = value[:midpoint] + _TRUNCATION_MARKER
+        if _report_size({**body, "resultText": candidate}) <= _REPORT_BODY_BYTES:
+            low = midpoint
+        else:
+            high = midpoint - 1
+    return value[:low] + _TRUNCATION_MARKER
+
+
+def _bounded_error_code(value: Any, default: str) -> str:
+    candidate = str(value or "")
+    if candidate.startswith("unsupported_policy:"):
+        candidate = candidate.partition(":")[2]
+    return candidate if _ERROR_CODE_RE.fullmatch(candidate) else default
 
 
 def _runtime_report() -> dict[str, Any]:
@@ -80,9 +120,15 @@ class DelegationWorker:
         self,
         *,
         client: BridgeClient | None = None,
-        session_factory: Callable[..., Any] = create_session,
+        session_factory: Callable[..., Any] | None = None,
     ) -> None:
         self._client = client or BridgeClient()
+        if session_factory is None:
+            # session_driver imports the gateway server on first use; loading
+            # the plugin in an ordinary CLI process must remain side-effect free.
+            from tui_gateway.session_driver import create_session
+
+            session_factory = create_session
         self._session_factory = session_factory
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -169,28 +215,45 @@ class DelegationWorker:
         def report(phase: str, *, progress: bool = False) -> dict[str, Any] | None:
             body: dict[str, Any] = {"leaseToken": lease_token, "phase": phase}
             session = session_holder.get("session")
-            if phase == "running" and session is not None:
+            if session is not None:
                 body["childSessionKey"] = session.session_key
             with state_lock:
                 if progress:
                     body["progress"] = {"steps": state["steps"], "latestKind": state["latest"]}
                 if phase == "succeeded":
-                    body["resultText"] = state["result"]
+                    body["resultText"] = _bounded_result_text(state["result"], body)
                 elif phase == "failed":
-                    body["errorCode"] = state["error"] or "driver_error"
-            try:
-                response = self._client.call(
-                    "delegation.report",
-                    path_params={"jobId": job_id},
-                    body=body,
-                )
-            except BridgeError as exc:
-                if exc.code == "job_terminal" and session is not None:
-                    interrupt()
-                    with state_lock:
-                        state["phase"] = "cancelled"
-                    done.set()
-                return None
+                    body["errorCode"] = _bounded_error_code(
+                        state["error"], "driver_error"
+                    )
+            retry_index = 0
+            while True:
+                try:
+                    response = self._client.call(
+                        "delegation.report",
+                        path_params={"jobId": job_id},
+                        body=body,
+                    )
+                    break
+                except BridgeError as exc:
+                    if exc.code == "job_terminal" and session is not None:
+                        interrupt()
+                        with state_lock:
+                            state["phase"] = "cancelled"
+                        done.set()
+                    is_terminal = phase in {"succeeded", "failed", "cancelled"}
+                    if (
+                        not is_terminal
+                        or exc.code not in _TERMINAL_REPORT_RETRY_CODES
+                        or retry_index >= len(_TERMINAL_REPORT_BACKOFF_SECONDS)
+                    ):
+                        return None
+                    # A lease can become unknown during a bridge outage. The
+                    # stable childSessionKey above lets this retry reconcile it.
+                    delay = _TERMINAL_REPORT_BACKOFF_SECONDS[retry_index]
+                    retry_index += 1
+                    if self._stop.wait(delay):
+                        return None
             if response.get("cancelRequested") and session is not None:
                 interrupt()
                 with state_lock:
@@ -216,9 +279,15 @@ class DelegationWorker:
                 report("progress", progress=True)
             elif kind == "message.complete":
                 with state_lock:
-                    if event.get("status") == "error":
+                    status = event.get("status")
+                    if status == "error":
                         state["phase"] = "failed"
-                        state["error"] = str(event.get("errorCode") or "agent_error")[:128]
+                        state["error"] = _bounded_error_code(
+                            event.get("errorCode") or event.get("message"),
+                            "agent_error",
+                        )
+                    elif status in {"interrupted", "cancelled"}:
+                        state["phase"] = "cancelled"
                     else:
                         text = event.get("text")
                         state["steps"] += 1
@@ -229,7 +298,9 @@ class DelegationWorker:
             elif kind == "error":
                 with state_lock:
                     state["phase"] = "failed"
-                    state["error"] = str(event.get("code") or "agent_error")[:128]
+                    state["error"] = _bounded_error_code(
+                        event.get("code") or event.get("message"), "agent_error"
+                    )
                 done.set()
 
         session = None
@@ -254,10 +325,12 @@ class DelegationWorker:
             with state_lock:
                 terminal = state["phase"]
             report(terminal, progress=False)
-        except Exception:
+        except Exception as exc:
             with state_lock:
                 state["phase"] = "failed"
-                state["error"] = "driver_error"
+                state["error"] = _bounded_error_code(
+                    getattr(exc, "code", None), "driver_error"
+                )
             report("failed")
         finally:
             if session is not None:

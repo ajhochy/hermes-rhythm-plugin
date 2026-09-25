@@ -52,7 +52,11 @@ def _httpx_transport(
     import httpx
 
     try:
-        with httpx.Client(follow_redirects=False, timeout=timeout) as client:
+        with httpx.Client(
+            follow_redirects=False,
+            timeout=timeout,
+            trust_env=False,
+        ) as client:
             with client.stream(method, url, headers=headers, content=body) as response:
                 length = response.headers.get("content-length")
                 if length is not None and int(length) > max_bytes:

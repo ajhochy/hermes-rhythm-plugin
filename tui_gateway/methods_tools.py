@@ -511,7 +511,9 @@ def _(rid, params: dict) -> dict:
 
     if bundle_key is not None:
         if session and getattr(session.get("session_policy"), "version", None) == 2:
-            return _err(rid, 4018, "unsupported_policy:skill_not_allowed")
+            return _v2_unsupported_response(
+                rid, session, code="projection_unsupported"
+            )
         try:
             bundle_result = build_bundle_invocation_message(
                 bundle_key,
@@ -553,7 +555,9 @@ def _(rid, params: dict) -> dict:
         key = f"/{name}"
         if key in cmds:
             if session and getattr(session.get("session_policy"), "version", None) == 2:
-                return _err(rid, 4018, "unsupported_policy:skill_not_allowed")
+                return _v2_unsupported_response(
+                    rid, session, code="projection_unsupported"
+                )
             msg = build_skill_invocation_message(
                 key, arg, task_id=session.get("session_key", "") if session else ""
             )
@@ -1185,7 +1189,9 @@ def _(rid, params: dict) -> dict:
         )
         if _bundle_key is not None:
             if getattr(session.get("session_policy"), "version", None) == 2:
-                return _err(rid, 4018, "unsupported_policy:skill_not_allowed")
+                return _v2_unsupported_response(
+                    rid, session, code="projection_unsupported"
+                )
             return _methods["command.dispatch"](
                 rid,
                 {
@@ -1214,7 +1220,9 @@ def _(rid, params: dict) -> dict:
             _cmd_key = f"/{_cmd_base}"
             if _cmd_key in get_skill_commands():
                 if getattr(session.get("session_policy"), "version", None) == 2:
-                    return _err(rid, 4018, "unsupported_policy:skill_not_allowed")
+                    return _v2_unsupported_response(
+                        rid, session, code="projection_unsupported"
+                    )
                 return _err(
                     rid, 4018, f"skill command: use command.dispatch for {_cmd_key}"
                 )

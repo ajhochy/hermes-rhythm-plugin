@@ -93,14 +93,37 @@ def test_rp_1_bridge_client_enforces_transport_contract(monkeypatch, caplog):
     stub = ThreadingHTTPServer(("127.0.0.1", 0), StubHandler)
     thread = threading.Thread(target=stub.serve_forever, daemon=True)
     thread.start()
+    proxy_requests = []
+
+    class ProxyHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            proxy_requests.append((self.path, self.headers.get("X-Rhythm-Bridge-Capability")))
+            self.send_response(502)
+            self.end_headers()
+
+        def log_message(self, *_args):
+            pass
+
+    proxy = ThreadingHTTPServer(("127.0.0.1", 0), ProxyHandler)
+    proxy_thread = threading.Thread(target=proxy.serve_forever, daemon=True)
+    proxy_thread.start()
     try:
         local_origin = f"http://127.0.0.1:{stub.server_address[1]}"
         monkeypatch.setattr(agent_bridge.host_capabilities, "get", lambda _name: HostCapability(TOKEN, local_origin))
+        proxy_origin = f"http://127.0.0.1:{proxy.server_address[1]}"
+        monkeypatch.setenv("HTTP_PROXY", proxy_origin)
+        monkeypatch.setenv("ALL_PROXY", proxy_origin)
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        monkeypatch.delenv("no_proxy", raising=False)
         assert agent_bridge.BridgeClient().call("catalog.list")["agents"] == []
+        assert proxy_requests == []
     finally:
         stub.shutdown()
         stub.server_close()
         thread.join(timeout=2)
+        proxy.shutdown()
+        proxy.server_close()
+        proxy_thread.join(timeout=2)
 
 
 def test_rp_2_provider_resolve_restore_check_and_errors(monkeypatch):
@@ -137,6 +160,27 @@ def test_rp_2_provider_resolve_restore_check_and_errors(monkeypatch):
     )
     assert provider.restore("projection-1", lineage_root="session-1", profile_id="default") == ({"version": 2}, "local-user")
     provider.check("projection-1", lineage_root="session-1", profile_id="default")
+
+    dotted, dotted_owner = provider.resolve(
+        "rhythm-shared-agent:v1:team.lead@3",
+        session_id="session-dotted",
+        profile_id="default",
+        runtime_generation="generation-1",
+        transport=object(),
+        cwd="/work/project",
+    )
+    assert (dotted, dotted_owner) == ({"version": 2}, "local-user")
+    assert calls[-1][1]["body"]["agentId"] == "team.lead"
+    with pytest.raises(UnsupportedPolicy) as overlong_revision:
+        provider.resolve(
+            "rhythm-shared-agent:v1:team.lead@0000000000000003",
+            session_id="session-overlong",
+            profile_id="default",
+            runtime_generation="generation-1",
+            transport=object(),
+            cwd=None,
+        )
+    assert overlong_revision.value.code == "selection_invalid"
 
     from tui_gateway.session_driver import DriverTransport
 
@@ -245,7 +289,8 @@ def test_rp_4_tools_require_v2_and_reuse_one_idempotency_key(monkeypatch):
     body = calls[0][1]["body"]
     assert body["parent"] == {"projectionId": "projection-1", "sessionKey": "lineage-1"}
     assert body["idempotencyKey"]
-    assert len({body["idempotencyKey"]}) == 1
+    json.loads(bridge_tools.rhythm_delegate({"targetAgentId": "agent-2", "prompt": "work", "context": "ctx"}))
+    assert calls[0][1]["body"]["idempotencyKey"] != calls[1][1]["body"]["idempotencyKey"]
 
 
 def test_rp_4_bridge_tool_schemas_and_dispatch_are_policy_scoped(tmp_path):
@@ -321,7 +366,6 @@ def test_rp_4_bridge_tool_schemas_and_dispatch_are_policy_scoped(tmp_path):
                 for item in model_tools.get_tool_definitions(
                     enabled_toolsets=["rhythm"],
                     quiet_mode=True,
-                    skip_tool_search_assembly=True,
                     session_policy=policy,
                 )
             }

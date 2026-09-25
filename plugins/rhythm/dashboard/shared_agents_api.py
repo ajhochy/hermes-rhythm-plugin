@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, model_validator
 
 router = APIRouter()
-_AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+_AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _EDITABLE_FIELDS = {
     "label", "icon", "enabled", "isAgent", "isManager", "systemPrompt",
     "allowedMcpsJson", "allowedSkillsJson", "corePermissionsJson", "allowedDelegatesJson",

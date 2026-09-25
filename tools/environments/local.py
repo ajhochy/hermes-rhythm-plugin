@@ -206,7 +206,10 @@ _HERMES_HOST_CAPABILITY_PREFIX = "HERMES_HOST_CAPABILIT"
 def _strip_host_capability_env(env: dict[str, str]) -> dict[str, str]:
     """Never delegate process-bound host authority to a child."""
     for key in list(env):
-        if key.startswith(_HERMES_HOST_CAPABILITY_PREFIX):
+        if (
+            key.startswith(_HERMES_HOST_CAPABILITY_PREFIX)
+            or key == "HERMES_HOST_REQUIRED_PLUGINS"
+        ):
             env.pop(key, None)
     return env
 

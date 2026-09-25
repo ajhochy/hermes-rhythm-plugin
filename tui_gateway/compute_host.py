@@ -445,6 +445,7 @@ class ComputeHost:
         if not sid:
             self.emit({"type": "turn.error", "sid": sid, "request_id": request_id, "message": "sid required"})
             return
+        session = None
         try:
             from tui_gateway import server
 
@@ -463,6 +464,10 @@ class ComputeHost:
                             "sid": sid,
                             "request_id": request_id,
                             "interrupted": True,
+                            "policy_tainted": bool(
+                                session.get("policy_tainted")
+                                or getattr(session.get("agent"), "session_policy_tainted", False)
+                            ),
                             "ended_ns": now_ns(),
                         }
                     )
@@ -516,6 +521,10 @@ class ComputeHost:
                     "session_key": session_key,
                     "message_count": message_count,
                     "interrupted": interrupted,
+                    "policy_tainted": bool(
+                        session.get("policy_tainted")
+                        or getattr(session.get("agent"), "session_policy_tainted", False)
+                    ),
                     "ended_ns": now_ns(),
                     "session_info": session_info,
                     "session_info_emitted": True,
@@ -532,7 +541,20 @@ class ComputeHost:
                         server._clear_inflight_turn(session)
             except Exception:
                 pass
-            self.emit({"type": "turn.error", "sid": sid, "request_id": request_id, "reason": "exception", "message": str(exc)})
+            self.emit({
+                "type": "turn.error",
+                "sid": sid,
+                "request_id": request_id,
+                "reason": "exception",
+                "message": str(exc),
+                "policy_tainted": bool(
+                    session is not None
+                    and (
+                        session.get("policy_tainted")
+                        or getattr(session.get("agent"), "session_policy_tainted", False)
+                    )
+                ),
+            })
 
     def _ensure_server_session(self, server: Any, frame: dict[str, Any]) -> dict:
         sid = str(frame.get("sid") or "")
@@ -578,6 +600,13 @@ class ComputeHost:
             if policy_entry is not None:
                 profile_id = policy_entry["profile_id"]
                 row = {"model_config": {"native_session_policy": policy_entry}}
+                payload = policy_entry.get("payload") if isinstance(policy_entry, dict) else None
+                if isinstance(payload, dict) and payload.get("version") == 2:
+                    # A fresh compute interpreter can restore a v2 session
+                    # before model_tools has triggered plugin discovery.
+                    from hermes_cli.plugins import discover_plugins
+
+                    discover_plugins()
                 try:
                     restored_policy = server._restore_session_policy(row, key, profile_id)
                 except ValueError:

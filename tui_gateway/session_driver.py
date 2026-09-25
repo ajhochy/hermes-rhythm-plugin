@@ -6,7 +6,6 @@ import uuid
 from collections.abc import Callable
 from typing import Literal
 
-from tui_gateway import server
 from tui_gateway.transport import bind_transport, reset_transport
 
 
@@ -59,6 +58,10 @@ class DriverSession:
         self._lock = threading.Lock()
 
     def _request(self, method: str, params: dict) -> dict:
+        # Importing the gateway server replaces process stdio/excepthooks for
+        # its line-JSON protocol. Plugin discovery must remain side-effect free.
+        from tui_gateway import server
+
         request = {
             "jsonrpc": "2.0",
             "id": f"driver-{uuid.uuid4().hex}",

@@ -30,6 +30,8 @@ def test_rp_9_dashboard_routes_are_closed_and_passthrough(monkeypatch):
 
     assert client.get("/shared-agents").status_code == 200
     assert client.get("/shared-agents/agent-1?sessionRevision=7").status_code == 200
+    assert client.get("/shared-agents/team.lead?sessionRevision=3").status_code == 200
+    assert calls[-1][1]["path_params"] == {"agentId": "team.lead"}
     invalid_before = len(calls)
     assert client.get("/shared-agents/bad%2Fid").status_code == 400
     assert len(calls) == invalid_before
@@ -45,4 +47,3 @@ def test_rp_9_dashboard_routes_are_closed_and_passthrough(monkeypatch):
 
     manifest = __import__("json").loads((shared_agents_api.__file__ and __import__("pathlib").Path(shared_agents_api.__file__).with_name("manifest.json").read_text()))
     assert all("shared-agents" not in entry["path"] for entry in manifest["public_api"])
-

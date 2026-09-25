@@ -432,7 +432,7 @@ class SessionPolicySnapshot:
         return self.version == 2 and tool_name in self.taint_gate.sources
 
     def _last_match(self, rules: Sequence[PolicyRule], value: str) -> str:
-        effect = "deny"
+        effect = "allow" if not rules else "deny"
         for rule in rules:
             if _rhythm_wildcard_match(value, rule.pattern):
                 effect = rule.effect
@@ -545,6 +545,7 @@ class SessionPolicySnapshot:
         effect = _strictest(effect, redirect_effect)
         if uncertain_redirect:
             floor = "ask"
+        dynamic_cdpath = False
         for segment in _iter_top_level_shell_segments(command):
             text = segment.strip()
             if not text:
@@ -568,17 +569,39 @@ class SessionPolicySnapshot:
                         continue
                 words.append(token)
                 index += 1
+            assignment_pattern = r"([A-Za-z_][A-Za-z0-9_]*)=.*"
+            leading_assignments = []
+            for word in words:
+                match = re.fullmatch(assignment_pattern, word)
+                if match is None:
+                    break
+                leading_assignments.append(match.group(1))
+            command_word = (
+                words[len(leading_assignments)].lower()
+                if len(words) > len(leading_assignments)
+                else ""
+            )
+            cdpath_declared = "CDPATH" in leading_assignments
+            if command_word in {"export", "declare", "typeset", "readonly", "env"}:
+                cdpath_declared = cdpath_declared or any(
+                    word == "CDPATH" or word.startswith("CDPATH=")
+                    for word in words[len(leading_assignments) + 1:]
+                )
+            if cdpath_declared:
+                dynamic_cdpath = True
+                floor = "ask"
             had_assignment_prefix = False
             while words and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0]):
                 words.pop(0)
                 had_assignment_prefix = True
             if not words:
+                effect = _strictest(effect, self._last_match(rules, text))
                 continue
             command_name = words[0].lower()
             if command_name in _CWD_COMMANDS:
                 target = next((word for word in words[1:] if not word.startswith("-")), "~")
                 effect = _strictest(effect, self._argument_gate(target, cwd))
-                if had_assignment_prefix:
+                if had_assignment_prefix or dynamic_cdpath:
                     floor = "ask"
                 elif not any(char in target for char in "$*?~`"):
                     cwd = os.path.realpath(os.path.join(cwd, target))

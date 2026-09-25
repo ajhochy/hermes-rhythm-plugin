@@ -354,6 +354,12 @@ def get_tool_definitions(
         if active_policy is not None:
             session_policy = active_policy[0]
 
+    # A v2 projection already has a bounded, immutable allowlist. Deferring
+    # its scoped tools would hide both those tools and the tool-search bridge,
+    # which is intentionally absent from the frozen allowlist.
+    if getattr(session_policy, "version", None) == 2:
+        skip_tool_search_assembly = True
+
     # Fast path: memoized result when the caller doesn't need stdout prints.
     # The cache key captures every argument-level input; the registry
     # generation captures registry mutations (MCP refresh, plugin load).

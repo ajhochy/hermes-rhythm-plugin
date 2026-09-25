@@ -5348,6 +5348,7 @@ def _sync_bot_capabilities(sid: str, session: dict) -> None:
                 session["session_key"],
                 session_id=session["session_key"],
                 platform_override=_session_source(session),
+                session_policy=session.get("session_policy"),
             )
         finally:
             _clear_session_context(tokens)

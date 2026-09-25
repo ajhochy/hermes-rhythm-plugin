@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 
 
@@ -68,6 +69,7 @@ def test_rp_7_worker_claim_run_approval_cancel_and_crash(monkeypatch):
     assert any(report.get("progress", {}).get("latestKind") == "approval_denied" for report in reports)
     assert reports[-1]["phase"] == "succeeded"
     assert reports[-1]["resultText"] == "finished"
+    assert reports[-1]["childSessionKey"] == "child-lineage"
 
     create_count = 0
 
@@ -81,6 +83,18 @@ def test_rp_7_worker_claim_run_approval_cancel_and_crash(monkeypatch):
     assert create_count == 1
     assert reports[-1]["phase"] == "failed"
 
+    from tui_gateway.session_driver import DriverError
+
+    reports.clear()
+
+    def policy_refusal(*_args, **_kwargs):
+        raise DriverError("unsupported_policy:lease_invalid", code="lease_invalid")
+
+    delegation_worker.DelegationWorker(
+        client=Client(), session_factory=policy_refusal
+    ).run_claim(_job())
+    assert reports[-1]["errorCode"] == "lease_invalid"
+
     class CancelClient:
         def call(self, op, **kwargs):
             assert op == "delegation.report"
@@ -93,6 +107,142 @@ def test_rp_7_worker_claim_run_approval_cancel_and_crash(monkeypatch):
     assert holder["interrupted"] is True
     assert holder["closed"] is True
     assert reports[-1]["phase"] == "cancelled"
+
+
+def test_review_worker_bounds_terminal_report_and_keeps_recovery_session_key():
+    """review:delegation_worker.py:173/178: terminal recovery fits the bridge contract."""
+    from plugins.rhythm import delegation_worker
+
+    reports = []
+    oversized = ('escape "\\\n' + "界") * 20_000
+
+    class Client:
+        def call(self, op, **kwargs):
+            assert op == "delegation.report"
+            body = kwargs["body"]
+            assert len(json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) <= 65_536
+            reports.append(body)
+            return {
+                "state": "unknown" if body["phase"] == "running" else body["phase"],
+                "cancelRequested": False,
+                "leaseExpiresAt": "later",
+            }
+
+    class Session:
+        session_key = "child-lineage"
+
+        def close(self):
+            pass
+
+    def factory(_params, *, on_event, timeout=30.0):
+        return SessionWithCallback(on_event)
+
+    class SessionWithCallback(Session):
+        def __init__(self, callback):
+            self._callback = callback
+
+        def submit(self, _text):
+            self._callback({"type": "message.complete", "status": "complete", "text": oversized})
+
+    delegation_worker.DelegationWorker(client=Client(), session_factory=factory).run_claim(_job())
+    terminal = reports[-1]
+    assert terminal["phase"] == "succeeded"
+    assert terminal["childSessionKey"] == "child-lineage"
+    assert len(terminal["resultText"]) <= 16_384
+    assert terminal["resultText"].endswith("[truncated]")
+
+    reports.clear()
+    oversized = "x" * 16_384
+    delegation_worker.DelegationWorker(client=Client(), session_factory=factory).run_claim(_job())
+    boundary = reports[-1]
+    assert boundary["phase"] == "succeeded"
+    assert boundary["resultText"] == oversized
+    assert not boundary["resultText"].endswith("[truncated]")
+
+
+def test_review_worker_maps_interrupted_completion_to_cancelled():
+    """review:delegation_worker.py:219: partial interrupted output is not success."""
+    from plugins.rhythm import delegation_worker
+
+    reports = []
+
+    class Client:
+        def call(self, op, **kwargs):
+            reports.append(kwargs["body"])
+            return {"state": kwargs["body"]["phase"], "cancelRequested": False}
+
+    class Session:
+        session_key = "child-lineage"
+
+        def __init__(self, callback):
+            self._callback = callback
+
+        def submit(self, _text):
+            self._callback({"type": "message.complete", "status": "interrupted", "text": "partial"})
+
+        def close(self):
+            pass
+
+    def factory(_params, *, on_event, timeout=30.0):
+        return Session(on_event)
+
+    delegation_worker.DelegationWorker(client=Client(), session_factory=factory).run_claim(_job())
+    assert reports[-1]["phase"] == "cancelled"
+    assert reports[-1]["childSessionKey"] == "child-lineage"
+
+
+def test_review_worker_retries_terminal_report_during_bridge_recovery(monkeypatch):
+    """review:delegation_worker.py:173: a transient outage cannot discard the result."""
+    from plugins.rhythm import delegation_worker
+    from plugins.rhythm.agent_bridge import BridgeError
+
+    reports = []
+    terminal_attempts = 0
+    monkeypatch.setattr(
+        delegation_worker,
+        "_TERMINAL_REPORT_BACKOFF_SECONDS",
+        (0, 0),
+        raising=False,
+    )
+
+    class Client:
+        def call(self, op, **kwargs):
+            nonlocal terminal_attempts
+            assert op == "delegation.report"
+            body = kwargs["body"]
+            reports.append(body)
+            if body["phase"] == "succeeded":
+                terminal_attempts += 1
+                if terminal_attempts == 1:
+                    raise BridgeError("bridge_unavailable")
+                if terminal_attempts == 2:
+                    raise BridgeError("bridge_capability_unknown")
+            return {
+                "state": "unknown" if body["phase"] == "running" else body["phase"],
+                "cancelRequested": False,
+            }
+
+    class Session:
+        session_key = "child-lineage"
+
+        def __init__(self, callback):
+            self._callback = callback
+
+        def submit(self, _text):
+            self._callback({"type": "message.complete", "status": "complete", "text": "recovered"})
+
+        def close(self):
+            pass
+
+    def factory(_params, *, on_event, timeout=30.0):
+        return Session(on_event)
+
+    delegation_worker.DelegationWorker(client=Client(), session_factory=factory).run_claim(_job())
+    terminal_reports = [report for report in reports if report["phase"] == "succeeded"]
+    assert terminal_attempts == 3
+    assert len(terminal_reports) == 3
+    assert all(report["childSessionKey"] == "child-lineage" for report in terminal_reports)
+    assert all(report["resultText"] == "recovered" for report in terminal_reports)
 
 
 def test_rp_8_worker_start_conditions_singleton_and_report_cadence(monkeypatch):

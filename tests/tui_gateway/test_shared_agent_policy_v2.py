@@ -101,7 +101,8 @@ def test_n1_ac7_blocks_skill_dispatch_completion_and_replay(tmp_path, monkeypatc
     try:
         dispatched = server.handle_request({"id": "d", "method": "command.dispatch", "params": {"session_id": sid, "name": "fixture-skill", "arg": ""}})
         completed = server.handle_request({"id": "c", "method": "complete.slash", "params": {"session_id": sid, "text": "/fixture"}})
-        assert dispatched["error"]["message"] == "unsupported_policy:skill_not_allowed"
+        assert dispatched["error"]["message"] == "unsupported_policy:projection_unsupported"
+        assert dispatched["error"]["data"]["code"] == "projection_unsupported"
         assert all(item.get("kind") != "skill" for item in completed["result"]["items"])
         assert server._expand_skill_invocation_for_replay("/fixture-skill", snapshot.binding.session_id) == "/fixture-skill"
     finally:
@@ -506,6 +507,40 @@ def test_review_v2_model_switch_is_refused_before_mutation(tmp_path):
     with pytest.raises(UnsupportedPolicy) as exc:
         server._apply_model_switch("sid", session, "attacker-model --once")
     assert exc.value.code == "projection_unsupported"
+
+
+def test_review_bot_capability_rebuild_keeps_v2_policy(tmp_path, monkeypatch):
+    """review:tui_gateway/server.py:5346: sibling rebuilds preserve the snapshot."""
+    from tui_gateway import server
+
+    snapshot = SessionPolicySnapshot.from_mapping(_payload(tmp_path), binding={
+        **_binding(), "runtime_generation": server._SESSION_POLICY_RUNTIME_GENERATION,
+    })
+    old_agent = SimpleNamespace(_session_title_hint="Bot Chat", _session_db=None)
+    rebuilt = SimpleNamespace()
+    captured = {}
+    session = {
+        "agent": old_agent,
+        "session_key": "lineage-root",
+        "session_policy": snapshot,
+        "bot_caps_seen": "before",
+        "cwd": str(tmp_path),
+    }
+    monkeypatch.setattr("tools.bot_mode_probe.capability_fingerprint", lambda _home: "after")
+    monkeypatch.setattr(server, "_set_session_context", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(server, "_clear_session_context", lambda _tokens: None)
+    monkeypatch.setattr(server, "_session_source", lambda _session: "desktop")
+    monkeypatch.setattr(server, "_config_model_target", lambda: ("fixture", "openrouter"))
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+
+    def make_agent(*_args, **kwargs):
+        captured.update(kwargs)
+        return rebuilt
+
+    monkeypatch.setattr(server, "_make_agent", make_agent)
+    server._sync_bot_capabilities("sid", session)
+    assert captured["session_policy"] is snapshot
+    assert session["agent"] is rebuilt
 
 
 @pytest.mark.parametrize(

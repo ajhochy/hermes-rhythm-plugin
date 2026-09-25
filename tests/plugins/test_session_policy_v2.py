@@ -200,7 +200,19 @@ def test_review_redirection_grammar_gates_every_target(tmp_path, monkeypatch, co
     assert _effect(snapshot, "terminal", {"command": command}) == "deny"
 
 
-def test_review_env_assignment_before_cd_is_dynamic_and_not_tracked(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "command",
+    [
+        "CDPATH=../outside cd Vault; cat secret.txt",
+        "CDPATH=../outside; cd Vault; cat secret.txt",
+        "export CDPATH=../outside; cd Vault; cat secret.txt",
+        "declare CDPATH=../outside; cd Vault; cat secret.txt",
+        "typeset CDPATH=../outside; cd Vault; cat secret.txt",
+        "readonly CDPATH=../outside; cd Vault; cat secret.txt",
+        "env CDPATH=../outside cd Vault; cat secret.txt",
+    ],
+)
+def test_review_cdpath_mutation_is_dynamic_and_not_tracked(tmp_path, monkeypatch, command):
     """review:agent/session_policy.py:407: CDPATH can redirect cd away from lexical cwd."""
     import tools.file_tools as file_tools
 
@@ -210,8 +222,29 @@ def test_review_env_assignment_before_cd_is_dynamic_and_not_tracked(tmp_path, mo
         {"tool": "terminal", "argument": "command", "pattern": "*", "effect": "allow"}
     ]
     snapshot = SessionPolicySnapshot.from_mapping(payload, binding=_binding())
-    command = "CDPATH=../outside cd Vault; cat secret.txt"
     assert _effect(snapshot, "terminal", {"command": command}) == "ask"
+
+
+def test_review_v2_tools_without_rules_use_path_and_effect_defaults(tmp_path, monkeypatch):
+    """review:agent/session_policy.py:434: no rules means allow, not implicit deny."""
+    import tools.file_tools as file_tools
+
+    monkeypatch.setattr(file_tools, "_resolve_base_dir", lambda task_id: tmp_path)
+    monkeypatch.setattr(
+        file_tools,
+        "_resolve_path_for_task",
+        lambda raw, task_id: (tmp_path / raw).resolve(),
+    )
+    monkeypatch.setattr(file_tools, "_uses_container_paths", lambda task_id: False)
+    payload = _payload(tmp_path)
+    payload["allowed_tools"] = ["read_file", "terminal"]
+    payload["tool_effects"] = {}
+    payload["rules"] = []
+    payload["taint_gate"] = {"sources": [], "gated": []}
+    snapshot = SessionPolicySnapshot.from_mapping(payload, binding=_binding())
+
+    assert _effect(snapshot, "read_file", {"path": "inside.txt"}) == "allow"
+    assert _effect(snapshot, "terminal", {"command": "ls"}) == "allow"
 
 
 def test_review_search_results_are_gated_individually(tmp_path, monkeypatch):
@@ -344,6 +377,18 @@ def test_n1_ac6_root_relative_rules_include_root_slash(tmp_path, monkeypatch):
 def test_n1_ac8_active_policy_context_is_nested_and_thread_local(tmp_path):
     """N1-AC8: the active projection is visible only inside its dispatch context."""
     snapshot = _snapshot(tmp_path)
+    assert current_policy() is None
+    outer = bind_active_policy(snapshot, "outer-lineage")
+    try:
+        assert current_policy() == (snapshot, "outer-lineage")
+        inner = bind_active_policy(snapshot, "inner-lineage")
+        try:
+            assert current_policy() == (snapshot, "inner-lineage")
+        finally:
+            reset_active_policy(inner)
+        assert current_policy() == (snapshot, "outer-lineage")
+    finally:
+        reset_active_policy(outer)
     assert current_policy() is None
 
 
@@ -534,7 +579,6 @@ def test_n1_ac17_policy_scoped_tools_require_v2_allowlist(tmp_path, monkeypatch)
                 for item in model_tools.get_tool_definitions(
                     enabled_toolsets=[toolset],
                     quiet_mode=True,
-                    skip_tool_search_assembly=True,
                     session_policy=policy,
                 )
             }
@@ -546,6 +590,22 @@ def test_n1_ac17_policy_scoped_tools_require_v2_allowlist(tmp_path, monkeypatch)
         assert tool_name not in offered(v1)
         assert tool_name not in offered(denied)
         assert tool_name in offered(allowed)
+
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            provider="custom",
+            base_url="http://127.0.0.1:1/v1",
+            api_key="synthetic-test-key",
+            model="fixture-model",
+            session_id="lineage-root",
+            enabled_toolsets=[toolset],
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            session_policy=allowed,
+        )
+        assert tool_name in agent.valid_tool_names
         assert registry.get_definitions({tool_name}) == []
         assert {
             item["function"]["name"]

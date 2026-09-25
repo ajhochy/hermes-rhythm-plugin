@@ -11,12 +11,13 @@ from typing import Any
 
 from agent import host_capabilities
 from agent.session_policy import UnsupportedPolicy, register_session_policy_provider
-from tui_gateway.session_driver import is_driver_transport
 
 from .agent_bridge import BridgeClient, BridgeError
 
 
-_INTERACTIVE_RE = re.compile(r"^rhythm-shared-agent:v1:([A-Za-z0-9][A-Za-z0-9_-]{0,127})@([0-9]+)$")
+_INTERACTIVE_RE = re.compile(
+    r"^rhythm-shared-agent:v1:([A-Za-z0-9][A-Za-z0-9._-]{0,127})@(\d{1,15})$"
+)
 _JOB_RE = re.compile(r"^rhythm-job:v1:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$")
 _active_claim: ContextVar[tuple[str, str] | None] = ContextVar("rhythm_worker_claim", default=None)
 _registration_lock = threading.RLock()
@@ -75,6 +76,8 @@ class RhythmSessionPolicyProvider:
                 "expectedRevision": revision,
             }
         elif delegated is not None:
+            from tui_gateway.session_driver import is_driver_transport
+
             job_id = delegated.group(1)
             try:
                 if str(uuid.UUID(job_id)) != job_id:
