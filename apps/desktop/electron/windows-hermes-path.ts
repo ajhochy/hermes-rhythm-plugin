@@ -171,14 +171,16 @@ export interface ResolveVenvHermesCommandDeps {
   isCommandScript: (command: string) => boolean
   fileExists: (filePath: string) => boolean
   directoryExists: (filePath: string) => boolean
-  canImportHermesCli: (python: string, opts?: { env?: Record<string, string> }) => boolean
+  canImportHermesCli: (python: string, opts?: { env?: Record<string, string>; baseEnv?: NodeJS.ProcessEnv }) => boolean
   getVenvPython: (venvRoot: string) => string
   getVenvSitePackagesEntries: (venvRoot: string) => string[]
   buildDesktopBackendEnv: (opts: {
     hermesHome: string
     pythonPathEntries: string[]
     venvRoot: string
+    currentEnv?: NodeJS.ProcessEnv
   }) => Record<string, string>
+  probeBaseEnv?: NodeJS.ProcessEnv
   hermesHome: string
   resolvePath: (...segments: string[]) => string
   dirname: (p: string) => string
@@ -234,6 +236,7 @@ export function resolveVenvHermesCommand(
     basename,
     rememberLog
   } = deps
+  const probeBaseEnv = deps.probeBaseEnv
 
   if (!isWindows || !command || isCommandScript(command)) {
     return null
@@ -263,10 +266,11 @@ export function resolveVenvHermesCommand(
   if (
     !canImportHermesCli(python, {
       env: {
-        PYTHONPATH: [...(directoryExists(root) ? [root] : []), process.env.PYTHONPATH]
+        PYTHONPATH: [...(directoryExists(root) ? [root] : []), (probeBaseEnv ?? process.env).PYTHONPATH]
           .filter((entry): entry is string => Boolean(entry))
           .join(path.delimiter)
-      }
+      },
+      ...(probeBaseEnv ? { baseEnv: probeBaseEnv } : {})
     })
   ) {
     rememberLog?.(
@@ -284,7 +288,8 @@ export function resolveVenvHermesCommand(
     env: buildDesktopBackendEnv({
       hermesHome,
       pythonPathEntries: [...(directoryExists(root) ? [root] : []), ...getVenvSitePackagesEntries(venvRoot)],
-      venvRoot
+      venvRoot,
+      ...(probeBaseEnv ? { currentEnv: probeBaseEnv } : {})
     }),
     kind: 'python',
     root,

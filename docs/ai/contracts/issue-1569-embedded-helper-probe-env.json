@@ -1,0 +1,41 @@
+{
+  "issue": 1569,
+  "generated": "2026-09-24",
+  "status": "implementation-candidate",
+  "criteria": [
+    {
+      "id": "embedded-cli-probe-clean-env",
+      "test": "apps/desktop/electron/embedded-probe-env.contract.test.ts",
+      "status": "green-synthetic",
+      "expected": "Version helper receives the explicit clean base and derived runtime path without ambient credential, proxy, or loader variables"
+    },
+    {
+      "id": "embedded-python-import-clean-env",
+      "test": "apps/desktop/electron/embedded-probe-env.contract.test.ts",
+      "status": "green-synthetic",
+      "expected": "Python import helper replaces ambient base while retaining the source-root PYTHONPATH; standalone delta behavior remains intact"
+    },
+    {
+      "id": "embedded-native-resolver-probes-clean-env",
+      "test": "apps/desktop/electron/embedded-native-probe-env.contract.test.ts",
+      "status": "green-synthetic",
+      "expected": "Actual hermes:connection resolver --version and serve --help helpers receive no ambient credential, proxy, or loader variables"
+    },
+    {
+      "id": "embedded-windows-venv-clean-env",
+      "test": "apps/desktop/electron/embedded-probe-env.contract.test.ts",
+      "status": "green-synthetic",
+      "expected": "Windows venv shim verifies exact interpreter and derives import/backend path from clean base"
+    },
+    {
+      "id": "probe-timeout-retry-clean-env",
+      "test": "apps/desktop/electron/embedded-probe-env.contract.test.ts",
+      "status": "green-synthetic",
+      "expected": "Both timeout attempts receive the same clean environment"
+    }
+  ],
+  "limits": [
+    "No native Windows reg/py.exe execution or packaged/legacy qualification",
+    "First-run bootstrap/update and uninstall subprocesses remain outside this seam"
+  ]
+}
