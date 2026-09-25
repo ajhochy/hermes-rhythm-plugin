@@ -45,6 +45,12 @@ def _desktop_entry(source: Path, work: Path) -> Path:
     vendor = (source / "desktop/vendor/rhythm-workspace-ui/dist/index.js").read_text(encoding="utf-8")
     (work / "vendor.mjs").write_text(vendor, encoding="utf-8")
     shutil.copyfile(source / "desktop/src/route-state.ts", work / "route-state.ts")
+    # shared-agents.tsx (S7) is its own module so plugin.tsx can import it;
+    # rewrite its vendor import the same way plugin.tsx's is rewritten below,
+    # since it resolves against work/, not the source tree.
+    shared_agents = (source / "desktop/src/shared-agents.tsx").read_text(encoding="utf-8")
+    shared_agents = shared_agents.replace("../vendor/rhythm-workspace-ui/dist/index.js", "./vendor.mjs")
+    (work / "shared-agents.tsx").write_text(shared_agents, encoding="utf-8")
     plugin = (source / "desktop/src/plugin.tsx").read_text(encoding="utf-8")
     plugin = plugin.replace("../vendor/rhythm-workspace-ui/dist/index.js", "./vendor.mjs")
     plugin = plugin.replace("import '../vendor/rhythm-workspace-ui/dist/styles/rhythm.css'\n", "")

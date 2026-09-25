@@ -214,13 +214,13 @@ function ArtifactsScreen({ artifactsGateway, artifactHostPort }) {
   );
 }
 
-// node_modules/lucide-react/dist/esm/shared/src/utils.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/shared/src/utils.js
 var toKebabCase = (string) => string.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
 var mergeClasses = (...classes) => classes.filter((className, index, array) => {
   return Boolean(className) && className.trim() !== "" && array.indexOf(className) === index;
 }).join(" ").trim();
 
-// node_modules/lucide-react/dist/esm/defaultAttributes.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/defaultAttributes.js
 var defaultAttributes = {
   xmlns: "http://www.w3.org/2000/svg",
   width: 24,
@@ -233,7 +233,7 @@ var defaultAttributes = {
   strokeLinejoin: "round"
 };
 
-// node_modules/lucide-react/dist/esm/Icon.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/Icon.js
 var Icon = react.forwardRef(
   ({
     color = "currentColor",
@@ -265,7 +265,7 @@ var Icon = react.forwardRef(
   }
 );
 
-// node_modules/lucide-react/dist/esm/createLucideIcon.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/createLucideIcon.js
 var createLucideIcon = (iconName, iconNode) => {
   const Component = react.forwardRef(
     ({ className, ...props }, ref) => react.createElement(Icon, {
@@ -279,7 +279,7 @@ var createLucideIcon = (iconName, iconNode) => {
   return Component;
 };
 
-// node_modules/lucide-react/dist/esm/icons/activity.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/icons/activity.js
 var Activity = createLucideIcon("Activity", [
   [
     "path",
@@ -290,20 +290,20 @@ var Activity = createLucideIcon("Activity", [
   ]
 ]);
 
-// node_modules/lucide-react/dist/esm/icons/archive.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/icons/archive.js
 var Archive = createLucideIcon("Archive", [
   ["rect", { width: "20", height: "5", x: "2", y: "3", rx: "1", key: "1wp1u1" }],
   ["path", { d: "M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8", key: "1s80jp" }],
   ["path", { d: "M10 12h4", key: "a56b0p" }]
 ]);
 
-// node_modules/lucide-react/dist/esm/icons/bell.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/icons/bell.js
 var Bell = createLucideIcon("Bell", [
   ["path", { d: "M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9", key: "1qo2s2" }],
   ["path", { d: "M10.3 21a1.94 1.94 0 0 0 3.4 0", key: "qgo35s" }]
 ]);
 
-// node_modules/lucide-react/dist/esm/icons/book-open.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/icons/book-open.js
 var BookOpen = createLucideIcon("BookOpen", [
   ["path", { d: "M12 7v14", key: "1akyts" }],
   [
@@ -315,7 +315,7 @@ var BookOpen = createLucideIcon("BookOpen", [
   ]
 ]);
 
-// node_modules/lucide-react/dist/esm/icons/calendar.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/icons/calendar.js
 var Calendar = createLucideIcon("Calendar", [
   ["path", { d: "M8 2v4", key: "1cmpym" }],
   ["path", { d: "M16 2v4", key: "4m81vk" }],
@@ -323,73 +323,73 @@ var Calendar = createLucideIcon("Calendar", [
   ["path", { d: "M3 10h18", key: "8toen8" }]
 ]);
 
-// node_modules/lucide-react/dist/esm/icons/check.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/icons/check.js
 var Check = createLucideIcon("Check", [["path", { d: "M20 6 9 17l-5-5", key: "1gmf2c" }]]);
 
-// node_modules/lucide-react/dist/esm/icons/chevron-down.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/icons/chevron-down.js
 var ChevronDown = createLucideIcon("ChevronDown", [
   ["path", { d: "m6 9 6 6 6-6", key: "qrunsl" }]
 ]);
 
-// node_modules/lucide-react/dist/esm/icons/chevron-right.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/icons/chevron-right.js
 var ChevronRight = createLucideIcon("ChevronRight", [
   ["path", { d: "m9 18 6-6-6-6", key: "mthhwq" }]
 ]);
 
-// node_modules/lucide-react/dist/esm/icons/copy.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/icons/copy.js
 var Copy = createLucideIcon("Copy", [
   ["rect", { width: "14", height: "14", x: "8", y: "8", rx: "2", ry: "2", key: "17jyea" }],
   ["path", { d: "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2", key: "zix9uf" }]
 ]);
 
-// node_modules/lucide-react/dist/esm/icons/download.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/icons/download.js
 var Download = createLucideIcon("Download", [
   ["path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", key: "ih7n3h" }],
   ["polyline", { points: "7 10 12 15 17 10", key: "2ggqvy" }],
   ["line", { x1: "12", x2: "12", y1: "15", y2: "3", key: "1vk2je" }]
 ]);
 
-// node_modules/lucide-react/dist/esm/icons/ellipsis.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/icons/ellipsis.js
 var Ellipsis = createLucideIcon("Ellipsis", [
   ["circle", { cx: "12", cy: "12", r: "1", key: "41hilf" }],
   ["circle", { cx: "19", cy: "12", r: "1", key: "1wjl8i" }],
   ["circle", { cx: "5", cy: "12", r: "1", key: "1pcz8c" }]
 ]);
 
-// node_modules/lucide-react/dist/esm/icons/history.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/icons/history.js
 var History = createLucideIcon("History", [
   ["path", { d: "M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8", key: "1357e3" }],
   ["path", { d: "M3 3v5h5", key: "1xhq8a" }],
   ["path", { d: "M12 7v5l4 2", key: "1fdv2h" }]
 ]);
 
-// node_modules/lucide-react/dist/esm/icons/link.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/icons/link.js
 var Link = createLucideIcon("Link", [
   ["path", { d: "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71", key: "1cjeqo" }],
   ["path", { d: "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71", key: "19qd67" }]
 ]);
 
-// node_modules/lucide-react/dist/esm/icons/list-filter.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/icons/list-filter.js
 var ListFilter = createLucideIcon("ListFilter", [
   ["path", { d: "M3 6h18", key: "d0wm0j" }],
   ["path", { d: "M7 12h10", key: "b7w52i" }],
   ["path", { d: "M10 18h4", key: "1ulq68" }]
 ]);
 
-// node_modules/lucide-react/dist/esm/icons/mail.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/icons/mail.js
 var Mail = createLucideIcon("Mail", [
   ["rect", { width: "20", height: "16", x: "2", y: "4", rx: "2", key: "18n3k1" }],
   ["path", { d: "m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7", key: "1ocrg3" }]
 ]);
 
-// node_modules/lucide-react/dist/esm/icons/menu.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/icons/menu.js
 var Menu = createLucideIcon("Menu", [
   ["line", { x1: "4", x2: "20", y1: "12", y2: "12", key: "1e0a9i" }],
   ["line", { x1: "4", x2: "20", y1: "6", y2: "6", key: "1owob3" }],
   ["line", { x1: "4", x2: "20", y1: "18", y2: "18", key: "yk5zj1" }]
 ]);
 
-// node_modules/lucide-react/dist/esm/icons/paperclip.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/icons/paperclip.js
 var Paperclip = createLucideIcon("Paperclip", [
   [
     "path",
@@ -400,7 +400,7 @@ var Paperclip = createLucideIcon("Paperclip", [
   ]
 ]);
 
-// node_modules/lucide-react/dist/esm/icons/pencil.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/icons/pencil.js
 var Pencil = createLucideIcon("Pencil", [
   [
     "path",
@@ -412,13 +412,13 @@ var Pencil = createLucideIcon("Pencil", [
   ["path", { d: "m15 5 4 4", key: "1mk7zo" }]
 ]);
 
-// node_modules/lucide-react/dist/esm/icons/plus.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/icons/plus.js
 var Plus = createLucideIcon("Plus", [
   ["path", { d: "M5 12h14", key: "1ays0h" }],
   ["path", { d: "M12 5v14", key: "s699le" }]
 ]);
 
-// node_modules/lucide-react/dist/esm/icons/refresh-cw.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/icons/refresh-cw.js
 var RefreshCw = createLucideIcon("RefreshCw", [
   ["path", { d: "M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8", key: "v9h5vc" }],
   ["path", { d: "M21 3v5h-5", key: "1q7to0" }],
@@ -426,13 +426,13 @@ var RefreshCw = createLucideIcon("RefreshCw", [
   ["path", { d: "M8 16H3v5", key: "1cv678" }]
 ]);
 
-// node_modules/lucide-react/dist/esm/icons/search.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/icons/search.js
 var Search = createLucideIcon("Search", [
   ["circle", { cx: "11", cy: "11", r: "8", key: "4ej97u" }],
   ["path", { d: "m21 21-4.3-4.3", key: "1qie3q" }]
 ]);
 
-// node_modules/lucide-react/dist/esm/icons/settings-2.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/icons/settings-2.js
 var Settings2 = createLucideIcon("Settings2", [
   ["path", { d: "M20 7h-9", key: "3s1dr2" }],
   ["path", { d: "M14 17H5", key: "gfn3mx" }],
@@ -440,7 +440,7 @@ var Settings2 = createLucideIcon("Settings2", [
   ["circle", { cx: "7", cy: "7", r: "3", key: "dfmy0x" }]
 ]);
 
-// node_modules/lucide-react/dist/esm/icons/sliders-horizontal.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/icons/sliders-horizontal.js
 var SlidersHorizontal = createLucideIcon("SlidersHorizontal", [
   ["line", { x1: "21", x2: "14", y1: "4", y2: "4", key: "obuewd" }],
   ["line", { x1: "10", x2: "3", y1: "4", y2: "4", key: "1q6298" }],
@@ -453,7 +453,7 @@ var SlidersHorizontal = createLucideIcon("SlidersHorizontal", [
   ["line", { x1: "16", x2: "16", y1: "18", y2: "22", key: "1lctlv" }]
 ]);
 
-// node_modules/lucide-react/dist/esm/icons/sparkles.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/icons/sparkles.js
 var Sparkles = createLucideIcon("Sparkles", [
   [
     "path",
@@ -468,7 +468,7 @@ var Sparkles = createLucideIcon("Sparkles", [
   ["path", { d: "M5 18H3", key: "zchphs" }]
 ]);
 
-// node_modules/lucide-react/dist/esm/icons/trash-2.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/icons/trash-2.js
 var Trash2 = createLucideIcon("Trash2", [
   ["path", { d: "M3 6h18", key: "d0wm0j" }],
   ["path", { d: "M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6", key: "4alrt4" }],
@@ -477,7 +477,7 @@ var Trash2 = createLucideIcon("Trash2", [
   ["line", { x1: "14", x2: "14", y1: "11", y2: "17", key: "xtxkd" }]
 ]);
 
-// node_modules/lucide-react/dist/esm/icons/triangle-alert.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/icons/triangle-alert.js
 var TriangleAlert = createLucideIcon("TriangleAlert", [
   [
     "path",
@@ -490,14 +490,14 @@ var TriangleAlert = createLucideIcon("TriangleAlert", [
   ["path", { d: "M12 17h.01", key: "p32p05" }]
 ]);
 
-// node_modules/lucide-react/dist/esm/icons/upload.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/icons/upload.js
 var Upload = createLucideIcon("Upload", [
   ["path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", key: "ih7n3h" }],
   ["polyline", { points: "17 8 12 3 7 8", key: "t8dd8p" }],
   ["line", { x1: "12", x2: "12", y1: "3", y2: "15", key: "widbto" }]
 ]);
 
-// node_modules/lucide-react/dist/esm/icons/users.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/icons/users.js
 var Users = createLucideIcon("Users", [
   ["path", { d: "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2", key: "1yyitq" }],
   ["circle", { cx: "9", cy: "7", r: "4", key: "nufk8" }],
@@ -505,7 +505,7 @@ var Users = createLucideIcon("Users", [
   ["path", { d: "M16 3.13a4 4 0 0 1 0 7.75", key: "1da9ce" }]
 ]);
 
-// node_modules/lucide-react/dist/esm/icons/x.js
+// ../../../ws-ui-deps-5cf6ddb8/node_modules/lucide-react/dist/esm/icons/x.js
 var X = createLucideIcon("X", [
   ["path", { d: "M18 6 6 18", key: "1bl5f8" }],
   ["path", { d: "m6 6 12 12", key: "d8bk6v" }]
@@ -547,7 +547,7 @@ function Icon2({ name, size = 17, ...props }) {
 }
 function FocusDialog({
   open,
-  title,
+  title: title2,
   description,
   onClose,
   children,
@@ -620,12 +620,258 @@ function FocusDialog({
   }, children: /* @__PURE__ */ jsxRuntime.jsxs("div", { ref: panelRef, className: `dialog-panel ${wide ? "dialog-wide" : ""}`, role: "dialog", "aria-modal": "true", "aria-labelledby": `${testId}-title`, "aria-describedby": description ? `${testId}-description` : void 0, "data-testid": testId, children: [
     /* @__PURE__ */ jsxRuntime.jsxs("header", { className: "dialog-header", children: [
       /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
-        /* @__PURE__ */ jsxRuntime.jsx("h2", { id: `${testId}-title`, children: title }),
+        /* @__PURE__ */ jsxRuntime.jsx("h2", { id: `${testId}-title`, children: title2 }),
         description && /* @__PURE__ */ jsxRuntime.jsx("p", { id: `${testId}-description`, children: description })
       ] }),
-      /* @__PURE__ */ jsxRuntime.jsx("button", { className: "icon-button", type: "button", onClick: requestClose, "aria-label": `Close ${title}`, "data-testid": `${testId}-close`, children: /* @__PURE__ */ jsxRuntime.jsx(Icon2, { name: "close" }) })
+      /* @__PURE__ */ jsxRuntime.jsx("button", { className: "icon-button", type: "button", onClick: requestClose, "aria-label": `Close ${title2}`, "data-testid": `${testId}-close`, children: /* @__PURE__ */ jsxRuntime.jsx(Icon2, { name: "close" }) })
     ] }),
     /* @__PURE__ */ jsxRuntime.jsx("div", { className: "dialog-body", children })
+  ] }) });
+}
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+function normalize(minimum, maximum, initial) {
+  const min = Math.max(0, Math.round(minimum));
+  const max = Math.max(min, Math.round(maximum));
+  return { min, max, initial: clamp(Math.round(initial), min, max) };
+}
+function Splitter({ orientation, min, max, defaultSize, onResize, ariaLabel, resizeEdge = "start", className = "", testId }) {
+  const bounds = normalize(min, max, defaultSize);
+  const [preferredSize, setPreferredSize] = react.useState(bounds.initial);
+  const [availableMax, setAvailableMax] = react.useState(bounds.max);
+  const splitterRef = react.useRef(null);
+  const dragCleanupRef = react.useRef(null);
+  const size = clamp(preferredSize, bounds.min, availableMax);
+  react.useEffect(() => {
+    setPreferredSize((current) => clamp(current, bounds.min, bounds.max));
+  }, [bounds.max, bounds.min]);
+  react.useLayoutEffect(() => {
+    const parent = splitterRef.current?.parentElement;
+    if (!parent) return;
+    const measure = () => {
+      const available = orientation === "vertical" ? parent.clientWidth : parent.clientHeight;
+      setAvailableMax(available > 0 ? Math.max(bounds.min, Math.min(bounds.max, Math.round(available - bounds.min - 8))) : bounds.max);
+    };
+    measure();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(parent);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [bounds.max, bounds.min, orientation]);
+  react.useLayoutEffect(() => {
+    onResize?.(size);
+  }, [onResize, size]);
+  react.useEffect(() => () => dragCleanupRef.current?.(), []);
+  const setSize = react.useCallback((next) => setPreferredSize(clamp(Math.round(next), bounds.min, availableMax)), [availableMax, bounds.min]);
+  const reset = react.useCallback(() => setSize(bounds.initial), [bounds.initial, setSize]);
+  const onPointerDown = (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    dragCleanupRef.current?.();
+    const target = event.currentTarget;
+    const pointerId = event.pointerId;
+    const startPoint = orientation === "vertical" ? event.clientX : event.clientY;
+    const startSize = size;
+    const previousUserSelect = document.body.style.userSelect;
+    const previousCursor = document.body.style.cursor;
+    const rtl = orientation === "vertical" && document.documentElement.dir === "rtl";
+    let active = true;
+    target.focus();
+    target.setPointerCapture?.(pointerId);
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = orientation === "vertical" ? "col-resize" : "row-resize";
+    const move = (pointer) => {
+      if (pointer.pointerId !== pointerId) return;
+      const point = orientation === "vertical" ? pointer.clientX : pointer.clientY;
+      let delta = point - startPoint;
+      if (rtl) delta *= -1;
+      if (resizeEdge === "end") delta *= -1;
+      setSize(startSize + delta);
+    };
+    const cleanup = () => {
+      if (!active) return;
+      active = false;
+      for (const name of ["pointermove", "pointerup", "pointercancel", "blur"]) window.removeEventListener(name, name === "pointermove" ? move : cleanup);
+      document.body.style.userSelect = previousUserSelect;
+      document.body.style.cursor = previousCursor;
+      if (target.hasPointerCapture?.(pointerId)) target.releasePointerCapture(pointerId);
+      if (dragCleanupRef.current === cleanup) dragCleanupRef.current = null;
+    };
+    dragCleanupRef.current = cleanup;
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", cleanup);
+    window.addEventListener("pointercancel", cleanup);
+    window.addEventListener("blur", cleanup);
+  };
+  const onKeyDown = (event) => {
+    const allowed = orientation === "vertical" ? ["ArrowLeft", "ArrowRight", "Home", "End", "Enter"] : ["ArrowUp", "ArrowDown", "Home", "End", "Enter"];
+    if (!allowed.includes(event.key)) return;
+    event.preventDefault();
+    if (event.key === "Home") return setSize(bounds.min);
+    if (event.key === "End") return setSize(availableMax);
+    if (event.key === "Enter") return reset();
+    let direction = orientation === "vertical" ? event.key === "ArrowRight" ? 1 : -1 : event.key === "ArrowDown" ? 1 : -1;
+    if (orientation === "vertical" && document.documentElement.dir === "rtl") direction *= -1;
+    if (resizeEdge === "end") direction *= -1;
+    setSize(size + direction * (event.shiftKey ? 64 : 16));
+  };
+  return /* @__PURE__ */ jsxRuntime.jsx(
+    "div",
+    {
+      ref: splitterRef,
+      className: `splitter splitter-${orientation}${className ? ` ${className}` : ""}`,
+      role: "separator",
+      "aria-label": ariaLabel ?? "Resize panes",
+      "aria-orientation": orientation,
+      "aria-valuemin": bounds.min,
+      "aria-valuemax": availableMax,
+      "aria-valuenow": size,
+      "aria-valuetext": `${size} pixels`,
+      tabIndex: 0,
+      onPointerDown,
+      onPointerCancel: () => dragCleanupRef.current?.(),
+      onLostPointerCapture: () => dragCleanupRef.current?.(),
+      onBlur: () => dragCleanupRef.current?.(),
+      onKeyDown,
+      onDoubleClick: reset,
+      "data-testid": testId
+    }
+  );
+}
+function ListInspector({ label, items, groups, selectedId, onSelect, identityKey = "default", toolbar, inspector, emptyState, noResultsState, loadingState, filterItem, loading = false, error, searchable = false, searchPlaceholder, searchTestId, className, listWidth, listFooter, listTestId, emptySelection }) {
+  const instanceId = react.useId();
+  const headingId = `${instanceId}-heading`;
+  const defaultListWidth = listWidth !== void 0 && Number.isFinite(listWidth) ? Math.max(240, listWidth) : 320;
+  const [query, setQuery] = react.useState("");
+  const [listPaneWidth, setListPaneWidth] = react.useState(defaultListWidth);
+  const [focusedId, setFocusedId] = react.useState(null);
+  const [showListForId, setShowListForId] = react.useState();
+  const listRef = react.useRef(null);
+  const headingRef = react.useRef(null);
+  const rowRefs = react.useRef(/* @__PURE__ */ new Map());
+  const pendingFocus = react.useRef(null);
+  const selected = items.find((item) => item.id === selectedId) ?? null;
+  const hasError = error !== void 0 && error !== null && error !== false;
+  const missing = selectedId !== null && !selected && !loading && !hasError;
+  const showList = loading || hasError || selectedId === null || showListForId === selectedId;
+  react.useLayoutEffect(() => {
+    setQuery("");
+    setFocusedId(null);
+    setShowListForId(void 0);
+    setListPaneWidth(defaultListWidth);
+    pendingFocus.current = null;
+  }, [defaultListWidth, identityKey]);
+  const visible = react.useMemo(() => {
+    const terms = searchable ? query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean) : [];
+    return items.filter((item) => {
+      if (filterItem && !filterItem(item)) return false;
+      const text = [item.title, item.subtitle, item.meta, item.badge].filter(Boolean).join(" ").toLocaleLowerCase();
+      return terms.every((term) => text.includes(term));
+    });
+  }, [filterItem, items, query, searchable]);
+  const knownGroups = new Set(groups?.map((group) => group.id));
+  const sections = [
+    ...(groups ?? []).map((group) => ({ ...group, items: visible.filter((item) => item.group === group.id) })),
+    { id: "", label: "", items: visible.filter((item) => !item.group || !knownGroups.has(item.group)) }
+  ].filter((group) => group.items.length > 0);
+  const enabled = sections.flatMap((group) => group.items).filter((item) => !item.disabled);
+  const rovingId = enabled.find((item) => item.id === focusedId)?.id ?? enabled.find((item) => item.id === selectedId)?.id ?? enabled[0]?.id;
+  react.useLayoutEffect(() => {
+    const pending = pendingFocus.current;
+    if (!pending) return;
+    if (pending === "list") (rowRefs.current.get(selectedId ?? "") ?? rowRefs.current.get(rovingId ?? "") ?? listRef.current)?.focus();
+    else headingRef.current?.focus();
+    pendingFocus.current = null;
+  });
+  const select = (item) => {
+    if (item.disabled || loading || hasError) return;
+    setFocusedId(item.id);
+    setShowListForId(void 0);
+    pendingFocus.current = "detail";
+    onSelect(item.id);
+  };
+  const back = () => {
+    setShowListForId(selectedId);
+    pendingFocus.current = "list";
+  };
+  const onKeyDown = (event) => {
+    if (loading || hasError || enabled.length === 0) return;
+    const currentId = event.target.closest('[role="option"]')?.dataset.itemId;
+    const index = enabled.findIndex((item) => item.id === currentId);
+    const next = event.key === "Home" ? enabled[0] : event.key === "End" ? enabled[enabled.length - 1] : event.key === "ArrowDown" ? enabled[Math.min(index + 1, enabled.length - 1)] : event.key === "ArrowUp" ? enabled[index < 0 ? enabled.length - 1 : Math.max(index - 1, 0)] : void 0;
+    if (next) {
+      event.preventDefault();
+      setFocusedId(next.id);
+      rowRefs.current.get(next.id)?.focus();
+    } else if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      const item = enabled.find((candidate) => candidate.id === (currentId ?? rovingId));
+      if (item) select(item);
+    }
+  };
+  const title2 = loading ? `Loading ${label}` : hasError ? `${label} unavailable` : missing ? "Item not found" : selected?.title ?? "Select an item";
+  const width = { "--list-inspector-list-width": `${listPaneWidth}px` };
+  return /* @__PURE__ */ jsxRuntime.jsx("div", { className: `list-inspector${className ? ` ${className}` : ""}`, style: width, "data-pane": showList ? "list" : "inspector", "data-identity-key": identityKey, children: /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "list-inspector-panes", children: [
+    /* @__PURE__ */ jsxRuntime.jsxs("aside", { className: "list-inspector-rail", "aria-label": `${label} list`, children: [
+      toolbar && /* @__PURE__ */ jsxRuntime.jsx("div", { className: "list-inspector-toolbar", children: toolbar }),
+      searchable && /* @__PURE__ */ jsxRuntime.jsxs("label", { className: "list-inspector-search", children: [
+        /* @__PURE__ */ jsxRuntime.jsxs("span", { className: "sr-only", children: [
+          "Search ",
+          label
+        ] }),
+        /* @__PURE__ */ jsxRuntime.jsx("input", { type: "search", value: query, onChange: (event) => setQuery(event.target.value), placeholder: searchPlaceholder ?? `Search ${label}`, "data-testid": searchTestId })
+      ] }),
+      /* @__PURE__ */ jsxRuntime.jsx("div", { className: "list-inspector-list", ref: listRef, role: "listbox", "aria-label": label, "aria-busy": loading, tabIndex: 0, onKeyDown, "data-testid": listTestId, children: !loading && !hasError && sections.map((group, groupIndex) => /* @__PURE__ */ jsxRuntime.jsxs("div", { role: group.label ? "group" : "presentation", "aria-labelledby": group.label ? `${instanceId}-group-${groupIndex}` : void 0, children: [
+        group.label && /* @__PURE__ */ jsxRuntime.jsx("div", { id: `${instanceId}-group-${groupIndex}`, className: "list-inspector-group-label", children: group.label }),
+        group.items.map((item) => /* @__PURE__ */ jsxRuntime.jsxs(
+          "div",
+          {
+            ref: (element) => {
+              if (element) rowRefs.current.set(item.id, element);
+              else rowRefs.current.delete(item.id);
+            },
+            role: "option",
+            "aria-label": item.title,
+            "aria-selected": item.id === selectedId,
+            "aria-disabled": item.disabled || void 0,
+            tabIndex: item.id === rovingId ? 0 : -1,
+            className: `list-inspector-row${item.id === selectedId ? " selected" : ""}`,
+            "data-item-id": item.id,
+            "data-testid": item.testId ?? item.id,
+            onFocus: () => setFocusedId(item.id),
+            onClick: () => select(item),
+            children: [
+              /* @__PURE__ */ jsxRuntime.jsx("strong", { title: item.title, children: item.title }),
+              /* @__PURE__ */ jsxRuntime.jsxs("span", { className: "list-inspector-row-meta", children: [
+                (item.subtitle || item.meta) && /* @__PURE__ */ jsxRuntime.jsx("small", { children: [item.subtitle, item.meta].filter(Boolean).join(" \xB7 ") }),
+                item.badge && /* @__PURE__ */ jsxRuntime.jsx("span", { className: "list-inspector-badge", "data-testid": item.badgeTestId, children: item.badge })
+              ] }),
+              item.testAliases?.map((testId) => /* @__PURE__ */ jsxRuntime.jsx("span", { className: "sr-only", "aria-hidden": "true", "data-testid": testId }, testId))
+            ]
+          },
+          item.id
+        ))
+      ] }, group.id)) }),
+      loading ? /* @__PURE__ */ jsxRuntime.jsx("div", { className: "list-inspector-state", role: "status", "aria-live": "polite", children: loadingState ?? `Loading ${label}\u2026` }) : hasError ? /* @__PURE__ */ jsxRuntime.jsx("div", { className: "list-inspector-state", role: "alert", children: error }) : items.length === 0 ? /* @__PURE__ */ jsxRuntime.jsx("div", { className: "list-inspector-state", role: "status", children: emptyState ?? "No items yet." }) : visible.length === 0 ? /* @__PURE__ */ jsxRuntime.jsx("div", { className: "list-inspector-state", role: "status", children: noResultsState ?? "No results match your search." }) : null,
+      listFooter && /* @__PURE__ */ jsxRuntime.jsx("div", { className: "list-inspector-footer", children: listFooter })
+    ] }),
+    /* @__PURE__ */ jsxRuntime.jsx(Splitter, { orientation: "vertical", min: 240, max: Math.max(520, defaultListWidth), defaultSize: defaultListWidth, onResize: setListPaneWidth, ariaLabel: `Resize ${label} list`, className: "list-inspector-splitter" }),
+    /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "list-inspector-detail", "aria-labelledby": headingId, tabIndex: 0, "data-testid": "list-inspector-detail", children: [
+      /* @__PURE__ */ jsxRuntime.jsxs("header", { className: "list-inspector-header", children: [
+        /* @__PURE__ */ jsxRuntime.jsx("button", { type: "button", className: "list-inspector-back secondary-button", onClick: back, onKeyDown: (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            back();
+          }
+        }, children: "Back to list" }),
+        /* @__PURE__ */ jsxRuntime.jsx("h2", { id: headingId, ref: headingRef, tabIndex: -1, children: title2 })
+      ] }),
+      loading || hasError ? null : missing ? /* @__PURE__ */ jsxRuntime.jsx("p", { role: "status", "aria-live": "polite", children: "This item was not found or is no longer available. Select another item from the list." }) : selected ? inspector(selected) : emptySelection ?? inspector(null)
+    ] })
   ] }) });
 }
 var sourceOrder = ["rhythm", "planning_center", "google_calendar", "gmail"];
@@ -839,42 +1085,10 @@ function BuilderDialog({ open, editing, catalog, canMutate, onClose, onSubmit })
     ] })
   ] }) }) });
 }
-function AutomationRuleRow({ rule, onSelect, onToggle, onPreview, onEdit, onDelete, canMutate, canWrite }) {
-  const labelId = react.useId();
-  return /* @__PURE__ */ jsxRuntime.jsxs("section", { className: "automation-rule", "data-testid": `automation-rule-${rule.id}`, children: [
-    /* @__PURE__ */ jsxRuntime.jsxs("button", { className: "rule-select", type: "button", onClick: onSelect, "data-testid": `automation-select-${rule.id}`, children: [
-      /* @__PURE__ */ jsxRuntime.jsxs("span", { className: "rule-title-line", children: [
-        /* @__PURE__ */ jsxRuntime.jsx("strong", { children: rule.name }),
-        /* @__PURE__ */ jsxRuntime.jsx("span", { className: `rule-status ${rule.enabled ? "active" : ""}`, children: rule.enabled ? "Enabled" : "Paused" })
-      ] }),
-      /* @__PURE__ */ jsxRuntime.jsxs("small", { children: [
-        rule.triggerLabel,
-        " \u2192 ",
-        rule.actionLabel
-      ] }),
-      /* @__PURE__ */ jsxRuntime.jsx("em", { children: rule.accountLabel })
-    ] }),
-    /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "rule-actions", children: [
-      /* @__PURE__ */ jsxRuntime.jsxs("label", { className: "automation-toggle", children: [
-        /* @__PURE__ */ jsxRuntime.jsxs("span", { className: "sr-only", id: labelId, children: [
-          rule.enabled ? "Disable" : "Enable",
-          " ",
-          rule.name
-        ] }),
-        /* @__PURE__ */ jsxRuntime.jsx("input", { type: "checkbox", disabled: !canWrite, checked: rule.enabled, "aria-labelledby": labelId, onChange: (event) => onToggle(event.target.checked), "data-testid": `automation-toggle-${rule.id}` })
-      ] }),
-      /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", disabled: !canWrite, onClick: onEdit, "data-testid": `automation-edit-${rule.id}`, children: "Edit" }),
-      /* @__PURE__ */ jsxRuntime.jsx("button", { className: "icon-button danger-control", type: "button", disabled: !canMutate, "aria-label": `Delete ${rule.name}`, onClick: onDelete, "data-testid": `automation-delete-${rule.id}`, children: /* @__PURE__ */ jsxRuntime.jsx(Icon2, { name: "delete", size: 15 }) })
-    ] }),
-    /* @__PURE__ */ jsxRuntime.jsxs("button", { className: "rule-inspect", type: "button", onClick: onPreview, "data-testid": `automation-preview-${rule.id}`, children: [
-      /* @__PURE__ */ jsxRuntime.jsx(Icon2, { name: "search", size: 14 }),
-      "Preview history"
-    ] })
-  ] });
-}
 function AutomationsScreen() {
   const { automations: gateway } = useRhythmDomainGateway();
   const host = useRhythmHost();
+  const identityKey = host.currentUser.id ?? host.currentUser.displayName;
   const [surfaceState, setSurfaceState] = react.useState("loading");
   const [rules, setRules] = react.useState([]);
   const [selectedRuleId, setSelectedRuleId] = react.useState(null);
@@ -911,13 +1125,18 @@ function AutomationsScreen() {
   };
   react.useEffect(() => {
     mountedRef.current = true;
+    setSelectedRuleId(null);
+    setBuilderOpen(false);
+    setEditingRule(null);
+    setPreviewRuleId(null);
+    setDeleteTarget(null);
     void load();
     return () => {
       mountedRef.current = false;
       listGeneration.current += 1;
       previewGeneration.current += 1;
     };
-  }, [gateway]);
+  }, [gateway, identityKey]);
   react.useEffect(() => {
     if (!gateway.catalog) return;
     let active = true;
@@ -932,11 +1151,21 @@ function AutomationsScreen() {
     return () => {
       active = false;
     };
-  }, [gateway]);
+  }, [gateway, identityKey]);
   const showsRules = surfaceState === "ready";
   const groupedRules = sourceOrder.map((source) => ({ source, rules: rules.filter((rule) => rule.source === source) })).filter((group) => group.rules.length);
   const enabledCount = rules.filter((rule) => rule.enabled).length;
   const inspectorRule = rules.find((rule) => rule.id === selectedRuleId) ?? null;
+  const inspectorItems = rules.map((rule) => ({
+    id: rule.id,
+    title: rule.name,
+    subtitle: `${rule.triggerLabel} \u2192 ${rule.actionLabel}`,
+    meta: rule.accountLabel,
+    badge: rule.enabled ? "Enabled" : "Paused",
+    group: rule.source,
+    testId: `automation-rule-${rule.id}`,
+    testAliases: [`automation-select-${rule.id}`]
+  }));
   const previewRule = rules.find((rule) => rule.id === previewRuleId) ?? null;
   const providerReady = (source) => {
     const provider = catalog.providers.find((item) => item.source === source);
@@ -1052,73 +1281,75 @@ function AutomationsScreen() {
           ] })
         ] }),
         /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "automation-workspace", "aria-label": "Automation rules and inspector", children: [
-          /* @__PURE__ */ jsxRuntime.jsx("div", { className: "automation-groups", tabIndex: 0, "aria-label": "Automation rule groups", children: groupedRules.map((group) => /* @__PURE__ */ jsxRuntime.jsxs("section", { className: "automation-group", "data-testid": `automation-group-${group.source}`, "aria-labelledby": `automation-group-${group.source}-title`, children: [
-            /* @__PURE__ */ jsxRuntime.jsxs("header", { children: [
-              /* @__PURE__ */ jsxRuntime.jsx("h2", { id: `automation-group-${group.source}-title`, children: sourceLabels[group.source] }),
-              /* @__PURE__ */ jsxRuntime.jsxs("span", { children: [
-                group.rules.length,
-                " ",
-                group.rules.length === 1 ? "rule" : "rules"
-              ] })
-            ] }),
-            /* @__PURE__ */ jsxRuntime.jsx("div", { className: "automation-rule-list", children: group.rules.map((rule) => /* @__PURE__ */ jsxRuntime.jsx(
-              AutomationRuleRow,
-              {
-                rule,
-                onSelect: () => setSelectedRuleId(rule.id),
-                onToggle: (enabled) => void toggleRule(rule, enabled),
-                onPreview: () => openPreview(rule),
-                onEdit: () => openBuilder(rule),
-                onDelete: () => setDeleteTarget(rule),
-                canMutate,
-                canWrite: canMutate && providerReady(rule.source)
-              },
-              rule.id
-            )) })
-          ] }, group.source)) }),
-          /* @__PURE__ */ jsxRuntime.jsx("aside", { className: "automation-inspector", "aria-label": "Automation inspector", "data-testid": "automation-inspector", children: inspectorRule ? /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "automation-inspector-content", children: [
-            /* @__PURE__ */ jsxRuntime.jsxs("header", { children: [
-              /* @__PURE__ */ jsxRuntime.jsx("span", { children: sourceLabels[inspectorRule.source] }),
-              /* @__PURE__ */ jsxRuntime.jsx("h2", { children: inspectorRule.name }),
-              /* @__PURE__ */ jsxRuntime.jsx("p", { children: inspectorRule.previewSummary })
-            ] }),
-            /* @__PURE__ */ jsxRuntime.jsxs("dl", { children: [
-              /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
-                /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Status" }),
-                /* @__PURE__ */ jsxRuntime.jsx("dd", { children: inspectorRule.enabled ? "Enabled" : "Paused" })
+          groupedRules.map((group) => /* @__PURE__ */ jsxRuntime.jsx("span", { className: "sr-only", "data-testid": `automation-group-${group.source}`, children: sourceLabels[group.source] }, group.source)),
+          /* @__PURE__ */ jsxRuntime.jsx(
+            ListInspector,
+            {
+              label: "Automations",
+              items: inspectorItems,
+              groups: sourceOrder.map((source) => ({ id: source, label: sourceLabels[source] })),
+              selectedId: selectedRuleId,
+              onSelect: setSelectedRuleId,
+              identityKey,
+              emptySelection: /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "automation-inspector-empty", children: [
+                /* @__PURE__ */ jsxRuntime.jsx("strong", { children: "Select an automation" }),
+                /* @__PURE__ */ jsxRuntime.jsx("p", { children: "Choose a rule to inspect its trigger, action, account, and latest match evidence." })
               ] }),
-              /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
-                /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Account" }),
-                /* @__PURE__ */ jsxRuntime.jsx("dd", { children: inspectorRule.accountLabel })
-              ] }),
-              /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
-                /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Trigger" }),
-                /* @__PURE__ */ jsxRuntime.jsx("dd", { children: inspectorRule.triggerLabel })
-              ] }),
-              /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
-                /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Action" }),
-                /* @__PURE__ */ jsxRuntime.jsx("dd", { children: inspectorRule.actionLabel })
-              ] }),
-              /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
-                /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Conditions" }),
-                /* @__PURE__ */ jsxRuntime.jsx("dd", { children: inspectorRule.conditions.length || "None" })
-              ] }),
-              /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
-                /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Matches last run" }),
-                /* @__PURE__ */ jsxRuntime.jsx("dd", { children: inspectorRule.matchCountLastRun })
-              ] }),
-              /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
-                /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Last matched" }),
-                /* @__PURE__ */ jsxRuntime.jsx("dd", { children: dateTimeLabel(inspectorRule.lastMatchedAt) })
-              ] })
-            ] }),
-            catalog.providers.find((provider) => provider.source === inspectorRule.source)?.status === "stale" && /* @__PURE__ */ jsxRuntime.jsx("p", { role: "alert", "data-testid": "automation-provider-stale", children: "This provider is stale. Reconnect it before depending on new matches." }),
-            gateway.resync && /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", disabled: !canMutate || mutationPending || resyncPending, onClick: () => void resyncRule(inspectorRule), "data-testid": "automation-resync", children: "Resync rule" }),
-            resyncStatus && /* @__PURE__ */ jsxRuntime.jsx("p", { role: "status", "aria-live": "polite", "data-testid": "automation-resync-status", children: resyncStatus })
-          ] }) : /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "automation-inspector-empty", children: [
-            /* @__PURE__ */ jsxRuntime.jsx("strong", { children: "Select an automation" }),
-            /* @__PURE__ */ jsxRuntime.jsx("p", { children: "Choose a rule to inspect its trigger, action, account, and latest match evidence." })
-          ] }) })
+              inspector: () => inspectorRule ? /* @__PURE__ */ jsxRuntime.jsx("aside", { className: "automation-inspector", "aria-label": "Automation inspector", "data-testid": "automation-inspector", children: /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "automation-inspector-content", children: [
+                /* @__PURE__ */ jsxRuntime.jsxs("header", { children: [
+                  /* @__PURE__ */ jsxRuntime.jsx("span", { children: sourceLabels[inspectorRule.source] }),
+                  /* @__PURE__ */ jsxRuntime.jsx("h2", { children: inspectorRule.name }),
+                  /* @__PURE__ */ jsxRuntime.jsx("p", { children: inspectorRule.previewSummary })
+                ] }),
+                /* @__PURE__ */ jsxRuntime.jsxs("dl", { children: [
+                  /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
+                    /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Status" }),
+                    /* @__PURE__ */ jsxRuntime.jsx("dd", { children: inspectorRule.enabled ? "Enabled" : "Paused" })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
+                    /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Account" }),
+                    /* @__PURE__ */ jsxRuntime.jsx("dd", { children: inspectorRule.accountLabel })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
+                    /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Trigger" }),
+                    /* @__PURE__ */ jsxRuntime.jsx("dd", { children: inspectorRule.triggerLabel })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
+                    /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Action" }),
+                    /* @__PURE__ */ jsxRuntime.jsx("dd", { children: inspectorRule.actionLabel })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
+                    /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Conditions" }),
+                    /* @__PURE__ */ jsxRuntime.jsx("dd", { children: inspectorRule.conditions.length || "None" })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
+                    /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Matches last run" }),
+                    /* @__PURE__ */ jsxRuntime.jsx("dd", { children: inspectorRule.matchCountLastRun })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
+                    /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Last matched" }),
+                    /* @__PURE__ */ jsxRuntime.jsx("dd", { children: dateTimeLabel(inspectorRule.lastMatchedAt) })
+                  ] })
+                ] }),
+                catalog.providers.find((provider) => provider.source === inspectorRule.source)?.status === "stale" && /* @__PURE__ */ jsxRuntime.jsx("p", { role: "alert", "data-testid": "automation-provider-stale", children: "This provider is stale. Reconnect it before depending on new matches." }),
+                /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "row-actions", children: [
+                  /* @__PURE__ */ jsxRuntime.jsxs("label", { className: "automation-toggle", children: [
+                    /* @__PURE__ */ jsxRuntime.jsxs("span", { className: "sr-only", children: [
+                      inspectorRule.enabled ? "Disable" : "Enable",
+                      " ",
+                      inspectorRule.name
+                    ] }),
+                    /* @__PURE__ */ jsxRuntime.jsx("input", { type: "checkbox", disabled: !canMutate || !providerReady(inspectorRule.source), checked: inspectorRule.enabled, onChange: (event) => void toggleRule(inspectorRule, event.target.checked), "data-testid": `automation-toggle-${inspectorRule.id}` })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", onClick: () => openPreview(inspectorRule), "data-testid": `automation-preview-${inspectorRule.id}`, children: "Preview history" }),
+                  /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", disabled: !canMutate || !providerReady(inspectorRule.source), onClick: () => openBuilder(inspectorRule), "data-testid": `automation-edit-${inspectorRule.id}`, children: "Edit" }),
+                  /* @__PURE__ */ jsxRuntime.jsx("button", { className: "danger-button", type: "button", disabled: !canMutate, onClick: () => setDeleteTarget(inspectorRule), "data-testid": `automation-delete-${inspectorRule.id}`, children: "Delete" })
+                ] }),
+                gateway.resync && /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", disabled: !canMutate || mutationPending || resyncPending, onClick: () => void resyncRule(inspectorRule), "data-testid": "automation-resync", children: "Resync rule" }),
+                resyncStatus && /* @__PURE__ */ jsxRuntime.jsx("p", { role: "status", "aria-live": "polite", "data-testid": "automation-resync-status", children: resyncStatus })
+              ] }) }) : null
+            }
+          )
         ] })
       ] })
     ] }),
@@ -1409,8 +1640,8 @@ function DashboardScreen() {
     if (!canWrite) return;
     const form = event.currentTarget;
     const data = new FormData(form);
-    const title = String(data.get("title") ?? "").trim();
-    if (!title) {
+    const title2 = String(data.get("title") ?? "").trim();
+    if (!title2) {
       setTitleError(true);
       taskTitleRef.current?.focus();
       return;
@@ -1418,7 +1649,7 @@ function DashboardScreen() {
     setMutationPending(true);
     try {
       const created = await gateway.createTask({
-        title,
+        title: title2,
         notes: String(data.get("notes") ?? "").trim() || void 0,
         scheduledDate: String(data.get("scheduledDate") ?? "").trim() || void 0,
         dueDate: String(data.get("dueDate") ?? "").trim() || void 0,
@@ -1827,6 +2058,7 @@ function StatePanel3({ state, onRetry }) {
 function FacilitiesScreen() {
   const { facilities: gateway } = useRhythmDomainGateway();
   const host = useRhythmHost();
+  const identityKey = host.currentUser.id ?? host.currentUser.displayName;
   const [surfaceState, setSurfaceState] = react.useState("loading");
   const [facilities, setFacilities] = react.useState([]);
   const [reservations, setReservations] = react.useState([]);
@@ -1923,11 +2155,17 @@ function FacilitiesScreen() {
     }
   };
   react.useEffect(() => {
+    setSelectedReservationId(null);
+    setSelectedRoomId(null);
+    setReservationDialogOpen(false);
+    setFacilityEditorOpen(false);
+    setAutomationOpen(false);
+    cancelOperation();
     void load(currentRange);
     return () => {
       requestGeneration.current += 1;
     };
-  }, [gateway, rangeMode, rangeOffset]);
+  }, [gateway, rangeMode, rangeOffset, identityKey]);
   const showsWorkspace = surfaceState === "ready";
   const visibleReservations = reservations.filter((reservation) => !reservation.automation).filter((reservation) => {
     const facility = facilities.find((item) => item.id === reservation.facilityId);
@@ -1947,6 +2185,30 @@ function FacilitiesScreen() {
     building,
     facilities: facilities.filter((facility) => facility.building === building).sort((left, right) => left.name.localeCompare(right.name))
   })).filter((group) => group.facilities.length > 0);
+  const reservationItems = visibleReservations.map((reservation) => {
+    const facility = facilities.find((item) => item.id === reservation.facilityId);
+    return {
+      id: reservation.id,
+      title: reservation.title,
+      subtitle: `${facility?.name ?? "Unknown room"} \xB7 ${reservation.requesterName}`,
+      meta: `${displayTime(reservation.start)}\u2013${displayTime(reservation.end)}`,
+      badge: reservation.conflicted ? "Conflict" : reservation.seriesId ? "Series" : reservation.groupId ? "Group" : void 0,
+      testId: `facility-reservation-${reservation.id}`,
+      testAliases: [`facility-reservation-open-${reservation.id}`]
+    };
+  });
+  const roomItems = groupedFacilities.flatMap((group) => group.facilities.map((facility) => {
+    const upcoming = reservations.filter((reservation) => reservation.facilityId === facility.id && !reservation.automation).length;
+    return {
+      id: facility.id,
+      title: facility.name,
+      subtitle: facility.description,
+      badge: upcoming ? `${upcoming} upcoming` : "Available",
+      group: group.building ?? "unassigned",
+      testId: `facility-room-${facility.id}`,
+      testAliases: [`facility-room-open-${facility.id}`]
+    };
+  }));
   const clearFilters = () => {
     setRangeMode("week");
     setRangeOffset(0);
@@ -2133,137 +2395,112 @@ function FacilitiesScreen() {
         /* @__PURE__ */ jsxRuntime.jsx("button", { type: "button", "aria-pressed": mode === "overview", onClick: () => setMode("overview"), "data-testid": "facilities-mode-overview", children: "Overview" }),
         /* @__PURE__ */ jsxRuntime.jsx("button", { type: "button", "aria-pressed": mode === "rooms", onClick: () => setMode("rooms"), "data-testid": "facilities-mode-rooms", children: "Rooms" })
       ] }),
-      mode === "overview" ? /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "facilities-split-shell", children: [
-        /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "facilities-list-pane", children: [
-          /* @__PURE__ */ jsxRuntime.jsxs("section", { className: "facilities-command-deck", "aria-label": "Schedule range and filters", children: [
-            /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "facilities-range-controls", children: [
-              /* @__PURE__ */ jsxRuntime.jsx("div", { className: "facilities-segmented", "aria-label": "Schedule range", children: ["day", "week", "month"].map((range) => /* @__PURE__ */ jsxRuntime.jsx("button", { type: "button", "aria-pressed": rangeMode === range, onClick: () => {
-                setRangeMode(range);
-                setRangeOffset(0);
-              }, "data-testid": `facilities-range-${range}`, children: range.charAt(0).toUpperCase() + range.slice(1) }, range)) }),
-              /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "facilities-period-nav", children: [
-                /* @__PURE__ */ jsxRuntime.jsx("button", { className: "icon-button", type: "button", "aria-label": "Previous range", onClick: () => setRangeOffset((value) => value - 1), "data-testid": "facilities-range-back", children: /* @__PURE__ */ jsxRuntime.jsx(Icon2, { name: "chevronRight", size: 14, style: { transform: "rotate(180deg)" } }) }),
-                /* @__PURE__ */ jsxRuntime.jsx("strong", { "data-testid": "facilities-range-label", children: currentRange.label }),
-                /* @__PURE__ */ jsxRuntime.jsx("button", { className: "icon-button", type: "button", "aria-label": "Next range", onClick: () => setRangeOffset((value) => value + 1), "data-testid": "facilities-range-forward", children: /* @__PURE__ */ jsxRuntime.jsx(Icon2, { name: "chevronRight", size: 14 }) })
-              ] })
-            ] }),
-            /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "facilities-filter-row", children: [
-              /* @__PURE__ */ jsxRuntime.jsxs("label", { children: [
-                "Building",
-                /* @__PURE__ */ jsxRuntime.jsxs("select", { value: buildingFilter, onChange: (event) => {
-                  setBuildingFilter(event.target.value);
-                }, "data-testid": "facilities-building-filter", children: [
-                  /* @__PURE__ */ jsxRuntime.jsx("option", { value: "", children: "All buildings" }),
-                  buildings.map((building) => /* @__PURE__ */ jsxRuntime.jsx("option", { value: building, children: building }, building))
+      mode === "overview" ? /* @__PURE__ */ jsxRuntime.jsx("div", { className: "facilities-split-shell", children: /* @__PURE__ */ jsxRuntime.jsx(
+        ListInspector,
+        {
+          label: "Reservations",
+          items: reservationItems,
+          selectedId: selectedReservationId,
+          onSelect: setSelectedReservationId,
+          identityKey,
+          listTestId: "facilities-overview-results",
+          toolbar: /* @__PURE__ */ jsxRuntime.jsxs(jsxRuntime.Fragment, { children: [
+            /* @__PURE__ */ jsxRuntime.jsxs("section", { className: "facilities-command-deck", "aria-label": "Schedule range and filters", children: [
+              /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "facilities-range-controls", children: [
+                /* @__PURE__ */ jsxRuntime.jsx("div", { className: "facilities-segmented", "aria-label": "Schedule range", children: ["day", "week", "month"].map((range) => /* @__PURE__ */ jsxRuntime.jsx("button", { type: "button", "aria-pressed": rangeMode === range, onClick: () => {
+                  setRangeMode(range);
+                  setRangeOffset(0);
+                }, "data-testid": `facilities-range-${range}`, children: range.charAt(0).toUpperCase() + range.slice(1) }, range)) }),
+                /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "facilities-period-nav", children: [
+                  /* @__PURE__ */ jsxRuntime.jsx("button", { className: "icon-button", type: "button", "aria-label": "Previous range", onClick: () => setRangeOffset((value) => value - 1), "data-testid": "facilities-range-back", children: /* @__PURE__ */ jsxRuntime.jsx(Icon2, { name: "chevronRight", size: 14, style: { transform: "rotate(180deg)" } }) }),
+                  /* @__PURE__ */ jsxRuntime.jsx("strong", { "data-testid": "facilities-range-label", children: currentRange.label }),
+                  /* @__PURE__ */ jsxRuntime.jsx("button", { className: "icon-button", type: "button", "aria-label": "Next range", onClick: () => setRangeOffset((value) => value + 1), "data-testid": "facilities-range-forward", children: /* @__PURE__ */ jsxRuntime.jsx(Icon2, { name: "chevronRight", size: 14 }) })
                 ] })
               ] }),
-              /* @__PURE__ */ jsxRuntime.jsxs("label", { children: [
-                "Room",
-                /* @__PURE__ */ jsxRuntime.jsxs("select", { value: roomFilter, onChange: (event) => setRoomFilter(event.target.value), "data-testid": "facilities-room-filter", children: [
-                  /* @__PURE__ */ jsxRuntime.jsx("option", { value: "", children: "All rooms" }),
-                  facilities.filter((facility) => !buildingFilter || facility.building === buildingFilter).map((facility) => /* @__PURE__ */ jsxRuntime.jsx("option", { value: facility.id, children: facility.name }, facility.id))
-                ] })
-              ] })
-            ] })
-          ] }),
-          /* @__PURE__ */ jsxRuntime.jsxs("dl", { className: "facilities-metrics", "aria-label": "Reservation indicators", children: [
-            /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
-              /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Reservations" }),
-              /* @__PURE__ */ jsxRuntime.jsx("dd", { "data-testid": "facilities-metric-reservations", children: visibleReservations.length })
-            ] }),
-            /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
-              /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Rooms in use" }),
-              /* @__PURE__ */ jsxRuntime.jsx("dd", { "data-testid": "facilities-metric-rooms-in-use", children: roomsInUse })
-            ] }),
-            /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
-              /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Setup" }),
-              /* @__PURE__ */ jsxRuntime.jsx("dd", { "data-testid": "facilities-metric-setup-notes", children: setupNotesCount })
-            ] }),
-            /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
-              /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Conflicts" }),
-              /* @__PURE__ */ jsxRuntime.jsx("dd", { "data-testid": "facilities-metric-conflicts", children: conflictsCount })
-            ] })
-          ] }),
-          /* @__PURE__ */ jsxRuntime.jsxs("section", { className: "facilities-schedule", "aria-labelledby": "facilities-schedule-title", children: [
-            /* @__PURE__ */ jsxRuntime.jsxs("header", { children: [
-              /* @__PURE__ */ jsxRuntime.jsx("h2", { id: "facilities-schedule-title", children: "Schedule" }),
-              /* @__PURE__ */ jsxRuntime.jsxs("p", { children: [
-                visibleReservations.length,
-                " visible reservation",
-                visibleReservations.length === 1 ? "" : "s"
-              ] })
-            ] }),
-            /* @__PURE__ */ jsxRuntime.jsx("div", { className: "facilities-reservation-list", "data-testid": "facilities-overview-results", children: visibleReservations.length ? visibleReservations.map((reservation) => {
-              const facility = facilities.find((item) => item.id === reservation.facilityId);
-              return /* @__PURE__ */ jsxRuntime.jsxs("article", { className: "facilities-reservation-row", "aria-current": selectedReservationId === reservation.id ? "true" : void 0, "data-testid": `facility-reservation-${reservation.id}`, children: [
-                /* @__PURE__ */ jsxRuntime.jsxs("button", { className: "facilities-reservation-open", type: "button", onClick: () => setSelectedReservationId(reservation.id), "data-testid": `facility-reservation-open-${reservation.id}`, children: [
-                  /* @__PURE__ */ jsxRuntime.jsxs("time", { dateTime: reservation.start, children: [
-                    /* @__PURE__ */ jsxRuntime.jsx("strong", { children: displayTime(reservation.start) }),
-                    /* @__PURE__ */ jsxRuntime.jsx("span", { children: displayTime(reservation.end) })
-                  ] }),
-                  /* @__PURE__ */ jsxRuntime.jsxs("span", { className: "facilities-reservation-copy", children: [
-                    /* @__PURE__ */ jsxRuntime.jsx("strong", { children: reservation.title }),
-                    /* @__PURE__ */ jsxRuntime.jsxs("small", { children: [
-                      facility?.name,
-                      " \xB7 ",
-                      facility?.building ?? "Unassigned",
-                      " \xB7 ",
-                      reservation.requesterName
-                    ] })
-                  ] }),
-                  /* @__PURE__ */ jsxRuntime.jsxs("span", { className: "facilities-badges", children: [
-                    reservation.seriesId && /* @__PURE__ */ jsxRuntime.jsx("em", { children: "Series" }),
-                    reservation.groupId && /* @__PURE__ */ jsxRuntime.jsx("em", { children: "Group" }),
-                    reservation.notes && /* @__PURE__ */ jsxRuntime.jsx("em", { children: "Setup" }),
-                    reservation.external && /* @__PURE__ */ jsxRuntime.jsx("em", { children: "External" }),
-                    reservation.conflicted && /* @__PURE__ */ jsxRuntime.jsx("em", { className: "danger", children: "Conflict" })
+              /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "facilities-filter-row", children: [
+                /* @__PURE__ */ jsxRuntime.jsxs("label", { children: [
+                  "Building",
+                  /* @__PURE__ */ jsxRuntime.jsxs("select", { value: buildingFilter, onChange: (event) => {
+                    setBuildingFilter(event.target.value);
+                  }, "data-testid": "facilities-building-filter", children: [
+                    /* @__PURE__ */ jsxRuntime.jsx("option", { value: "", children: "All buildings" }),
+                    buildings.map((building) => /* @__PURE__ */ jsxRuntime.jsx("option", { value: building, children: building }, building))
                   ] })
                 ] }),
-                /* @__PURE__ */ jsxRuntime.jsxs(ActionMenu, { label: `Actions for ${reservation.title}`, testId: `facility-reservation-menu-${reservation.id}`, children: [
-                  /* @__PURE__ */ jsxRuntime.jsx("button", { className: "menu-item", role: "menuitem", type: "button", disabled: !canEditReservation(reservation, reservation.groupId ? "facilities.update-group" : "facilities.update-reservation"), onClick: () => openReservationEditor(reservation), "data-testid": `facility-reservation-menu-edit-${reservation.id}`, children: reservation.groupId ? "Edit linked group" : "Edit reservation" }),
-                  /* @__PURE__ */ jsxRuntime.jsx("button", { className: "menu-item danger-item", role: "menuitem", type: "button", disabled: reservation.seriesId ? !can("facilities.delete-series") : !canEditReservation(reservation, reservation.groupId ? "facilities.delete-group" : "facilities.delete-reservation"), onClick: () => reservation.seriesId ? setDeleteSeriesTarget(reservation) : reservation.groupId ? setDeleteGroupTarget(reservation) : setDeleteReservationTarget(reservation), "data-testid": `facility-reservation-menu-delete-${reservation.id}`, children: reservation.seriesId ? "Delete series" : reservation.groupId ? "Delete linked group" : "Delete reservation" })
+                /* @__PURE__ */ jsxRuntime.jsxs("label", { children: [
+                  "Room",
+                  /* @__PURE__ */ jsxRuntime.jsxs("select", { value: roomFilter, onChange: (event) => setRoomFilter(event.target.value), "data-testid": "facilities-room-filter", children: [
+                    /* @__PURE__ */ jsxRuntime.jsx("option", { value: "", children: "All rooms" }),
+                    facilities.filter((facility) => !buildingFilter || facility.building === buildingFilter).map((facility) => /* @__PURE__ */ jsxRuntime.jsx("option", { value: facility.id, children: facility.name }, facility.id))
+                  ] })
                 ] })
-              ] }, reservation.id);
-            }) : /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "facilities-local-empty", role: "status", "data-testid": "facilities-no-results", children: [
-              /* @__PURE__ */ jsxRuntime.jsx("h3", { children: "No reservations in this range" }),
-              /* @__PURE__ */ jsxRuntime.jsx("p", { children: "Change the date range or clear a filter to inspect another part of the schedule." }),
-              /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", onClick: clearFilters, "data-testid": "facilities-clear-filters", children: "Reset range and filters" })
-            ] }) })
-          ] })
-        ] }),
-        /* @__PURE__ */ jsxRuntime.jsx("aside", { className: "facilities-inspector", "aria-label": "Reservation inspector", "data-testid": "facility-inspector", children: selectedReservation ? /* @__PURE__ */ jsxRuntime.jsxs("section", { className: "facilities-detail-sheet", "aria-labelledby": "facility-reservation-detail-title", children: [
-          /* @__PURE__ */ jsxRuntime.jsx("div", { className: "facilities-detail-heading", children: /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
-            /* @__PURE__ */ jsxRuntime.jsx("span", { children: selectedReservation.seriesId ? "Recurring series" : "Reservation" }),
-            /* @__PURE__ */ jsxRuntime.jsx("h2", { id: "facility-reservation-detail-title", children: selectedReservation.title })
-          ] }) }),
-          /* @__PURE__ */ jsxRuntime.jsxs("dl", { className: "facilities-detail-grid", children: [
-            /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
-              /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Room" }),
-              /* @__PURE__ */ jsxRuntime.jsx("dd", { children: facilities.find((item) => item.id === selectedReservation.facilityId)?.name })
-            ] }),
-            /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
-              /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Time" }),
-              /* @__PURE__ */ jsxRuntime.jsxs("dd", { children: [
-                displayTime(selectedReservation.start),
-                "\u2013",
-                displayTime(selectedReservation.end)
               ] })
             ] }),
-            /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
-              /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Requester" }),
-              /* @__PURE__ */ jsxRuntime.jsx("dd", { children: selectedReservation.requesterName })
-            ] }),
-            /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "span-all", children: [
-              /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Setup notes" }),
-              /* @__PURE__ */ jsxRuntime.jsx("dd", { children: selectedReservation.notes || "No setup notes" })
+            /* @__PURE__ */ jsxRuntime.jsxs("dl", { className: "facilities-metrics", "aria-label": "Reservation indicators", children: [
+              /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
+                /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Reservations" }),
+                /* @__PURE__ */ jsxRuntime.jsx("dd", { "data-testid": "facilities-metric-reservations", children: visibleReservations.length })
+              ] }),
+              /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
+                /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Rooms in use" }),
+                /* @__PURE__ */ jsxRuntime.jsx("dd", { "data-testid": "facilities-metric-rooms-in-use", children: roomsInUse })
+              ] }),
+              /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
+                /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Setup" }),
+                /* @__PURE__ */ jsxRuntime.jsx("dd", { "data-testid": "facilities-metric-setup-notes", children: setupNotesCount })
+              ] }),
+              /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
+                /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Conflicts" }),
+                /* @__PURE__ */ jsxRuntime.jsx("dd", { "data-testid": "facilities-metric-conflicts", children: conflictsCount })
+              ] })
             ] })
           ] }),
-          /* @__PURE__ */ jsxRuntime.jsx("div", { className: "facilities-detail-actions", children: /* @__PURE__ */ jsxRuntime.jsx("button", { className: "text-danger-button", type: "button", disabled: mutationPending || (selectedReservation.seriesId ? !can("facilities.delete-series") : !canEditReservation(selectedReservation, selectedReservation.groupId ? "facilities.delete-group" : "facilities.delete-reservation")), onClick: () => selectedReservation.seriesId ? setDeleteSeriesTarget(selectedReservation) : selectedReservation.groupId ? setDeleteGroupTarget(selectedReservation) : setDeleteReservationTarget(selectedReservation), "data-testid": "facility-inspector-delete", children: selectedReservation.seriesId ? "Delete entire series" : selectedReservation.groupId ? "Delete linked group" : "Delete reservation" }) })
-        ] }) : /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "facilities-inspector-empty", children: [
-          /* @__PURE__ */ jsxRuntime.jsx("span", { children: "Select a reservation" }),
-          /* @__PURE__ */ jsxRuntime.jsx("p", { children: "Choose a schedule row to inspect its room, timing, requester, and setup notes." })
-        ] }) })
-      ] }) : /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "facilities-rooms", children: [
+          emptyState: /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "facilities-local-empty", role: "status", "data-testid": "facilities-no-results", children: [
+            /* @__PURE__ */ jsxRuntime.jsx("h3", { children: "No reservations in this range" }),
+            /* @__PURE__ */ jsxRuntime.jsx("p", { children: "Change the date range or clear a filter to inspect another part of the schedule." }),
+            /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", onClick: clearFilters, "data-testid": "facilities-clear-filters", children: "Reset range and filters" })
+          ] }),
+          emptySelection: /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "facilities-inspector-empty", children: [
+            /* @__PURE__ */ jsxRuntime.jsx("span", { children: "Select a reservation" }),
+            /* @__PURE__ */ jsxRuntime.jsx("p", { children: "Choose a schedule row to inspect its room, timing, requester, and setup notes." })
+          ] }),
+          inspector: () => selectedReservation ? /* @__PURE__ */ jsxRuntime.jsx("aside", { className: "facilities-inspector", "aria-label": "Reservation inspector", "data-testid": "facility-inspector", children: /* @__PURE__ */ jsxRuntime.jsxs("section", { className: "facilities-detail-sheet", "aria-labelledby": "facility-reservation-detail-title", children: [
+            /* @__PURE__ */ jsxRuntime.jsx("div", { className: "facilities-detail-heading", children: /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
+              /* @__PURE__ */ jsxRuntime.jsx("span", { children: selectedReservation.seriesId ? "Recurring series" : "Reservation" }),
+              /* @__PURE__ */ jsxRuntime.jsx("h2", { id: "facility-reservation-detail-title", children: selectedReservation.title })
+            ] }) }),
+            /* @__PURE__ */ jsxRuntime.jsxs("dl", { className: "facilities-detail-grid", children: [
+              /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
+                /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Room" }),
+                /* @__PURE__ */ jsxRuntime.jsx("dd", { children: facilities.find((item) => item.id === selectedReservation.facilityId)?.name })
+              ] }),
+              /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
+                /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Time" }),
+                /* @__PURE__ */ jsxRuntime.jsxs("dd", { children: [
+                  displayTime(selectedReservation.start),
+                  "\u2013",
+                  displayTime(selectedReservation.end)
+                ] })
+              ] }),
+              /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
+                /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Requester" }),
+                /* @__PURE__ */ jsxRuntime.jsx("dd", { children: selectedReservation.requesterName })
+              ] }),
+              /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "span-all", children: [
+                /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Setup notes" }),
+                /* @__PURE__ */ jsxRuntime.jsx("dd", { children: selectedReservation.notes || "No setup notes" })
+              ] })
+            ] }),
+            /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "facilities-detail-actions", children: [
+              /* @__PURE__ */ jsxRuntime.jsxs(ActionMenu, { label: `Actions for ${selectedReservation.title}`, testId: `facility-reservation-menu-${selectedReservation.id}`, children: [
+                /* @__PURE__ */ jsxRuntime.jsx("button", { className: "menu-item", role: "menuitem", type: "button", disabled: !canEditReservation(selectedReservation, selectedReservation.groupId ? "facilities.update-group" : "facilities.update-reservation"), onClick: () => openReservationEditor(selectedReservation), "data-testid": `facility-reservation-menu-edit-${selectedReservation.id}`, children: selectedReservation.groupId ? "Edit linked group" : "Edit reservation" }),
+                /* @__PURE__ */ jsxRuntime.jsx("button", { className: "menu-item danger-item", role: "menuitem", type: "button", disabled: selectedReservation.seriesId ? !can("facilities.delete-series") : !canEditReservation(selectedReservation, selectedReservation.groupId ? "facilities.delete-group" : "facilities.delete-reservation"), onClick: () => selectedReservation.seriesId ? setDeleteSeriesTarget(selectedReservation) : selectedReservation.groupId ? setDeleteGroupTarget(selectedReservation) : setDeleteReservationTarget(selectedReservation), "data-testid": `facility-reservation-menu-delete-${selectedReservation.id}`, children: selectedReservation.seriesId ? "Delete series" : selectedReservation.groupId ? "Delete linked group" : "Delete reservation" })
+              ] }, selectedReservation.id),
+              /* @__PURE__ */ jsxRuntime.jsx("button", { className: "text-danger-button", type: "button", disabled: mutationPending || (selectedReservation.seriesId ? !can("facilities.delete-series") : !canEditReservation(selectedReservation, selectedReservation.groupId ? "facilities.delete-group" : "facilities.delete-reservation")), onClick: () => selectedReservation.seriesId ? setDeleteSeriesTarget(selectedReservation) : selectedReservation.groupId ? setDeleteGroupTarget(selectedReservation) : setDeleteReservationTarget(selectedReservation), "data-testid": "facility-inspector-delete", children: selectedReservation.seriesId ? "Delete entire series" : selectedReservation.groupId ? "Delete linked group" : "Delete reservation" })
+            ] })
+          ] }) }) : null
+        }
+      ) }) : /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "facilities-rooms", children: [
         /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "facilities-manager-bar", "data-testid": "facility-manager-bar", children: [
           /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
             /* @__PURE__ */ jsxRuntime.jsx("strong", { children: "Space operations" }),
@@ -2276,54 +2513,46 @@ function FacilitiesScreen() {
           ] })
         ] }),
         /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "facilities-split-shell facilities-room-split", children: [
-          /* @__PURE__ */ jsxRuntime.jsx("div", { className: "facilities-list-pane facilities-building-list", "data-testid": "facilities-rooms-list", children: groupedFacilities.map((group) => /* @__PURE__ */ jsxRuntime.jsxs("section", { className: "facilities-building", "data-testid": `facility-building-${slug(group.building ?? "unassigned")}`, children: [
-            /* @__PURE__ */ jsxRuntime.jsxs("header", { children: [
-              /* @__PURE__ */ jsxRuntime.jsx("h2", { children: group.building ?? "Unassigned" }),
-              /* @__PURE__ */ jsxRuntime.jsxs("span", { children: [
-                group.facilities.length,
-                " space",
-                group.facilities.length === 1 ? "" : "s"
-              ] })
-            ] }),
-            /* @__PURE__ */ jsxRuntime.jsx("div", { children: group.facilities.map((facility) => {
-              const upcoming = reservations.filter((reservation) => reservation.facilityId === facility.id && !reservation.automation).length;
-              return /* @__PURE__ */ jsxRuntime.jsxs("article", { className: "facilities-room-row", "aria-current": selectedRoomId === facility.id ? "true" : void 0, "data-testid": `facility-room-${facility.id}`, children: [
-                /* @__PURE__ */ jsxRuntime.jsxs("button", { className: "facilities-room-open", type: "button", onClick: () => setSelectedRoomId(facility.id), "data-testid": `facility-room-open-${facility.id}`, children: [
-                  /* @__PURE__ */ jsxRuntime.jsxs("span", { className: "facilities-room-copy", children: [
-                    /* @__PURE__ */ jsxRuntime.jsx("strong", { children: facility.name }),
-                    /* @__PURE__ */ jsxRuntime.jsx("small", { children: facility.description })
-                  ] }),
-                  /* @__PURE__ */ jsxRuntime.jsx("span", { className: "facilities-room-status", children: upcoming ? `${upcoming} upcoming` : "Available" })
-                ] }),
-                /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", disabled: mutationPending || !canReserve, onClick: () => openReservationEditor(null, facility.id), "data-testid": `facility-room-reserve-${facility.id}`, children: "Reserve" }),
-                /* @__PURE__ */ jsxRuntime.jsx(ActionMenu, { label: `Manage ${facility.name}`, testId: `facility-room-menu-${facility.id}`, children: /* @__PURE__ */ jsxRuntime.jsx("button", { className: "menu-item danger-item", role: "menuitem", type: "button", disabled: !can("facilities.delete-facility"), onClick: () => setDeleteFacilityTarget(facility), "data-testid": `facility-room-menu-delete-${facility.id}`, children: "Delete room" }) })
-              ] }, facility.id);
-            }) })
-          ] }, group.building ?? "unassigned")) }),
-          /* @__PURE__ */ jsxRuntime.jsx("aside", { className: "facilities-inspector", "aria-label": "Room inspector", children: selectedRoom ? /* @__PURE__ */ jsxRuntime.jsxs("section", { className: "facilities-detail-sheet", "aria-labelledby": "facility-room-detail-title", children: [
-            /* @__PURE__ */ jsxRuntime.jsx("div", { className: "facilities-detail-heading", children: /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
-              /* @__PURE__ */ jsxRuntime.jsx("span", { children: selectedRoom.building ?? "Unassigned" }),
-              /* @__PURE__ */ jsxRuntime.jsx("h2", { id: "facility-room-detail-title", children: selectedRoom.name }),
-              /* @__PURE__ */ jsxRuntime.jsx("p", { children: selectedRoom.description })
-            ] }) }),
-            /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "facilities-room-preview", children: [
-              /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "facilities-inspector-section-heading", children: [
-                /* @__PURE__ */ jsxRuntime.jsx("h3", { children: "Upcoming reservations" }),
-                /* @__PURE__ */ jsxRuntime.jsx("span", { children: reservations.filter((item) => item.facilityId === selectedRoom.id && !item.automation).length })
+          groupedFacilities.map((group) => /* @__PURE__ */ jsxRuntime.jsx("span", { className: "sr-only", "data-testid": `facility-building-${slug(group.building ?? "unassigned")}`, children: group.building ?? "Unassigned" }, group.building ?? "unassigned")),
+          /* @__PURE__ */ jsxRuntime.jsx(
+            ListInspector,
+            {
+              label: "Rooms",
+              items: roomItems,
+              groups: groupedFacilities.map((group) => ({ id: group.building ?? "unassigned", label: group.building ?? "Unassigned" })),
+              selectedId: selectedRoomId,
+              onSelect: setSelectedRoomId,
+              identityKey,
+              listTestId: "facilities-rooms-list",
+              emptySelection: /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "facilities-inspector-empty", children: [
+                /* @__PURE__ */ jsxRuntime.jsx("span", { children: "Select a room" }),
+                /* @__PURE__ */ jsxRuntime.jsx("p", { children: "Choose a room to inspect its description and upcoming reservations." })
               ] }),
-              reservations.filter((item) => item.facilityId === selectedRoom.id && !item.automation).slice(0, 5).map((reservation) => /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
-                /* @__PURE__ */ jsxRuntime.jsx("strong", { children: reservation.title }),
-                /* @__PURE__ */ jsxRuntime.jsx("span", { children: displayTime(reservation.start) })
-              ] }, reservation.id))
-            ] }),
-            /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "facilities-detail-actions", children: [
-              /* @__PURE__ */ jsxRuntime.jsx("button", { className: "primary-button", type: "button", disabled: mutationPending || !canReserve, onClick: () => openReservationEditor(null, selectedRoom.id), "data-testid": "facility-room-inspector-reserve", children: "Reserve this room" }),
-              /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", disabled: mutationPending || !can("facilities.update-facility"), onClick: () => openFacilityEditor(selectedRoom), "data-testid": "facility-room-inspector-edit", children: "Edit space" })
-            ] })
-          ] }) : /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "facilities-inspector-empty", children: [
-            /* @__PURE__ */ jsxRuntime.jsx("span", { children: "Select a room" }),
-            /* @__PURE__ */ jsxRuntime.jsx("p", { children: "Choose a room to inspect its description and upcoming reservations." })
-          ] }) })
+              inspector: () => selectedRoom ? /* @__PURE__ */ jsxRuntime.jsx("aside", { className: "facilities-inspector", "aria-label": "Room inspector", children: /* @__PURE__ */ jsxRuntime.jsxs("section", { className: "facilities-detail-sheet", "aria-labelledby": "facility-room-detail-title", children: [
+                /* @__PURE__ */ jsxRuntime.jsx("div", { className: "facilities-detail-heading", children: /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
+                  /* @__PURE__ */ jsxRuntime.jsx("span", { children: selectedRoom.building ?? "Unassigned" }),
+                  /* @__PURE__ */ jsxRuntime.jsx("h2", { id: "facility-room-detail-title", children: selectedRoom.name }),
+                  /* @__PURE__ */ jsxRuntime.jsx("p", { children: selectedRoom.description })
+                ] }) }),
+                /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "facilities-room-preview", children: [
+                  /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "facilities-inspector-section-heading", children: [
+                    /* @__PURE__ */ jsxRuntime.jsx("h3", { children: "Upcoming reservations" }),
+                    /* @__PURE__ */ jsxRuntime.jsx("span", { children: reservations.filter((item) => item.facilityId === selectedRoom.id && !item.automation).length })
+                  ] }),
+                  reservations.filter((item) => item.facilityId === selectedRoom.id && !item.automation).slice(0, 5).map((reservation) => /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
+                    /* @__PURE__ */ jsxRuntime.jsx("strong", { children: reservation.title }),
+                    /* @__PURE__ */ jsxRuntime.jsx("span", { children: displayTime(reservation.start) })
+                  ] }, reservation.id))
+                ] }),
+                /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "facilities-detail-actions", children: [
+                  /* @__PURE__ */ jsxRuntime.jsx("button", { className: "primary-button", type: "button", disabled: mutationPending || !canReserve, onClick: () => openReservationEditor(null, selectedRoom.id), "data-testid": "facility-room-inspector-reserve", children: "Reserve this room" }),
+                  /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", disabled: mutationPending || !canReserve, onClick: () => openReservationEditor(null, selectedRoom.id), "data-testid": `facility-room-reserve-${selectedRoom.id}`, children: "Reserve" }),
+                  /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", disabled: mutationPending || !can("facilities.update-facility"), onClick: () => openFacilityEditor(selectedRoom), "data-testid": "facility-room-inspector-edit", children: "Edit space" }),
+                  /* @__PURE__ */ jsxRuntime.jsx(ActionMenu, { label: `Manage ${selectedRoom.name}`, testId: `facility-room-menu-${selectedRoom.id}`, children: /* @__PURE__ */ jsxRuntime.jsx("button", { className: "menu-item danger-item", role: "menuitem", type: "button", disabled: !can("facilities.delete-facility"), onClick: () => setDeleteFacilityTarget(selectedRoom), "data-testid": `facility-room-menu-delete-${selectedRoom.id}`, children: "Delete room" }) }, selectedRoom.id)
+                ] })
+              ] }) }) : null
+            }
+          )
         ] })
       ] })
     ] }),
@@ -2497,6 +2726,7 @@ function StatePanel4({ state, onRetry, onConnect }) {
 function IntegrationsScreen() {
   const { integrations: gateway } = useRhythmDomainGateway();
   const host = useRhythmHost();
+  const identityKey = host.currentUser.id ?? host.currentUser.displayName;
   const [surfaceState, setSurfaceState] = react.useState("loading");
   const [accounts, setAccounts] = react.useState([]);
   const [calendarSources, setCalendarSources] = react.useState([]);
@@ -2513,6 +2743,7 @@ function IntegrationsScreen() {
   const [mutationPending, setMutationPending] = react.useState(false);
   const canMutate = host.currentUser.capabilities?.includes("integrations.write") ?? false;
   const mountedRef = react.useRef(true);
+  const loadGeneration = react.useRef(0);
   const account = (id) => accounts.find((item) => item.id === id) ?? { id, name: PROVIDER_NAMES[id], monogram: "", status: "disconnected" };
   const connectedCount = accounts.filter((item) => item.status === "connected").length;
   const handleError = (error) => {
@@ -2520,32 +2751,43 @@ function IntegrationsScreen() {
     setSurfaceState(kind === "forbidden" ? "forbidden" : kind === "not_found" ? "unavailable" : kind === "unavailable" ? "unavailable" : "server_error");
   };
   const load = async () => {
+    const generation = ++loadGeneration.current;
     setSurfaceState("loading");
     try {
       const [loadedAccounts, loadedCalendarSources] = await Promise.all([gateway.accounts(), gateway.calendarSources()]);
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || generation !== loadGeneration.current) return;
       setAccounts(loadedAccounts);
       setCalendarSources(loadedCalendarSources);
       setCalendarSelection(loadedCalendarSources.filter((source) => source.selected).map((source) => source.id));
       setSurfaceState(loadedAccounts.every((item) => item.status === "disconnected") ? "empty" : "ready");
     } catch (error) {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || generation !== loadGeneration.current) return;
       handleError(error);
     }
   };
   react.useEffect(() => {
     mountedRef.current = true;
+    setSelectedSection("google-calendar");
+    setCalendarSaveStatus("");
+    setCalendarSelection([]);
+    setGmailSignals([]);
+    setProviderStatus({});
+    setSyncAllStatus("");
+    setHandoff(null);
+    setDisconnectTarget(null);
     void load();
     return () => {
       mountedRef.current = false;
+      loadGeneration.current += 1;
     };
-  }, [gateway]);
+  }, [gateway, identityKey]);
   react.useEffect(() => {
     if (selectedSection === "gmail" && account("gmail").status === "connected" && !gmailSignals.length) {
+      const generation = loadGeneration.current;
       void gateway.gmailSignals().then((signals) => {
-        if (mountedRef.current) setGmailSignals(signals);
+        if (mountedRef.current && generation === loadGeneration.current) setGmailSignals(signals);
       }).catch(() => {
-        if (mountedRef.current) setProviderStatus((current) => ({ ...current, gmail: "Gmail signals could not load. Retry syncing Gmail." }));
+        if (mountedRef.current && generation === loadGeneration.current) setProviderStatus((current) => ({ ...current, gmail: "Gmail signals could not load. Retry syncing Gmail." }));
       });
     }
   }, [selectedSection, accounts]);
@@ -2624,6 +2866,13 @@ function IntegrationsScreen() {
   const calendar = account("google-calendar");
   const gmail = account("gmail");
   const planningCenter = account("planning-center");
+  const integrationItems = [
+    ...PROVIDER_IDS.map((id) => {
+      const item = account(id);
+      return { id, title: item.name, subtitle: item.identity ?? "No account identity available", badge: statusLabel(item), testId: `integration-${id}`, testAliases: [`integration-select-${id}`] };
+    }),
+    { id: "assistant-tools", title: "Assistant access", subtitle: "Full Google Calendar and Gmail access for agent actions.", testId: "integration-assistant-tools", testAliases: ["integration-select-assistant-tools"] }
+  ];
   return /* @__PURE__ */ jsxRuntime.jsxs(ScreenRoot, { screenName: "Integrations", testId: "rhythm-integrations-screen", children: [
     /* @__PURE__ */ jsxRuntime.jsxs("section", { className: "page-shell pg-integrations", "aria-busy": surfaceState === "loading", children: [
       /* @__PURE__ */ jsxRuntime.jsxs("header", { className: "integrations-header", children: [
@@ -2640,127 +2889,123 @@ function IntegrationsScreen() {
       !canMutate && /* @__PURE__ */ jsxRuntime.jsx("p", { role: "status", "data-testid": "integrations-read-only", children: "You can inspect connections, but this account cannot change integration settings." }),
       !showsWorkspace && /* @__PURE__ */ jsxRuntime.jsx(StatePanel4, { state: surfaceState, onRetry: () => void load(), onConnect: () => requestConnect("google-calendar") }),
       showsWorkspace && /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "integrations-workspace", children: [
-        /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "integrations-provider-list", "aria-label": "Providers", children: [
-          PROVIDER_IDS.map((id) => {
-            const item = account(id);
-            return /* @__PURE__ */ jsxRuntime.jsxs("section", { className: "integrations-provider-row", "aria-current": selectedSection === id ? "true" : void 0, "data-testid": `integration-${id}`, children: [
-              /* @__PURE__ */ jsxRuntime.jsxs("button", { className: "integrations-provider-select", type: "button", onClick: () => setSelectedSection(id), "data-testid": `integration-select-${id}`, children: [
-                /* @__PURE__ */ jsxRuntime.jsxs("span", { children: [
-                  /* @__PURE__ */ jsxRuntime.jsx("strong", { children: item.name }),
-                  /* @__PURE__ */ jsxRuntime.jsx("small", { children: item.identity ?? "No account identity available" }),
-                  item.errorMessage && /* @__PURE__ */ jsxRuntime.jsx("em", { children: item.errorMessage })
+        PROVIDER_IDS.map((id) => /* @__PURE__ */ jsxRuntime.jsx("span", { className: "sr-only", "data-testid": `integration-status-${id}`, children: statusLabel(account(id)) }, id)),
+        /* @__PURE__ */ jsxRuntime.jsx(
+          ListInspector,
+          {
+            label: "Providers",
+            items: integrationItems,
+            selectedId: selectedSection,
+            onSelect: (id) => setSelectedSection(id),
+            identityKey,
+            inspector: () => /* @__PURE__ */ jsxRuntime.jsxs("aside", { className: "integrations-provider-inspector", "aria-label": "Provider inspector", "data-testid": "integration-inspector", children: [
+              selectedSection !== "assistant-tools" && (() => {
+                const id = selectedSection;
+                const item = account(id);
+                return /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "integrations-provider-actions", children: [
+                  item.status === "connected" && /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", disabled: providerBusy !== null || !canMutate, onClick: () => void syncProvider(id), "data-testid": `integration-sync-${id}`, children: providerBusy === id ? "Syncing\u2026" : "Sync" }),
+                  item.status === "disconnected" ? /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", disabled: !canMutate, onClick: () => requestConnect(id), "data-testid": `integration-connect-${id}`, children: "Connect" }) : /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", disabled: !canMutate, onClick: () => requestConnect(id), "data-testid": `integration-reconnect-${id}`, children: "Reconnect" }),
+                  item.status !== "disconnected" && /* @__PURE__ */ jsxRuntime.jsx("button", { className: "text-danger-button", type: "button", disabled: !canMutate, onClick: () => setDisconnectTarget(id), "data-testid": `integration-disconnect-${id}`, children: "Disconnect" }),
+                  /* @__PURE__ */ jsxRuntime.jsx("p", { role: "status", "aria-live": "polite", className: "integrations-provider-live", "data-testid": `integration-sync-status-${id}`, children: providerStatus[id] })
+                ] });
+              })(),
+              selectedSection === "google-calendar" && /* @__PURE__ */ jsxRuntime.jsxs("section", { "aria-labelledby": "google-calendar-title", children: [
+                /* @__PURE__ */ jsxRuntime.jsxs("header", { children: [
+                  /* @__PURE__ */ jsxRuntime.jsx("h2", { id: "google-calendar-title", children: "Google Calendar" }),
+                  /* @__PURE__ */ jsxRuntime.jsxs("p", { children: [
+                    calendar.identity ?? "No account identity available",
+                    " \xB7 ",
+                    statusLabel(calendar)
+                  ] })
                 ] }),
-                /* @__PURE__ */ jsxRuntime.jsx("span", { className: "integrations-status", "data-testid": `integration-status-${id}`, children: statusLabel(item) })
-              ] }),
-              /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "integrations-provider-actions", children: [
-                item.status === "connected" && /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", disabled: providerBusy !== null || !canMutate, onClick: () => void syncProvider(id), "data-testid": `integration-sync-${id}`, children: providerBusy === id ? "Syncing\u2026" : "Sync" }),
-                item.status === "disconnected" ? /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", disabled: !canMutate, onClick: () => requestConnect(id), "data-testid": `integration-connect-${id}`, children: "Connect" }) : /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", disabled: !canMutate, onClick: () => requestConnect(id), "data-testid": `integration-reconnect-${id}`, children: "Reconnect" }),
-                item.status !== "disconnected" && /* @__PURE__ */ jsxRuntime.jsx("button", { className: "text-danger-button", type: "button", disabled: !canMutate, onClick: () => setDisconnectTarget(id), "data-testid": `integration-disconnect-${id}`, children: "Disconnect" })
-              ] }),
-              /* @__PURE__ */ jsxRuntime.jsx("p", { role: "status", "aria-live": "polite", className: "integrations-provider-live", "data-testid": `integration-sync-status-${id}`, children: providerStatus[id] })
-            ] }, id);
-          }),
-          /* @__PURE__ */ jsxRuntime.jsx("div", { className: "integrations-utility-list", children: /* @__PURE__ */ jsxRuntime.jsx("section", { "data-testid": "integration-assistant-tools", children: /* @__PURE__ */ jsxRuntime.jsxs("button", { type: "button", onClick: () => setSelectedSection("assistant-tools"), "data-testid": "integration-select-assistant-tools", children: [
-            /* @__PURE__ */ jsxRuntime.jsx("span", { children: "Assistant access" }),
-            /* @__PURE__ */ jsxRuntime.jsx("small", { children: "Full Google Calendar and Gmail access for agent actions, including read + send." })
-          ] }) }) })
-        ] }),
-        /* @__PURE__ */ jsxRuntime.jsxs("aside", { className: "integrations-provider-inspector", "aria-label": "Provider inspector", "data-testid": "integration-inspector", children: [
-          selectedSection === "google-calendar" && /* @__PURE__ */ jsxRuntime.jsxs("section", { "aria-labelledby": "google-calendar-title", children: [
-            /* @__PURE__ */ jsxRuntime.jsxs("header", { children: [
-              /* @__PURE__ */ jsxRuntime.jsx("h2", { id: "google-calendar-title", children: "Google Calendar" }),
-              /* @__PURE__ */ jsxRuntime.jsxs("p", { children: [
-                calendar.identity ?? "No account identity available",
-                " \xB7 ",
-                statusLabel(calendar)
-              ] })
-            ] }),
-            calendar.status === "connected" ? /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "integrations-detail", children: [
-              /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "integrations-section-heading", children: [
-                /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
-                  /* @__PURE__ */ jsxRuntime.jsx("h3", { children: "Calendar sources" }),
-                  /* @__PURE__ */ jsxRuntime.jsx("p", { children: "Choose subscribed calendars that can create shadow-event context." })
-                ] }),
-                /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "integrations-inline-actions", children: [
-                  /* @__PURE__ */ jsxRuntime.jsx("button", { className: "text-button", type: "button", disabled: !canMutate, onClick: () => setCalendarSelection(calendarSources.map((source) => source.id)), "data-testid": "integration-calendar-select-all", children: "All" }),
-                  /* @__PURE__ */ jsxRuntime.jsx("button", { className: "text-button", type: "button", disabled: !canMutate, onClick: () => setCalendarSelection([]), "data-testid": "integration-calendar-select-none", children: "None" })
+                calendar.status === "connected" ? /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "integrations-detail", children: [
+                  /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "integrations-section-heading", children: [
+                    /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
+                      /* @__PURE__ */ jsxRuntime.jsx("h3", { children: "Calendar sources" }),
+                      /* @__PURE__ */ jsxRuntime.jsx("p", { children: "Choose subscribed calendars that can create shadow-event context." })
+                    ] }),
+                    /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "integrations-inline-actions", children: [
+                      /* @__PURE__ */ jsxRuntime.jsx("button", { className: "text-button", type: "button", disabled: !canMutate, onClick: () => setCalendarSelection(calendarSources.map((source) => source.id)), "data-testid": "integration-calendar-select-all", children: "All" }),
+                      /* @__PURE__ */ jsxRuntime.jsx("button", { className: "text-button", type: "button", disabled: !canMutate, onClick: () => setCalendarSelection([]), "data-testid": "integration-calendar-select-none", children: "None" })
+                    ] })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntime.jsxs("p", { "data-testid": "integration-calendar-summary", children: [
+                    calendarSelection.length,
+                    " of ",
+                    calendarSources.length,
+                    " selected"
+                  ] }),
+                  /* @__PURE__ */ jsxRuntime.jsx("div", { className: "integrations-calendar-list", children: calendarSources.map((source) => /* @__PURE__ */ jsxRuntime.jsxs("label", { children: [
+                    /* @__PURE__ */ jsxRuntime.jsx("input", { type: "checkbox", disabled: !canMutate, checked: calendarSelection.includes(source.id), onChange: () => setCalendarSelection((current) => current.includes(source.id) ? current.filter((id) => id !== source.id) : [...current, source.id]), "data-testid": `integration-calendar-option-${source.id}` }),
+                    /* @__PURE__ */ jsxRuntime.jsxs("span", { children: [
+                      /* @__PURE__ */ jsxRuntime.jsx("strong", { children: source.name }),
+                      /* @__PURE__ */ jsxRuntime.jsx("small", { children: source.description })
+                    ] }),
+                    source.primary && /* @__PURE__ */ jsxRuntime.jsx("em", { children: "Primary" })
+                  ] }, source.id)) }),
+                  /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "integrations-save-row", children: [
+                    /* @__PURE__ */ jsxRuntime.jsx("span", { role: "status", "aria-live": "polite", "data-testid": "integration-calendar-save-status", children: calendarSaveStatus }),
+                    /* @__PURE__ */ jsxRuntime.jsx("button", { className: "primary-button", type: "button", disabled: mutationPending || !canMutate, onClick: () => void saveCalendarSelection(), "data-testid": "integration-calendar-save", children: "Save sources" })
+                  ] })
+                ] }) : /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "integrations-prerequisite", "data-testid": "integration-calendar-prerequisite", children: [
+                  /* @__PURE__ */ jsxRuntime.jsx("strong", { children: "Calendar settings unavailable" }),
+                  /* @__PURE__ */ jsxRuntime.jsx("span", { children: "Connect Google with Calendar permission to choose sources." })
                 ] })
               ] }),
-              /* @__PURE__ */ jsxRuntime.jsxs("p", { "data-testid": "integration-calendar-summary", children: [
-                calendarSelection.length,
-                " of ",
-                calendarSources.length,
-                " selected"
-              ] }),
-              /* @__PURE__ */ jsxRuntime.jsx("div", { className: "integrations-calendar-list", children: calendarSources.map((source) => /* @__PURE__ */ jsxRuntime.jsxs("label", { children: [
-                /* @__PURE__ */ jsxRuntime.jsx("input", { type: "checkbox", disabled: !canMutate, checked: calendarSelection.includes(source.id), onChange: () => setCalendarSelection((current) => current.includes(source.id) ? current.filter((id) => id !== source.id) : [...current, source.id]), "data-testid": `integration-calendar-option-${source.id}` }),
-                /* @__PURE__ */ jsxRuntime.jsxs("span", { children: [
-                  /* @__PURE__ */ jsxRuntime.jsx("strong", { children: source.name }),
-                  /* @__PURE__ */ jsxRuntime.jsx("small", { children: source.description })
+              selectedSection === "gmail" && /* @__PURE__ */ jsxRuntime.jsxs("section", { "aria-labelledby": "gmail-title", children: [
+                /* @__PURE__ */ jsxRuntime.jsxs("header", { children: [
+                  /* @__PURE__ */ jsxRuntime.jsx("h2", { id: "gmail-title", children: "Gmail" }),
+                  /* @__PURE__ */ jsxRuntime.jsxs("p", { children: [
+                    gmail.identity ?? "No account identity available",
+                    " \xB7 ",
+                    statusLabel(gmail)
+                  ] })
                 ] }),
-                source.primary && /* @__PURE__ */ jsxRuntime.jsx("em", { children: "Primary" })
-              ] }, source.id)) }),
-              /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "integrations-save-row", children: [
-                /* @__PURE__ */ jsxRuntime.jsx("span", { role: "status", "aria-live": "polite", "data-testid": "integration-calendar-save-status", children: calendarSaveStatus }),
-                /* @__PURE__ */ jsxRuntime.jsx("button", { className: "primary-button", type: "button", disabled: mutationPending || !canMutate, onClick: () => void saveCalendarSelection(), "data-testid": "integration-calendar-save", children: "Save sources" })
-              ] })
-            ] }) : /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "integrations-prerequisite", "data-testid": "integration-calendar-prerequisite", children: [
-              /* @__PURE__ */ jsxRuntime.jsx("strong", { children: "Calendar settings unavailable" }),
-              /* @__PURE__ */ jsxRuntime.jsx("span", { children: "Connect Google with Calendar permission to choose sources." })
-            ] })
-          ] }),
-          selectedSection === "gmail" && /* @__PURE__ */ jsxRuntime.jsxs("section", { "aria-labelledby": "gmail-title", children: [
-            /* @__PURE__ */ jsxRuntime.jsxs("header", { children: [
-              /* @__PURE__ */ jsxRuntime.jsx("h2", { id: "gmail-title", children: "Gmail" }),
-              /* @__PURE__ */ jsxRuntime.jsxs("p", { children: [
-                gmail.identity ?? "No account identity available",
-                " \xB7 ",
-                statusLabel(gmail)
-              ] })
-            ] }),
-            /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "integrations-detail", children: [
-              /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "integrations-section-heading", children: [
-                /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
-                  /* @__PURE__ */ jsxRuntime.jsx("h3", { children: "Recent inbox signals" }),
-                  /* @__PURE__ */ jsxRuntime.jsx("p", { children: "Up to five unique threads. This metadata connection does not grant assistant mailbox authority." })
-                ] }),
-                gmail.status === "connected" && /* @__PURE__ */ jsxRuntime.jsxs("strong", { "data-testid": "integration-gmail-unread-count", children: [
-                  uniqueSignals(gmailSignals).filter((signal) => signal.unread).length,
-                  " unread"
+                /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "integrations-detail", children: [
+                  /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "integrations-section-heading", children: [
+                    /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
+                      /* @__PURE__ */ jsxRuntime.jsx("h3", { children: "Recent inbox signals" }),
+                      /* @__PURE__ */ jsxRuntime.jsx("p", { children: "Up to five unique threads. This metadata connection does not grant assistant mailbox authority." })
+                    ] }),
+                    gmail.status === "connected" && /* @__PURE__ */ jsxRuntime.jsxs("strong", { "data-testid": "integration-gmail-unread-count", children: [
+                      uniqueSignals(gmailSignals).filter((signal) => signal.unread).length,
+                      " unread"
+                    ] })
+                  ] }),
+                  gmail.status === "connected" ? /* @__PURE__ */ jsxRuntime.jsx("ol", { className: "integrations-signal-list", "data-testid": "integration-gmail-signals-list", children: uniqueSignals(gmailSignals).slice(0, 5).map((signal) => /* @__PURE__ */ jsxRuntime.jsx("li", { "data-testid": `integration-gmail-signal-${signal.threadId}`, className: signal.unread ? "is-unread" : "", children: /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
+                    /* @__PURE__ */ jsxRuntime.jsx("strong", { children: signal.subject || "(No subject)" }),
+                    /* @__PURE__ */ jsxRuntime.jsx("small", { children: signal.sender || "Unknown sender" }),
+                    signal.snippet && /* @__PURE__ */ jsxRuntime.jsx("p", { children: signal.snippet })
+                  ] }) }, signal.id)) }) : /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "integrations-prerequisite", "data-testid": "integration-gmail-prerequisite", children: [
+                    /* @__PURE__ */ jsxRuntime.jsx("strong", { children: "No inbox signals yet" }),
+                    /* @__PURE__ */ jsxRuntime.jsx("span", { children: "Connect Gmail and sync once to read recent signal metadata." })
+                  ] })
                 ] })
               ] }),
-              gmail.status === "connected" ? /* @__PURE__ */ jsxRuntime.jsx("ol", { className: "integrations-signal-list", "data-testid": "integration-gmail-signals-list", children: uniqueSignals(gmailSignals).slice(0, 5).map((signal) => /* @__PURE__ */ jsxRuntime.jsx("li", { "data-testid": `integration-gmail-signal-${signal.threadId}`, className: signal.unread ? "is-unread" : "", children: /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
-                /* @__PURE__ */ jsxRuntime.jsx("strong", { children: signal.subject || "(No subject)" }),
-                /* @__PURE__ */ jsxRuntime.jsx("small", { children: signal.sender || "Unknown sender" }),
-                signal.snippet && /* @__PURE__ */ jsxRuntime.jsx("p", { children: signal.snippet })
-              ] }) }, signal.id)) }) : /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "integrations-prerequisite", "data-testid": "integration-gmail-prerequisite", children: [
-                /* @__PURE__ */ jsxRuntime.jsx("strong", { children: "No inbox signals yet" }),
-                /* @__PURE__ */ jsxRuntime.jsx("span", { children: "Connect Gmail and sync once to read recent signal metadata." })
+              selectedSection === "planning-center" && /* @__PURE__ */ jsxRuntime.jsxs("section", { "aria-labelledby": "planning-center-title", children: [
+                /* @__PURE__ */ jsxRuntime.jsxs("header", { children: [
+                  /* @__PURE__ */ jsxRuntime.jsx("h2", { id: "planning-center-title", children: "Planning Center" }),
+                  /* @__PURE__ */ jsxRuntime.jsxs("p", { children: [
+                    planningCenter.identity ?? "No account identity available",
+                    " \xB7 ",
+                    statusLabel(planningCenter)
+                  ] })
+                ] }),
+                planningCenter.status === "connected" ? /* @__PURE__ */ jsxRuntime.jsx("div", { className: "integrations-detail", children: /* @__PURE__ */ jsxRuntime.jsx("p", { children: "Connected. Task-filter preferences are managed in Planning Center." }) }) : /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "integrations-prerequisite", "data-testid": "integration-planning-center-prerequisite", children: [
+                  /* @__PURE__ */ jsxRuntime.jsx("strong", { children: "Planning Center is locked" }),
+                  /* @__PURE__ */ jsxRuntime.jsx("span", { children: "Connect Planning Center to bring plan and volunteer signals into Rhythm." })
+                ] })
+              ] }),
+              selectedSection === "assistant-tools" && /* @__PURE__ */ jsxRuntime.jsxs("section", { "aria-labelledby": "assistant-tools-title", children: [
+                /* @__PURE__ */ jsxRuntime.jsxs("header", { children: [
+                  /* @__PURE__ */ jsxRuntime.jsx("h2", { id: "assistant-tools-title", children: "Google tools for the assistant" }),
+                  /* @__PURE__ */ jsxRuntime.jsx("p", { children: "Grant the assistant full Google Calendar and Gmail access for agent actions, including read + send. This is broader than the Gmail metadata connection." })
+                ] }),
+                /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", onClick: () => requestFollowUp("Enable assistant Google tools", "assistant-google-enable"), "data-testid": "integration-assistant-enable", children: "Enable" })
               ] })
             ] })
-          ] }),
-          selectedSection === "planning-center" && /* @__PURE__ */ jsxRuntime.jsxs("section", { "aria-labelledby": "planning-center-title", children: [
-            /* @__PURE__ */ jsxRuntime.jsxs("header", { children: [
-              /* @__PURE__ */ jsxRuntime.jsx("h2", { id: "planning-center-title", children: "Planning Center" }),
-              /* @__PURE__ */ jsxRuntime.jsxs("p", { children: [
-                planningCenter.identity ?? "No account identity available",
-                " \xB7 ",
-                statusLabel(planningCenter)
-              ] })
-            ] }),
-            planningCenter.status === "connected" ? /* @__PURE__ */ jsxRuntime.jsx("div", { className: "integrations-detail", children: /* @__PURE__ */ jsxRuntime.jsx("p", { children: "Connected. Task-filter preferences are managed in Planning Center." }) }) : /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "integrations-prerequisite", "data-testid": "integration-planning-center-prerequisite", children: [
-              /* @__PURE__ */ jsxRuntime.jsx("strong", { children: "Planning Center is locked" }),
-              /* @__PURE__ */ jsxRuntime.jsx("span", { children: "Connect Planning Center to bring plan and volunteer signals into Rhythm." })
-            ] })
-          ] }),
-          selectedSection === "assistant-tools" && /* @__PURE__ */ jsxRuntime.jsxs("section", { "aria-labelledby": "assistant-tools-title", children: [
-            /* @__PURE__ */ jsxRuntime.jsxs("header", { children: [
-              /* @__PURE__ */ jsxRuntime.jsx("h2", { id: "assistant-tools-title", children: "Google tools for the assistant" }),
-              /* @__PURE__ */ jsxRuntime.jsx("p", { children: "Grant the assistant full Google Calendar and Gmail access for agent actions, including read + send. This is broader than the Gmail metadata connection." })
-            ] }),
-            /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", onClick: () => requestFollowUp("Enable assistant Google tools", "assistant-google-enable"), "data-testid": "integration-assistant-enable", children: "Enable" })
-          ] })
-        ] })
+          }
+        )
       ] }),
       /* @__PURE__ */ jsxRuntime.jsx("p", { className: "integrations-sync-all-status", role: "status", "aria-live": "polite", "data-testid": "integrations-sync-all-status", children: syncAllStatus })
     ] }),
@@ -2888,6 +3133,7 @@ function MessagesScreen() {
   const loadGeneration = react.useRef(0);
   const renameReturnTarget = react.useRef(null);
   const canWrite = host.currentUser.collaborationCapability === "write";
+  const identityKey = host.currentUser.id ?? host.currentUser.displayName;
   const handleError = (error) => {
     const kind = error instanceof RhythmGatewayError ? error.kind : "server_error";
     setSurfaceState(kind === "forbidden" ? "forbidden" : kind === "not_found" ? "unavailable" : kind === "unavailable" ? "unavailable" : "server_error");
@@ -2906,11 +3152,18 @@ function MessagesScreen() {
     }
   };
   react.useEffect(() => {
+    setSelectedId(null);
+    setSearch("");
+    setReply("");
+    setReplyError("");
+    setNewThreadOpen(false);
+    setRenameTargetId(null);
+    setDeleteTargetId(null);
     void load();
     return () => {
       loadGeneration.current += 1;
     };
-  }, [gateway]);
+  }, [gateway, identityKey]);
   const showsWorkspace = surfaceState === "ready";
   const selectedThread = threads.find((thread) => thread.id === selectedId) ?? null;
   const renameTarget = threads.find((thread) => thread.id === renameTargetId) ?? null;
@@ -2924,16 +3177,10 @@ function MessagesScreen() {
     if (!transcriptRef.current) return;
     transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
   }, [selectedThread?.messages.length]);
-  const openThread = async (id) => {
+  const openThread = (id) => {
     setSelectedId(id);
-    if (canWrite && threads.find((thread) => thread.id === id)?.unreadCount) {
-      try {
-        await gateway.markRead(id);
-        setThreads((current) => current.map((thread) => thread.id === id ? { ...thread, unreadCount: 0 } : thread));
-      } catch (error) {
-        handleError(error);
-      }
-    }
+    setReply("");
+    setReplyError("");
   };
   const markRead = async (id) => {
     if (!canWrite) return;
@@ -2968,14 +3215,14 @@ function MessagesScreen() {
   const renameThread = async (event) => {
     event.preventDefault();
     if (!canWrite || !renameTarget) return;
-    const title = renameTitle.trim();
-    if (!title) {
+    const title2 = renameTitle.trim();
+    if (!title2) {
       setRenameError("Enter a thread name.");
       return;
     }
     setMutationPending(true);
     try {
-      const updated = await gateway.renameThread(renameTarget.id, title);
+      const updated = await gateway.renameThread(renameTarget.id, title2);
       setThreads((current) => current.map((thread) => thread.id === updated.id ? updated : thread));
       closeRenameThread();
     } catch (error) {
@@ -3055,6 +3302,15 @@ function MessagesScreen() {
       setMutationPending(false);
     }
   };
+  const threadItems = visibleThreads.map((thread) => ({
+    id: thread.id,
+    testId: `messages-thread-${thread.id}`,
+    title: thread.title,
+    subtitle: thread.lastMessage,
+    meta: timeLabel(thread.updatedAt),
+    badge: thread.unreadCount > 0 ? `${thread.unreadCount} unread` : void 0,
+    badgeTestId: thread.unreadCount > 0 ? `messages-thread-unread-${thread.id}` : void 0
+  }));
   return /* @__PURE__ */ jsxRuntime.jsx(ScreenRoot, { screenName: "Messages", testId: "rhythm-messages-screen", children: /* @__PURE__ */ jsxRuntime.jsxs("section", { className: "page-shell pg-messages", "aria-busy": surfaceState === "loading", children: [
     /* @__PURE__ */ jsxRuntime.jsxs("header", { className: "messages-page-header", children: [
       /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "messages-heading", children: [
@@ -3068,109 +3324,103 @@ function MessagesScreen() {
       ] })
     ] }),
     !showsWorkspace && /* @__PURE__ */ jsxRuntime.jsx(StatePanel5, { state: surfaceState, onRetry: () => void load(), onNew: openNewThread }),
-    showsWorkspace && /* @__PURE__ */ jsxRuntime.jsxs("div", { className: `messages-workspace ${selectedThread ? "has-selection" : ""}`, children: [
-      /* @__PURE__ */ jsxRuntime.jsxs("aside", { className: "messages-thread-rail", "aria-label": "Conversations", children: [
-        /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "messages-rail-summary", children: [
-          /* @__PURE__ */ jsxRuntime.jsxs("strong", { "data-testid": "messages-unread-total", children: [
-            unreadTotal,
-            " unread ",
-            unreadTotal === 1 ? "thread" : "threads"
+    showsWorkspace && /* @__PURE__ */ jsxRuntime.jsx("div", { className: `messages-workspace ${selectedThread ? "has-selection" : ""}`, children: /* @__PURE__ */ jsxRuntime.jsx(
+      ListInspector,
+      {
+        className: "messages-list-inspector",
+        label: "Conversations",
+        items: threadItems,
+        selectedId,
+        onSelect: openThread,
+        identityKey,
+        listTestId: "messages-thread-list",
+        toolbar: /* @__PURE__ */ jsxRuntime.jsxs(jsxRuntime.Fragment, { children: [
+          /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "messages-rail-summary", children: [
+            /* @__PURE__ */ jsxRuntime.jsxs("strong", { "data-testid": "messages-unread-total", children: [
+              unreadTotal,
+              " unread ",
+              unreadTotal === 1 ? "thread" : "threads"
+            ] }),
+            /* @__PURE__ */ jsxRuntime.jsxs("span", { "data-testid": "messages-visible-count", children: [
+              visibleThreads.length,
+              " ",
+              visibleThreads.length === 1 ? "conversation" : "conversations"
+            ] })
           ] }),
-          /* @__PURE__ */ jsxRuntime.jsxs("span", { "data-testid": "messages-visible-count", children: [
-            visibleThreads.length,
-            " ",
-            visibleThreads.length === 1 ? "conversation" : "conversations"
+          /* @__PURE__ */ jsxRuntime.jsxs("label", { className: "search-field messages-search", children: [
+            /* @__PURE__ */ jsxRuntime.jsx(Icon2, { name: "search", size: 14 }),
+            /* @__PURE__ */ jsxRuntime.jsx("span", { className: "sr-only", children: "Search conversations by title" }),
+            /* @__PURE__ */ jsxRuntime.jsx("input", { value: search, onChange: (event) => setSearch(event.target.value), placeholder: "Search conversations", "data-testid": "messages-thread-search" })
           ] })
         ] }),
-        /* @__PURE__ */ jsxRuntime.jsxs("label", { className: "search-field messages-search", children: [
-          /* @__PURE__ */ jsxRuntime.jsx(Icon2, { name: "search", size: 14 }),
-          /* @__PURE__ */ jsxRuntime.jsx("span", { className: "sr-only", children: "Search conversations by title" }),
-          /* @__PURE__ */ jsxRuntime.jsx("input", { value: search, onChange: (event) => setSearch(event.target.value), placeholder: "Search conversations", "data-testid": "messages-thread-search" })
-        ] }),
-        /* @__PURE__ */ jsxRuntime.jsx("div", { className: "messages-thread-list", role: "grid", "aria-label": "Conversation list", "data-testid": "messages-thread-list", children: visibleThreads.map((thread) => /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "messages-thread-item", role: "row", children: [
-          /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "messages-thread-row", role: "gridcell", tabIndex: 0, "aria-selected": selectedId === thread.id, onClick: () => void openThread(thread.id), onKeyDown: (event) => {
-            if (event.key === "Enter" || event.key === " ") {
-              event.preventDefault();
-              void openThread(thread.id);
-            }
-          }, "data-testid": `messages-thread-${thread.id}`, children: [
-            /* @__PURE__ */ jsxRuntime.jsx("span", { className: "messages-thread-avatar", "aria-hidden": "true", children: thread.participants[0]?.initials ?? "R" }),
-            /* @__PURE__ */ jsxRuntime.jsxs("span", { className: "messages-thread-copy", children: [
-              /* @__PURE__ */ jsxRuntime.jsx("strong", { children: thread.title }),
-              /* @__PURE__ */ jsxRuntime.jsx("small", { children: thread.lastMessage })
-            ] }),
-            /* @__PURE__ */ jsxRuntime.jsx("time", { dateTime: thread.updatedAt, children: timeLabel(thread.updatedAt) }),
-            thread.unreadCount > 0 && /* @__PURE__ */ jsxRuntime.jsx("span", { className: "messages-row-unread", "aria-label": `${thread.unreadCount} unread message`, "data-testid": `messages-thread-unread-${thread.id}`, children: thread.unreadCount })
-          ] }),
-          /* @__PURE__ */ jsxRuntime.jsx("div", { role: "gridcell", children: /* @__PURE__ */ jsxRuntime.jsx(ThreadActions, { thread, canWrite, onRead: () => void markRead(thread.id), onUnread: () => void markUnread(thread.id), onRename: (target) => openRenameThread(thread, target), onDelete: () => openDeleteThread(thread) }) })
-        ] }, thread.id)) }),
-        visibleThreads.length === 0 && /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "messages-no-results", "data-testid": "messages-no-results", children: [
-          /* @__PURE__ */ jsxRuntime.jsx("h2", { children: "No matching conversations" }),
+        emptyState: search ? /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "messages-no-results", "data-testid": "messages-no-results", children: [
+          /* @__PURE__ */ jsxRuntime.jsx("h3", { children: "No matching conversations" }),
           /* @__PURE__ */ jsxRuntime.jsx("p", { children: "Try a shorter title or clear the search." }),
           /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", onClick: () => setSearch(""), "data-testid": "messages-clear-search", children: "Clear search" })
-        ] })
-      ] }),
-      /* @__PURE__ */ jsxRuntime.jsx("section", { className: "messages-conversation", "aria-label": "Selected conversation", children: !selectedThread ? /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "messages-selection-state", "data-testid": "messages-empty-selection", children: [
-        /* @__PURE__ */ jsxRuntime.jsx("h2", { children: "Select a conversation" }),
-        /* @__PURE__ */ jsxRuntime.jsx("p", { children: "Choose a thread to read its participants and transcript." })
-      ] }) : /* @__PURE__ */ jsxRuntime.jsxs(jsxRuntime.Fragment, { children: [
-        /* @__PURE__ */ jsxRuntime.jsxs("header", { className: "messages-conversation-header", children: [
-          /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "messages-conversation-heading", children: [
-            /* @__PURE__ */ jsxRuntime.jsx("span", { className: "eyebrow", "data-testid": "messages-thread-type", children: selectedThread.type === "group" ? "Group" : "Direct" }),
-            /* @__PURE__ */ jsxRuntime.jsx("h2", { "data-testid": "messages-subject", children: selectedThread.title }),
-            /* @__PURE__ */ jsxRuntime.jsxs("p", { children: [
-              /* @__PURE__ */ jsxRuntime.jsx("span", { "data-testid": "messages-participants", children: selectedThread.participants.map((participant) => participant.name).join(" \xB7 ") }),
-              /* @__PURE__ */ jsxRuntime.jsx("span", { "aria-hidden": "true", children: " \xB7 " }),
-              selectedThread.messages.length,
-              " ",
-              selectedThread.messages.length === 1 ? "message" : "messages"
-            ] })
-          ] }),
-          /* @__PURE__ */ jsxRuntime.jsx(ThreadActions, { thread: selectedThread, canWrite, onRead: () => void markRead(selectedThread.id), onUnread: () => void markUnread(selectedThread.id), onRename: (target) => openRenameThread(selectedThread, target), onDelete: () => openDeleteThread(selectedThread), testId: "messages-selected-thread-actions" })
+        ] }) : void 0,
+        emptySelection: /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "messages-selection-state", "data-testid": "messages-empty-selection", children: [
+          /* @__PURE__ */ jsxRuntime.jsx("h3", { children: "Select a conversation" }),
+          /* @__PURE__ */ jsxRuntime.jsx("p", { children: "Choose a thread to read its participants and transcript." })
         ] }),
-        /* @__PURE__ */ jsxRuntime.jsx("div", { className: "messages-transcript", ref: transcriptRef, tabIndex: 0, "aria-label": `${selectedThread.title} transcript`, "aria-live": "polite", "data-testid": "messages-transcript", children: selectedThread.messages.length === 0 ? /* @__PURE__ */ jsxRuntime.jsx("div", { className: "messages-transcript-empty", children: /* @__PURE__ */ jsxRuntime.jsx("p", { children: "No messages yet. Start the conversation below." }) }) : selectedThread.messages.map((message) => /* @__PURE__ */ jsxRuntime.jsxs("article", { className: "messages-message", children: [
-          /* @__PURE__ */ jsxRuntime.jsxs("header", { children: [
-            /* @__PURE__ */ jsxRuntime.jsx("strong", { children: message.senderName }),
-            /* @__PURE__ */ jsxRuntime.jsx("time", { dateTime: message.createdAt, children: timeLabel(message.createdAt) })
+        inspector: () => selectedThread ? /* @__PURE__ */ jsxRuntime.jsxs(jsxRuntime.Fragment, { children: [
+          /* @__PURE__ */ jsxRuntime.jsxs("header", { className: "messages-conversation-header", children: [
+            /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "messages-conversation-heading", children: [
+              /* @__PURE__ */ jsxRuntime.jsx("span", { className: "eyebrow", "data-testid": "messages-thread-type", children: selectedThread.type === "group" ? "Group" : "Direct" }),
+              /* @__PURE__ */ jsxRuntime.jsx("h2", { "data-testid": "messages-subject", children: selectedThread.title }),
+              /* @__PURE__ */ jsxRuntime.jsxs("p", { children: [
+                /* @__PURE__ */ jsxRuntime.jsx("span", { "data-testid": "messages-participants", children: selectedThread.participants.map((participant) => participant.name).join(" \xB7 ") }),
+                /* @__PURE__ */ jsxRuntime.jsx("span", { "aria-hidden": "true", children: " \xB7 " }),
+                selectedThread.messages.length,
+                " ",
+                selectedThread.messages.length === 1 ? "message" : "messages"
+              ] })
+            ] }),
+            /* @__PURE__ */ jsxRuntime.jsx(ThreadActions, { thread: selectedThread, canWrite, onRead: () => void markRead(selectedThread.id), onUnread: () => void markUnread(selectedThread.id), onRename: (target) => openRenameThread(selectedThread, target), onDelete: () => openDeleteThread(selectedThread), testId: "messages-selected-thread-actions" })
           ] }),
-          /* @__PURE__ */ jsxRuntime.jsx("p", { children: message.body })
-        ] }, message.id)) }),
-        /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "messages-composer", children: [
-          /* @__PURE__ */ jsxRuntime.jsx("label", { htmlFor: "messages-reply-input", children: "Reply" }),
-          /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
-            /* @__PURE__ */ jsxRuntime.jsx(
-              "textarea",
-              {
-                ref: replyRef,
-                id: "messages-reply-input",
-                rows: 2,
-                value: reply,
-                disabled: !canWrite,
-                title: !canWrite ? "This host grants inspection only." : void 0,
-                onChange: (event) => {
-                  setReply(event.target.value);
-                  setReplyError("");
-                },
-                onKeyDown: (event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    void sendReply();
-                  }
-                },
-                "aria-describedby": replyError ? "messages-reply-error" : "messages-reply-help",
-                "data-testid": "messages-reply-input"
-              }
-            ),
-            /* @__PURE__ */ jsxRuntime.jsxs("button", { className: "primary-button messages-send", type: "button", disabled: mutationPending || !canWrite, title: !canWrite ? "This host grants inspection only." : void 0, onClick: () => void sendReply(), "data-testid": "messages-send", children: [
-              /* @__PURE__ */ jsxRuntime.jsx(Icon2, { name: "plus", size: 16 }),
-              /* @__PURE__ */ jsxRuntime.jsx("span", { children: "Send" })
-            ] })
-          ] }),
-          /* @__PURE__ */ jsxRuntime.jsx("small", { id: "messages-reply-help", children: "Enter to send \xB7 Shift+Enter for a new line" }),
-          replyError && /* @__PURE__ */ jsxRuntime.jsx("p", { id: "messages-reply-error", role: "alert", "data-testid": "messages-reply-error", children: replyError })
-        ] })
-      ] }) })
-    ] }),
+          /* @__PURE__ */ jsxRuntime.jsx("div", { className: "messages-transcript", ref: transcriptRef, tabIndex: 0, "aria-label": `${selectedThread.title} transcript`, "aria-live": "polite", "data-testid": "messages-transcript", children: selectedThread.messages.length === 0 ? /* @__PURE__ */ jsxRuntime.jsx("div", { className: "messages-transcript-empty", children: /* @__PURE__ */ jsxRuntime.jsx("p", { children: "No messages yet. Start the conversation below." }) }) : selectedThread.messages.map((message) => /* @__PURE__ */ jsxRuntime.jsxs("article", { className: "messages-message", children: [
+            /* @__PURE__ */ jsxRuntime.jsxs("header", { children: [
+              /* @__PURE__ */ jsxRuntime.jsx("strong", { children: message.senderName }),
+              /* @__PURE__ */ jsxRuntime.jsx("time", { dateTime: message.createdAt, children: timeLabel(message.createdAt) })
+            ] }),
+            /* @__PURE__ */ jsxRuntime.jsx("p", { children: message.body })
+          ] }, message.id)) }),
+          /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "messages-composer", children: [
+            /* @__PURE__ */ jsxRuntime.jsx("label", { htmlFor: "messages-reply-input", children: "Reply" }),
+            /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
+              /* @__PURE__ */ jsxRuntime.jsx(
+                "textarea",
+                {
+                  ref: replyRef,
+                  id: "messages-reply-input",
+                  rows: 2,
+                  value: reply,
+                  disabled: !canWrite,
+                  title: !canWrite ? "This host grants inspection only." : void 0,
+                  onChange: (event) => {
+                    setReply(event.target.value);
+                    setReplyError("");
+                  },
+                  onKeyDown: (event) => {
+                    if (event.key === "Enter" && !event.shiftKey) {
+                      event.preventDefault();
+                      void sendReply();
+                    }
+                  },
+                  "aria-describedby": replyError ? "messages-reply-error" : "messages-reply-help",
+                  "data-testid": "messages-reply-input"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntime.jsxs("button", { className: "primary-button messages-send", type: "button", disabled: mutationPending || !canWrite, title: !canWrite ? "This host grants inspection only." : void 0, onClick: () => void sendReply(), "data-testid": "messages-send", children: [
+                /* @__PURE__ */ jsxRuntime.jsx(Icon2, { name: "plus", size: 16 }),
+                /* @__PURE__ */ jsxRuntime.jsx("span", { children: "Send" })
+              ] })
+            ] }),
+            /* @__PURE__ */ jsxRuntime.jsx("small", { id: "messages-reply-help", children: "Enter to send \xB7 Shift+Enter for a new line" }),
+            replyError && /* @__PURE__ */ jsxRuntime.jsx("p", { id: "messages-reply-error", role: "alert", "data-testid": "messages-reply-error", children: replyError })
+          ] })
+        ] }) : null
+      }
+    ) }),
     /* @__PURE__ */ jsxRuntime.jsx(FocusDialog, { open: newThreadOpen, onClose: closeNewThread, title: "New conversation", description: "Choose one person for a direct message or at least two other participants for a group.", testId: "messages-new-thread-dialog", wide: true, children: /* @__PURE__ */ jsxRuntime.jsxs("form", { className: "messages-new-thread-form", onSubmit: (event) => void createThread(event), children: [
       /* @__PURE__ */ jsxRuntime.jsxs("label", { className: "messages-field", "data-autofocus": true, children: [
         threadType === "group" ? "Group name (required)" : "Optional title",
@@ -3444,13 +3694,13 @@ function PlannerScreen() {
     const form = event.currentTarget;
     if (!canCreateOrCollaborate || !form.reportValidity()) return;
     const data = new FormData(form);
-    const title = String(data.get("title") ?? "").trim();
-    if (!title) {
+    const title2 = String(data.get("title") ?? "").trim();
+    if (!title2) {
       createTitleRef.current?.focus();
       return;
     }
-    requestOperation("planner.write", "new-task", { title, notes: String(data.get("notes") ?? "").trim() || null, scheduledDate: String(data.get("scheduledDate") ?? "") || null, dueDate: String(data.get("dueDate") ?? "") || null }, async () => {
-      await gateway.create({ title, notes: String(data.get("notes") ?? "").trim() || void 0, scheduledDate: String(data.get("scheduledDate") ?? "") || void 0, dueDate: String(data.get("dueDate") ?? "") || void 0 });
+    requestOperation("planner.write", "new-task", { title: title2, notes: String(data.get("notes") ?? "").trim() || null, scheduledDate: String(data.get("scheduledDate") ?? "") || null, dueDate: String(data.get("dueDate") ?? "") || null }, async () => {
+      await gateway.create({ title: title2, notes: String(data.get("notes") ?? "").trim() || void 0, scheduledDate: String(data.get("scheduledDate") ?? "") || void 0, dueDate: String(data.get("dueDate") ?? "") || void 0 });
       await load(weekStart);
       setInspector(null);
     });
@@ -3699,6 +3949,7 @@ function ProjectsScreen() {
   const capabilities = host.currentUser.capabilities ?? [];
   const can = (operation) => capabilities.includes("projects.write") || capabilities.includes(operation);
   const isOwner = (ownerId) => Boolean(host.currentUser.id && host.currentUser.id === ownerId);
+  const identityKey = host.currentUser.id ?? host.currentUser.displayName;
   const [surfaceState, setSurfaceState] = react.useState("loading");
   const [templates, setTemplates] = react.useState([]);
   const [instances, setInstances] = react.useState([]);
@@ -3741,18 +3992,28 @@ function ProjectsScreen() {
     }
   };
   react.useEffect(() => {
+    setSelectedTemplateId(null);
+    setSelectedInstanceId(null);
+    setInspector(null);
+    setInspectorDraft(null);
+    setStartOpen(false);
+    setMilestoneOpen(false);
+    setInstanceDelete(null);
+    setTemplateEditor(null);
+    setTemplateStepEditor(null);
+    closeOperation();
     void load();
     return () => {
       loadGeneration.current += 1;
     };
-  }, [gateway]);
+  }, [gateway, identityKey]);
   react.useEffect(() => () => {
     mounted.current = false;
     operationEpoch.current += 1;
   }, []);
   const showsWorkspace = surfaceState === "ready";
   const visibleInstances = react.useMemo(() => instances.filter((instance) => showCompleted || derivedStatus(instance) !== "Done"), [instances, showCompleted]);
-  const selectedInstance = visibleInstances.find((instance) => instance.id === selectedInstanceId) ?? visibleInstances[0] ?? null;
+  const selectedInstance = visibleInstances.find((instance) => instance.id === selectedInstanceId) ?? null;
   const selectedTemplate = templates.find((template) => template.id === selectedTemplateId) ?? templates[0] ?? null;
   const inspectorInstance = inspector ? instances.find((instance) => instance.id === inspector.instanceId) ?? null : null;
   const inspectorStep = inspector && inspectorInstance ? inspectorInstance.steps.find((step) => step.id === inspector.stepId) ?? null : null;
@@ -3830,10 +4091,10 @@ function ProjectsScreen() {
   const addMilestone = async (event) => {
     event.preventDefault();
     if (!selectedInstance || !isOwner(selectedInstance.ownerId)) return;
-    const title = String(new FormData(event.currentTarget).get("title") ?? "").trim();
-    if (!title) return;
-    requestOperation("projects.create-milestone", selectedInstance.id, { title: title.slice(0, 200) }, async () => {
-      const milestone = await gateway.addMilestone(selectedInstance.id, { title });
+    const title2 = String(new FormData(event.currentTarget).get("title") ?? "").trim();
+    if (!title2) return;
+    requestOperation("projects.create-milestone", selectedInstance.id, { title: title2.slice(0, 200) }, async () => {
+      const milestone = await gateway.addMilestone(selectedInstance.id, { title: title2 });
       applyInstance({ ...selectedInstance, milestones: [...selectedInstance.milestones, milestone] });
       setMilestoneOpen(false);
     });
@@ -3947,6 +4208,23 @@ function ProjectsScreen() {
     ] }),
     /* @__PURE__ */ jsxRuntime.jsx("button", { className: "icon-button", type: "button", "aria-label": `Inspect ${step.title}`, onClick: () => openInspector(instance, step), "data-testid": `project-step-inspect-${step.id}`, children: "\u2197" })
   ] }, step.id);
+  const templateRowId = (id) => `template:${id}`;
+  const instanceRowId = (id) => `instance:${id}`;
+  const projectItems = [
+    ...templates.map((template) => ({ id: templateRowId(template.id), title: template.name, subtitle: `${template.steps.length} steps \xB7 ${template.anchorType}`, group: "templates", testId: `project-template-${template.id}`, testAliases: [`project-template-select-${template.id}`] })),
+    ...visibleInstances.map((instance) => ({ id: instanceRowId(instance.id), title: instance.name, subtitle: `${instance.steps.filter((step) => step.status === "done").length}/${instance.steps.length} steps`, meta: instance.anchorDate, badge: derivedStatus(instance), badgeTestId: `project-instance-status-${instance.id}`, group: "active-projects", testId: `project-instance-${instance.id}`, testAliases: [`project-instance-expand-${instance.id}`] }))
+  ];
+  const selectedProjectRowId = selectedInstanceId ? instanceRowId(selectedInstanceId) : selectedTemplateId ? templateRowId(selectedTemplateId) : null;
+  const selectProjectRow = (id) => {
+    closeOperation();
+    if (id.startsWith("template:")) {
+      setSelectedTemplateId(id.slice("template:".length));
+      setSelectedInstanceId(null);
+    } else {
+      setSelectedInstanceId(id.slice("instance:".length));
+      setSelectedTemplateId(null);
+    }
+  };
   return /* @__PURE__ */ jsxRuntime.jsx(ScreenRoot, { screenName: "Projects", testId: "rhythm-projects-screen", children: /* @__PURE__ */ jsxRuntime.jsxs("section", { className: "page-shell pg-projects", "aria-busy": surfaceState === "loading", children: [
     /* @__PURE__ */ jsxRuntime.jsxs("header", { className: "projects-header", children: [
       /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "projects-heading", children: [
@@ -3963,55 +4241,30 @@ function ProjectsScreen() {
     /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "projects-scroll", children: [
       !showsWorkspace && /* @__PURE__ */ jsxRuntime.jsx(StatePanel7, { state: surfaceState, onRetry: () => void load() }),
       showsWorkspace && /* @__PURE__ */ jsxRuntime.jsxs(jsxRuntime.Fragment, { children: [
-        /* @__PURE__ */ jsxRuntime.jsxs("section", { className: "templates-rail", "aria-labelledby": "project-templates-title", children: [
-          /* @__PURE__ */ jsxRuntime.jsxs("header", { children: [
-            /* @__PURE__ */ jsxRuntime.jsx("h2", { id: "project-templates-title", children: "Templates" }),
-            /* @__PURE__ */ jsxRuntime.jsx("span", { children: templates.length }),
-            /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", disabled: !can("projects.create-template"), title: !can("projects.create-template") ? "This host grants inspection only." : void 0, onClick: () => setTemplateEditor("new"), "data-testid": "project-template-new", children: "New template" })
-          ] }),
-          /* @__PURE__ */ jsxRuntime.jsx("div", { className: "template-list", role: "grid", "aria-label": "Project templates", "data-testid": "project-templates-list", children: templates.map((template) => /* @__PURE__ */ jsxRuntime.jsx("div", { className: "template-row", role: "row", "aria-selected": template.id === selectedTemplate?.id ? "true" : "false", "data-testid": `project-template-${template.id}`, children: /* @__PURE__ */ jsxRuntime.jsxs("div", { role: "gridcell", children: [
-            /* @__PURE__ */ jsxRuntime.jsxs("button", { className: "template-select", type: "button", onClick: () => {
-              closeOperation();
-              setSelectedTemplateId(template.id);
-            }, "data-testid": `project-template-select-${template.id}`, children: [
-              /* @__PURE__ */ jsxRuntime.jsx("strong", { children: template.name }),
-              /* @__PURE__ */ jsxRuntime.jsxs("span", { children: [
-                template.steps.length,
-                " steps \xB7 ",
-                template.anchorType
-              ] })
-            ] }),
-            /* @__PURE__ */ jsxRuntime.jsx("button", { className: "text-button", type: "button", disabled: !(can("projects.update-template") || can("projects.create-step") || can("projects.update-step") || can("projects.delete-step")), onClick: () => setTemplateEditor(template), "data-testid": `project-template-edit-${template.id}`, children: "Edit" }),
-            /* @__PURE__ */ jsxRuntime.jsx("button", { className: "text-danger-button", type: "button", disabled: !can("projects.delete-template"), onClick: () => void deleteTemplate(template), "data-testid": `project-template-delete-${template.id}`, children: "Delete" })
-          ] }) }, template.id)) }),
-          selectedTemplate && /* @__PURE__ */ jsxRuntime.jsx("button", { className: "primary-button", type: "button", disabled: !can("projects.create-instance"), title: !can("projects.create-instance") ? "This host grants inspection only." : void 0, onClick: () => setStartOpen(true), "data-testid": "project-start", children: "Start Project" })
+        /* @__PURE__ */ jsxRuntime.jsxs("span", { className: "sr-only", "data-testid": "project-templates-list", children: [
+          templates.length,
+          " templates"
         ] }),
-        /* @__PURE__ */ jsxRuntime.jsxs("section", { className: "active-projects", "aria-labelledby": "active-projects-title", children: [
-          /* @__PURE__ */ jsxRuntime.jsxs("header", { className: "active-toolbar", children: [
-            /* @__PURE__ */ jsxRuntime.jsx("h2", { id: "active-projects-title", children: "Active projects" }),
-            /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", "aria-pressed": showCompleted, onClick: () => setShowCompleted((value) => !value), "data-testid": "projects-show-completed", children: showCompleted ? "Hide completed" : "Show completed" })
-          ] }),
-          /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "project-board", children: [
-            /* @__PURE__ */ jsxRuntime.jsx("section", { className: "project-list-pane", "aria-label": "Active project list", children: /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "instance-list", children: [
-              visibleInstances.map((instance) => /* @__PURE__ */ jsxRuntime.jsx("article", { className: `instance-row${selectedInstance?.id === instance.id ? " selected" : ""}`, "data-testid": `project-instance-${instance.id}`, children: /* @__PURE__ */ jsxRuntime.jsxs("button", { className: "instance-expand", type: "button", "aria-pressed": selectedInstance?.id === instance.id, onClick: () => {
-                closeOperation();
-                setSelectedInstanceId(instance.id);
-              }, "data-testid": `project-instance-expand-${instance.id}`, children: [
-                /* @__PURE__ */ jsxRuntime.jsx("span", { className: "instance-date", children: instance.anchorDate }),
-                /* @__PURE__ */ jsxRuntime.jsxs("span", { className: "instance-row-copy", children: [
-                  /* @__PURE__ */ jsxRuntime.jsx("strong", { children: instance.name }),
-                  /* @__PURE__ */ jsxRuntime.jsxs("small", { children: [
-                    instance.steps.filter((step) => step.status === "done").length,
-                    "/",
-                    instance.steps.length,
-                    " steps"
-                  ] })
-                ] }),
-                /* @__PURE__ */ jsxRuntime.jsx("span", { className: "status-badge", "data-testid": `project-instance-status-${instance.id}`, children: derivedStatus(instance) })
-              ] }) }, instance.id)),
-              visibleInstances.length === 0 && /* @__PURE__ */ jsxRuntime.jsx("p", { className: "inline-empty", "data-testid": "projects-no-active", children: "No active projects yet. Start one from a template above." })
-            ] }) }),
-            selectedInstance ? /* @__PURE__ */ jsxRuntime.jsxs("aside", { className: "project-inspector", "aria-label": "Selected project", "data-testid": "project-inspector", children: [
+        /* @__PURE__ */ jsxRuntime.jsx(
+          ListInspector,
+          {
+            label: "Projects",
+            groups: [{ id: "templates", label: "Templates" }, { id: "active-projects", label: "Active projects" }],
+            items: projectItems,
+            selectedId: selectedProjectRowId,
+            onSelect: selectProjectRow,
+            identityKey,
+            toolbar: /* @__PURE__ */ jsxRuntime.jsxs(jsxRuntime.Fragment, { children: [
+              /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", disabled: !can("projects.create-template"), title: !can("projects.create-template") ? "This host grants inspection only." : void 0, onClick: () => setTemplateEditor("new"), "data-testid": "project-template-new", children: "New template" }),
+              /* @__PURE__ */ jsxRuntime.jsx("button", { className: "primary-button", type: "button", disabled: !selectedTemplate || !can("projects.create-instance"), title: !can("projects.create-instance") ? "This host grants inspection only." : void 0, onClick: () => setStartOpen(true), "data-testid": "project-start", children: "Start Project" }),
+              /* @__PURE__ */ jsxRuntime.jsx("button", { className: "secondary-button", type: "button", "aria-pressed": showCompleted, onClick: () => setShowCompleted((value) => !value), "data-testid": "projects-show-completed", children: showCompleted ? "Hide completed" : "Show completed" })
+            ] }),
+            listFooter: visibleInstances.length === 0 ? /* @__PURE__ */ jsxRuntime.jsx("p", { className: "inline-empty", "data-testid": "projects-no-active", children: "No active projects yet. Start one from a template above." }) : void 0,
+            emptySelection: /* @__PURE__ */ jsxRuntime.jsxs("aside", { className: "project-inspector empty", "aria-label": "Selected project", "data-testid": "project-inspector", children: [
+              /* @__PURE__ */ jsxRuntime.jsx("h3", { children: "Select a template or project" }),
+              /* @__PURE__ */ jsxRuntime.jsx("p", { children: "Project details, people, milestones, and steps appear here." })
+            ] }),
+            inspector: () => selectedInstance ? /* @__PURE__ */ jsxRuntime.jsxs("aside", { className: "project-inspector", "aria-label": "Selected project", "data-testid": "project-inspector", children: [
               /* @__PURE__ */ jsxRuntime.jsxs("header", { className: "project-inspector-header", children: [
                 /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
                   /* @__PURE__ */ jsxRuntime.jsx("h2", { children: selectedInstance.name }),
@@ -4048,12 +4301,23 @@ function ProjectsScreen() {
                   selectedInstance.steps.filter((step) => !step.milestoneId).map((step) => renderStepRow(selectedInstance, step))
                 ] })
               ] })
-            ] }) : /* @__PURE__ */ jsxRuntime.jsxs("aside", { className: "project-inspector empty", "aria-label": "Selected project", "data-testid": "project-inspector", children: [
-              /* @__PURE__ */ jsxRuntime.jsx("h2", { children: "Select a project" }),
-              /* @__PURE__ */ jsxRuntime.jsx("p", { children: "Project details, people, milestones, and steps appear here." })
-            ] })
-          ] })
-        ] })
+            ] }) : selectedTemplate ? /* @__PURE__ */ jsxRuntime.jsx("section", { className: "template-detail", "data-testid": "project-template-inspector", children: /* @__PURE__ */ jsxRuntime.jsxs("header", { children: [
+              /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
+                /* @__PURE__ */ jsxRuntime.jsx("h3", { children: selectedTemplate.name }),
+                /* @__PURE__ */ jsxRuntime.jsx("p", { children: selectedTemplate.description }),
+                /* @__PURE__ */ jsxRuntime.jsxs("span", { children: [
+                  selectedTemplate.steps.length,
+                  " steps \xB7 ",
+                  selectedTemplate.anchorType
+                ] })
+              ] }),
+              /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "row-actions", children: [
+                /* @__PURE__ */ jsxRuntime.jsx("button", { className: "text-button", type: "button", disabled: !(can("projects.update-template") || can("projects.create-step") || can("projects.update-step") || can("projects.delete-step")), onClick: () => setTemplateEditor(selectedTemplate), "data-testid": `project-template-edit-${selectedTemplate.id}`, children: "Edit" }),
+                /* @__PURE__ */ jsxRuntime.jsx("button", { className: "text-danger-button", type: "button", disabled: !can("projects.delete-template"), onClick: () => void deleteTemplate(selectedTemplate), "data-testid": `project-template-delete-${selectedTemplate.id}`, children: "Delete" })
+              ] })
+            ] }) }) : null
+          }
+        )
       ] })
     ] }),
     /* @__PURE__ */ jsxRuntime.jsx(FocusDialog, { open: startOpen, onClose: () => setStartOpen(false), title: "Start Project", description: selectedTemplate ? `Generate from ${selectedTemplate.name}.` : void 0, testId: "project-start-dialog", wide: true, children: /* @__PURE__ */ jsxRuntime.jsxs("form", { className: "project-dialog-form", onSubmit: startProject, children: [
@@ -4228,9 +4492,9 @@ function RuleForm({ idPrefix, initial, members, showStepsBuilder = true, disable
   });
   const submit = (event) => {
     event.preventDefault();
-    const title = draft.title.trim();
-    if (!title) return;
-    onSave({ ...draft, title, steps: draft.steps.filter((step) => step.title.trim()).map((step) => ({ ...step, title: step.title.trim() })) });
+    const title2 = draft.title.trim();
+    if (!title2) return;
+    onSave({ ...draft, title: title2, steps: draft.steps.filter((step) => step.title.trim()).map((step) => ({ ...step, title: step.title.trim() })) });
   };
   return /* @__PURE__ */ jsxRuntime.jsxs("form", { className: "rhythm-rule-form", onSubmit: submit, children: [
     /* @__PURE__ */ jsxRuntime.jsxs("label", { children: [
@@ -4864,15 +5128,15 @@ function TasksScreen() {
     const form = event.currentTarget;
     if (!form.reportValidity()) return;
     const data = new FormData(form);
-    const title = String(data.get("title") ?? "").trim();
-    if (!title) {
+    const title2 = String(data.get("title") ?? "").trim();
+    if (!title2) {
       createTitleRef.current?.focus();
       return;
     }
     setMutationPending(true);
     try {
       const created = await gateway.create({
-        title,
+        title: title2,
         notes: String(data.get("notes") ?? "").trim(),
         scheduledDate: String(data.get("scheduledDate") ?? "") || void 0,
         dueDate: String(data.get("dueDate") ?? "") || void 0
@@ -4895,12 +5159,12 @@ function TasksScreen() {
     event.preventDefault();
     if (!canWrite || !selectedTask) return;
     const data = new FormData(event.currentTarget);
-    const title = String(data.get("title") ?? "").trim();
-    if (!title) return;
+    const title2 = String(data.get("title") ?? "").trim();
+    if (!title2) return;
     setMutationPending(true);
     try {
       const updated = await gateway.update(selectedTask.id, {
-        title,
+        title: title2,
         notes: String(data.get("notes") ?? ""),
         scheduledDate: String(data.get("scheduledDate") ?? "") || void 0,
         dueDate: String(data.get("dueDate") ?? "") || void 0,
@@ -5302,6 +5566,316 @@ function TasksScreen() {
     ] })
   ] }) });
 }
+
+// src/agents/types.ts
+var SHARED_AGENT_SCHEMA = "rhythm.shared-agent.v1";
+var SHARED_AGENT_CATALOG_SCHEMA = "rhythm.shared-agent-catalog.v1";
+var CANONICAL_FIELDS = [
+  "id",
+  "label",
+  "icon",
+  "enabled",
+  "isAgent",
+  "isManager",
+  "systemPrompt",
+  "allowedMcpsJson",
+  "allowedSkillsJson",
+  "corePermissionsJson",
+  "allowedDelegatesJson",
+  "presetId",
+  "sortOrder",
+  "createdAt",
+  "updatedAt",
+  "revision",
+  "modelProvider",
+  "modelId",
+  "ocAgent",
+  "sessionSelectable",
+  "schedulable",
+  "schedulableOverride",
+  "modelTierHint",
+  "defaultAnthropicAccountId",
+  "imageGenerationEnabled",
+  "reasoningEffort",
+  "locked",
+  "disabledReason",
+  "lockedAt",
+  "lockedBy",
+  "autoApproveActions"
+];
+var PRESENTATION_EDIT_FIELDS = ["label", "icon"];
+var CONFIRMED_EDIT_FIELDS = [
+  "enabled",
+  "isAgent",
+  "isManager",
+  "systemPrompt",
+  "allowedMcpsJson",
+  "allowedSkillsJson",
+  "corePermissionsJson",
+  "allowedDelegatesJson",
+  "modelProvider",
+  "modelId",
+  "ocAgent",
+  "sessionSelectable",
+  "schedulable",
+  "imageGenerationEnabled",
+  "modelTierHint",
+  "defaultAnthropicAccountId",
+  "reasoningEffort",
+  "autoApproveActions"
+];
+var EDITABLE_FIELDS = [...PRESENTATION_EDIT_FIELDS, ...CONFIRMED_EDIT_FIELDS];
+var BOOLEAN_FIELDS = ["enabled", "isAgent", "isManager", "sessionSelectable", "schedulable", "imageGenerationEnabled", "autoApproveActions"];
+var JSON_FIELDS = ["allowedMcpsJson", "allowedSkillsJson", "corePermissionsJson", "allowedDelegatesJson"];
+var NULLABLE_TEXT_FIELDS = ["modelProvider", "modelId", "ocAgent", "modelTierHint", "defaultAnthropicAccountId", "reasoningEffort"];
+var fieldLabels = {
+  label: "Label",
+  icon: "Icon",
+  enabled: "Enabled",
+  isAgent: "Can run as agent",
+  isManager: "Can delegate",
+  systemPrompt: "Instructions",
+  allowedMcpsJson: "Allowed MCPs JSON",
+  allowedSkillsJson: "Allowed skills JSON",
+  corePermissionsJson: "Core permissions JSON",
+  allowedDelegatesJson: "Allowed delegates JSON",
+  modelProvider: "Model provider",
+  modelId: "Model id",
+  ocAgent: "OpenCode agent",
+  sessionSelectable: "Interactive launch",
+  schedulable: "Schedulable",
+  imageGenerationEnabled: "Image generation",
+  modelTierHint: "Model tier hint",
+  defaultAnthropicAccountId: "Default Anthropic account id",
+  reasoningEffort: "Reasoning effort",
+  autoApproveActions: "Auto-approve actions"
+};
+function editableValue(agent, field) {
+  const value = agent.canonical[field];
+  return typeof value === "string" || typeof value === "boolean" || value === null ? value : null;
+}
+function initialDraft(agent) {
+  return Object.fromEntries(EDITABLE_FIELDS.map((field) => [field, editableValue(agent, field)]));
+}
+function title(agent) {
+  const label = typeof agent.canonical.label === "string" && agent.canonical.label.trim() ? agent.canonical.label : agent.id;
+  return `${label} (${agent.id})`;
+}
+function readinessLabel(value) {
+  return value.split("-").map((word) => `${word.slice(0, 1).toUpperCase()}${word.slice(1)}`).join(" ");
+}
+function Editor({ agent, port, onSaved, onClose }) {
+  const [draft, setDraft] = react.useState(() => initialDraft(agent));
+  const [saving, setSaving] = react.useState(false);
+  const [status, setStatus] = react.useState("");
+  const setField = (field, value) => {
+    setDraft((current) => ({ ...current, [field]: value }));
+  };
+  const changes = react.useMemo(() => Object.fromEntries(EDITABLE_FIELDS.flatMap((field) => Object.is(draft[field], editableValue(agent, field)) ? [] : [[field, draft[field]]])), [agent, draft]);
+  const dirty = Object.keys(changes).length > 0;
+  const save = async () => {
+    if (!dirty || saving) return;
+    setSaving(true);
+    setStatus("Saving changes\u2026");
+    try {
+      const saved = await port.save(agent.id, agent.revision, changes, {
+        onConfirmationRequired: () => setStatus("Waiting for confirmation in Rhythm")
+      });
+      onSaved(saved);
+      onClose();
+    } catch (error) {
+      if (error instanceof RhythmGatewayError && error.kind === "conflict") setStatus("Changed elsewhere, reload");
+      else if (error instanceof RhythmGatewayError && error.kind === "forbidden") setStatus("Confirmation was not approved. Your draft is unchanged.");
+      else setStatus(error instanceof Error ? error.message : "Changes could not be saved.");
+    } finally {
+      setSaving(false);
+    }
+  };
+  const reload = async () => {
+    setSaving(true);
+    setStatus("Reloading current values\u2026");
+    try {
+      const current = await port.get(agent.id);
+      onSaved(current);
+      setDraft(initialDraft(current));
+      setStatus("Current values loaded.");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Current values could not be loaded.");
+    } finally {
+      setSaving(false);
+    }
+  };
+  return /* @__PURE__ */ jsxRuntime.jsx(FocusDialog, { open: true, title: `Edit ${title(agent)}`, description: "Only fields changed in this draft are sent when you save.", onClose, testId: "shared-agent-editor", wide: true, children: /* @__PURE__ */ jsxRuntime.jsxs("form", { className: "shared-agent-form", onSubmit: (event) => {
+    event.preventDefault();
+    void save();
+  }, children: [
+    PRESENTATION_EDIT_FIELDS.map((field, index) => /* @__PURE__ */ jsxRuntime.jsxs("label", { className: "shared-agent-field", children: [
+      fieldLabels[field],
+      /* @__PURE__ */ jsxRuntime.jsx("input", { "data-autofocus": index === 0 ? "" : void 0, "data-testid": `shared-agent-field-${field}`, value: String(draft[field] ?? ""), onChange: (event) => setField(field, event.target.value) })
+    ] }, field)),
+    BOOLEAN_FIELDS.map((field) => /* @__PURE__ */ jsxRuntime.jsxs("label", { className: "shared-agent-check", children: [
+      /* @__PURE__ */ jsxRuntime.jsx("input", { "data-testid": `shared-agent-field-${field}`, type: "checkbox", checked: draft[field] === true, onChange: (event) => setField(field, event.target.checked) }),
+      /* @__PURE__ */ jsxRuntime.jsx("span", { children: fieldLabels[field] })
+    ] }, field)),
+    /* @__PURE__ */ jsxRuntime.jsxs("label", { className: "shared-agent-field shared-agent-span", children: [
+      fieldLabels.systemPrompt,
+      /* @__PURE__ */ jsxRuntime.jsx("textarea", { "data-testid": "shared-agent-field-systemPrompt", rows: 5, value: String(draft.systemPrompt ?? ""), onChange: (event) => setField("systemPrompt", event.target.value === "" ? null : event.target.value) })
+    ] }),
+    NULLABLE_TEXT_FIELDS.map((field) => /* @__PURE__ */ jsxRuntime.jsxs("label", { className: "shared-agent-field", children: [
+      fieldLabels[field],
+      /* @__PURE__ */ jsxRuntime.jsx("input", { "data-testid": `shared-agent-field-${field}`, value: String(draft[field] ?? ""), onChange: (event) => setField(field, event.target.value === "" ? null : event.target.value) })
+    ] }, field)),
+    JSON_FIELDS.map((field) => /* @__PURE__ */ jsxRuntime.jsxs("label", { className: "shared-agent-field shared-agent-span", children: [
+      fieldLabels[field],
+      /* @__PURE__ */ jsxRuntime.jsx("textarea", { className: "shared-agent-json", "data-testid": `shared-agent-field-${field}`, rows: 4, spellCheck: false, value: String(draft[field] ?? ""), onChange: (event) => setField(field, event.target.value === "" ? null : event.target.value) })
+    ] }, field)),
+    /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "shared-agent-editor-footer shared-agent-span", children: [
+      /* @__PURE__ */ jsxRuntime.jsx("p", { role: "status", "aria-live": "polite", "data-testid": "shared-agent-save-status", children: status }),
+      /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "shared-agent-actions", children: [
+        status.includes("reload") && /* @__PURE__ */ jsxRuntime.jsx("button", { type: "button", onClick: () => void reload(), disabled: saving, children: "Reload current values" }),
+        /* @__PURE__ */ jsxRuntime.jsx("button", { type: "button", onClick: onClose, children: "Cancel" }),
+        /* @__PURE__ */ jsxRuntime.jsx("button", { type: "submit", "data-testid": "shared-agent-save", disabled: !dirty || saving, children: "Save changes" })
+      ] })
+    ] })
+  ] }) });
+}
+function CatalogScreen({ catalog, port, readOnly, viewport, onRefresh }) {
+  const [agents, setAgents] = react.useState(catalog.agents);
+  const [selectedId, setSelectedId] = react.useState(null);
+  const [editingId, setEditingId] = react.useState(null);
+  const [launchStatus, setLaunchStatus] = react.useState("");
+  const selected = agents.find((agent) => agent.id === selectedId) ?? null;
+  const editing = agents.find((agent) => agent.id === editingId) ?? null;
+  const items = agents.map((agent) => ({
+    id: agent.id,
+    title: title(agent),
+    subtitle: `OpenCode: ${readinessLabel(agent.runtimes.opencode.readiness)} \xB7 Hermes: ${readinessLabel(agent.runtimes.hermes.readiness)}`,
+    testId: `shared-agent-${agent.id}`
+  }));
+  react.useEffect(() => setAgents(catalog.agents), [catalog.agents]);
+  const updateAgent = react.useCallback((saved) => {
+    setAgents((current) => current.map((agent) => agent.id === saved.id ? saved : agent));
+  }, []);
+  const launch = async (agent) => {
+    if (!port.launch) return;
+    setLaunchStatus("Launching\u2026");
+    try {
+      const result = await port.launch(agent.id, agent.revision);
+      setLaunchStatus(result.ok ? "Agent launched." : result.reason);
+    } catch (error) {
+      setLaunchStatus(error instanceof Error ? error.message : "Agent could not be launched.");
+    }
+  };
+  return /* @__PURE__ */ jsxRuntime.jsxs(
+    "main",
+    {
+      className: `${RHYTHM_ROOT_CLASS} shared-agents-screen`,
+      "aria-label": "Shared Agents",
+      "data-testid": "shared-agents-screen",
+      "data-rhythm-viewport": viewport,
+      "data-rhythm-theme": defaultRhythmTokens.mode,
+      "data-catalog-scope": catalog.scope,
+      style: mapHostTokens(defaultRhythmTokens),
+      children: [
+        /* @__PURE__ */ jsxRuntime.jsxs("header", { className: "shared-agents-header", children: [
+          /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
+            /* @__PURE__ */ jsxRuntime.jsx("p", { className: "shared-agents-eyebrow", children: "Canonical agent catalog" }),
+            /* @__PURE__ */ jsxRuntime.jsx("h1", { children: "Shared Agents" }),
+            /* @__PURE__ */ jsxRuntime.jsx("p", { children: "Inspect how each canonical Rhythm agent maps to OpenCode and Hermes." })
+          ] }),
+          /* @__PURE__ */ jsxRuntime.jsx("button", { type: "button", onClick: onRefresh, "data-testid": "shared-agents-refresh", children: "Refresh" })
+        ] }),
+        readOnly && /* @__PURE__ */ jsxRuntime.jsx("p", { className: "shared-agents-banner", role: "status", children: "Read-only mode" }),
+        /* @__PURE__ */ jsxRuntime.jsx(
+          ListInspector,
+          {
+            identityKey: catalog.scope,
+            label: "Shared agents",
+            items,
+            selectedId,
+            onSelect: (id) => {
+              setSelectedId(id);
+              setLaunchStatus("");
+            },
+            searchable: true,
+            searchPlaceholder: "Search shared agents",
+            emptyState: /* @__PURE__ */ jsxRuntime.jsx("p", { children: "No shared agents are available." }),
+            emptySelection: /* @__PURE__ */ jsxRuntime.jsx("p", { children: "Select an agent to inspect its runtime readiness and editable canonical fields." }),
+            inspector: () => selected ? /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "shared-agent-inspector", children: [
+              /* @__PURE__ */ jsxRuntime.jsxs("p", { className: "shared-agent-id", children: [
+                /* @__PURE__ */ jsxRuntime.jsx("strong", { children: "Canonical id" }),
+                /* @__PURE__ */ jsxRuntime.jsx("code", { children: selected.id })
+              ] }),
+              /* @__PURE__ */ jsxRuntime.jsx("div", { className: "shared-agent-readiness-grid", children: ["opencode", "hermes"].map((runtime) => {
+                const projection = selected.runtimes[runtime];
+                return /* @__PURE__ */ jsxRuntime.jsxs("section", { className: `shared-agent-readiness readiness-${projection.readiness}`, "data-testid": `shared-agent-readiness-${runtime}`, children: [
+                  /* @__PURE__ */ jsxRuntime.jsxs("header", { children: [
+                    /* @__PURE__ */ jsxRuntime.jsx("strong", { children: runtime === "opencode" ? "OpenCode" : "Hermes" }),
+                    /* @__PURE__ */ jsxRuntime.jsx("span", { children: readinessLabel(projection.readiness) })
+                  ] }),
+                  projection.reasons.length > 0 ? /* @__PURE__ */ jsxRuntime.jsx("ul", { children: projection.reasons.map((reason, index) => /* @__PURE__ */ jsxRuntime.jsxs("li", { children: [
+                    /* @__PURE__ */ jsxRuntime.jsx("code", { children: reason.code }),
+                    /* @__PURE__ */ jsxRuntime.jsx("span", { children: reason.message })
+                  ] }, `${reason.code}-${index}`)) }) : /* @__PURE__ */ jsxRuntime.jsx("p", { children: "No readiness restrictions." })
+                ] }, runtime);
+              }) }),
+              /* @__PURE__ */ jsxRuntime.jsxs("dl", { className: "shared-agent-summary", children: [
+                /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
+                  /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Revision" }),
+                  /* @__PURE__ */ jsxRuntime.jsx("dd", { children: selected.revision })
+                ] }),
+                /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
+                  /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Model" }),
+                  /* @__PURE__ */ jsxRuntime.jsxs("dd", { children: [
+                    String(selected.canonical.modelProvider ?? "Not set"),
+                    " / ",
+                    String(selected.canonical.modelId ?? "Not set")
+                  ] })
+                ] }),
+                /* @__PURE__ */ jsxRuntime.jsxs("div", { children: [
+                  /* @__PURE__ */ jsxRuntime.jsx("dt", { children: "Interactive" }),
+                  /* @__PURE__ */ jsxRuntime.jsx("dd", { children: selected.runtimes[port.hostRuntime].launchKinds.interactive ? "Allowed" : "Not allowed" })
+                ] })
+              ] }),
+              /* @__PURE__ */ jsxRuntime.jsxs("div", { className: "shared-agent-actions", children: [
+                /* @__PURE__ */ jsxRuntime.jsx("button", { type: "button", onClick: () => setEditingId(selected.id), disabled: readOnly, "data-testid": "shared-agent-edit", children: "Edit canonical fields" }),
+                /* @__PURE__ */ jsxRuntime.jsxs("button", { type: "button", onClick: () => void launch(selected), disabled: readOnly || !port.launch || selected.runtimes[port.hostRuntime].readiness !== "supported" || !selected.runtimes[port.hostRuntime].launchKinds.interactive, "data-testid": "shared-agent-launch", children: [
+                  "Launch in ",
+                  port.hostRuntime === "opencode" ? "OpenCode" : "Hermes"
+                ] })
+              ] }),
+              /* @__PURE__ */ jsxRuntime.jsx("p", { role: "status", "aria-live": "polite", children: launchStatus })
+            ] }) : null
+          }
+        ),
+        editing && /* @__PURE__ */ jsxRuntime.jsx(Editor, { agent: editing, port, onSaved: updateAgent, onClose: () => setEditingId(null) })
+      ]
+    }
+  );
+}
+function SharedAgentsScreen({ port, readOnly = false, viewport = "regular" }) {
+  const [catalog, setCatalog] = react.useState(null);
+  const [error, setError] = react.useState("");
+  const [reloadKey, setReloadKey] = react.useState(0);
+  react.useEffect(() => {
+    let active = true;
+    setError("");
+    void port.list().then((value) => {
+      if (active) setCatalog(value);
+    }).catch((reason) => {
+      if (active) setError(reason instanceof Error ? reason.message : "Shared agents could not be loaded.");
+    });
+    return () => {
+      active = false;
+    };
+  }, [port, reloadKey]);
+  if (error) return /* @__PURE__ */ jsxRuntime.jsxs("main", { className: `${RHYTHM_ROOT_CLASS} shared-agents-screen`, "data-testid": "shared-agents-screen", "data-rhythm-viewport": viewport, style: mapHostTokens(defaultRhythmTokens), children: [
+    /* @__PURE__ */ jsxRuntime.jsx("p", { role: "alert", children: error }),
+    /* @__PURE__ */ jsxRuntime.jsx("button", { type: "button", onClick: () => setReloadKey((value) => value + 1), children: "Try again" })
+  ] });
+  if (!catalog) return /* @__PURE__ */ jsxRuntime.jsx("main", { className: `${RHYTHM_ROOT_CLASS} shared-agents-screen`, "data-testid": "shared-agents-screen", "data-rhythm-viewport": viewport, style: mapHostTokens(defaultRhythmTokens), children: /* @__PURE__ */ jsxRuntime.jsx("p", { role: "status", children: "Loading shared agents\u2026" }) });
+  return /* @__PURE__ */ jsxRuntime.jsx(CatalogScreen, { catalog, port, readOnly, viewport, onRefresh: () => setReloadKey((value) => value + 1) }, catalog.scope);
+}
 /*! Bundled license information:
 
 lucide-react/dist/esm/shared/src/utils.js:
@@ -5348,19 +5922,27 @@ lucide-react/dist/esm/lucide-react.js:
 
 exports.ArtifactsScreen = ArtifactsScreen;
 exports.AutomationsScreen = AutomationsScreen;
+exports.CANONICAL_FIELDS = CANONICAL_FIELDS;
+exports.CONFIRMED_EDIT_FIELDS = CONFIRMED_EDIT_FIELDS;
 exports.DashboardScreen = DashboardScreen;
 exports.FacilitiesScreen = FacilitiesScreen;
 exports.FocusDialog = FocusDialog;
 exports.HeaderTaskAction = HeaderTaskAction;
 exports.Icon = Icon2;
 exports.IntegrationsScreen = IntegrationsScreen;
+exports.ListInspector = ListInspector;
 exports.MessagesScreen = MessagesScreen;
+exports.PRESENTATION_EDIT_FIELDS = PRESENTATION_EDIT_FIELDS;
 exports.PlannerScreen = PlannerScreen;
 exports.ProjectsScreen = ProjectsScreen;
 exports.RHYTHM_ROOT_CLASS = RHYTHM_ROOT_CLASS;
 exports.RhythmGatewayError = RhythmGatewayError;
 exports.RhythmWorkspaceProvider = RhythmWorkspaceProvider;
 exports.RhythmsScreen = RhythmsScreen;
+exports.SHARED_AGENT_CATALOG_SCHEMA = SHARED_AGENT_CATALOG_SCHEMA;
+exports.SHARED_AGENT_SCHEMA = SHARED_AGENT_SCHEMA;
+exports.SharedAgentsScreen = SharedAgentsScreen;
+exports.Splitter = Splitter;
 exports.TaskCreateForm = TaskCreateForm;
 exports.TasksScreen = TasksScreen;
 exports.defaultRhythmTokens = defaultRhythmTokens;

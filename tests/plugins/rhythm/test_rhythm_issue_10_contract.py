@@ -37,7 +37,7 @@ def _api(tmp_path, monkeypatch):
 def test_issue_10_c3_vendor_provenance_names_shared_head():
     """Catches a copied artifact whose provenance still points at the prior accepted source."""
     provenance = Path("plugins/rhythm/desktop/vendor/rhythm-workspace-ui/PROVENANCE.md").read_text()
-    assert "d676faae5aff11796f39cb5f09031f57d5c5d061" in provenance
+    assert "98874481285250b7441b68744787051a4b286fc1" in provenance
 
 
 def test_issue_10_c1_mounted_reads_are_pinned_and_message_creation_is_not_a_route(tmp_path, monkeypatch):

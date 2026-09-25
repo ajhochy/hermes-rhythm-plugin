@@ -35,6 +35,7 @@ const routeFixtureRest = vi.fn(async (path: string) => {
   if (path === '/integrations/status') return { accounts: [] }
   if (path === '/integrations/settings') return { calendarSources: [] }
   if (path === '/artifacts') return { items: [] }
+  if (path === '/shared-agents') return { schema: 'rhythm.shared-agent-catalog.v1', scope: 'fixture', generatedAt: '2026-09-25T00:00:00Z', agents: [] }
   throw new Error(`unexpected route fixture GET ${path}`)
 })
 
@@ -119,4 +120,25 @@ describe('Rhythm desktop shell (#5)', () => {
     second.forEach(dispose => dispose())
   })
 
+  it('HD-4: the agents tab round-trips through rhythmRouteTarget and the desktop route count stays unchanged', async () => {
+    const disposers: Array<() => void> = []
+    plugin.register((await import('./plugin')).createPluginContext('rhythm', dispose => disposers.push(dispose)))
+
+    // Round trip: the new tab value is neither dropped (unknown tab) nor
+    // routed to a second page.
+    expect(rhythmRouteTarget('?tab=agents')).toBe('/rhythm?tab=agents')
+    expect(rhythmRouteTarget('?tab=agents&workspace=team_1')).toBe('/rhythm?tab=agents&workspace=team_1')
+    // Route count is unchanged: still exactly one `/rhythm` page, matching the
+    // desktop route contract (§5.4 — "the desktop route contract stays
+    // ['/rhythm']").
+    expect(contributedRoutes().filter(route => route.path === '/rhythm')).toHaveLength(1)
+
+    routeFixtureRest.mockClear()
+    window.location.hash = rhythmRouteTarget('?tab=agents')
+    render(createElement(RhythmWorkspace, { rest: routeFixtureRest as never, openExternal: vi.fn() }))
+    expect(await screen.findByTestId('shared-agents-screen')).not.toBeNull()
+    expect(routeFixtureRest.mock.calls.some(([path]) => path === '/shared-agents')).toBe(true)
+
+    disposers.forEach(dispose => dispose())
+  })
 })

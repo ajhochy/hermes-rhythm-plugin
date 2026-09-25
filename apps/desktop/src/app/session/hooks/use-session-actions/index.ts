@@ -17,6 +17,7 @@ import { openGatewayForAgent, openGatewayForProfile } from '@/store/gateway'
 import { $gatewaySwitching } from '@/store/gateway-switch'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
+import { $newChatPolicySelection } from '@/store/policy-selection'
 import {
   $activeGatewayProfile,
   $gatewaySwapTarget,
@@ -191,7 +192,7 @@ function reconcileAuthoritativeMessages(
 // A no-op for single-profile/local-pooled users (a backend resolves its own launch
 // profile to None). The sticky UI model/effort/fast ride as per-session overrides,
 // never the profile default (that lives in Settings → Model).
-async function desktopSessionCreateParams(cwd: string): Promise<Record<string, unknown>> {
+export async function desktopSessionCreateParams(cwd: string): Promise<Record<string, unknown>> {
   // Treat Send as the linearization point for the visible selector state. The
   // profile handshake below can yield long enough for background config/model
   // refreshes to finish; reading atoms afterward would silently create the
@@ -206,15 +207,29 @@ async function desktopSessionCreateParams(cwd: string): Promise<Record<string, u
   const profile = $newChatProfile.get() ?? normalizeProfileKey($activeGatewayProfile.get())
   await ensureGatewayProfile(profile)
 
+  // A one-shot host-issued policy selection (§5.4) wins outright: it is
+  // consumed here and cleared immediately, and it replaces the model/provider/
+  // effort selectors rather than combining with them — the policy it resolves
+  // to on the backend owns those choices.
+  const policySelection = $newChatPolicySelection.get()
+
+  if (policySelection) {
+    $newChatPolicySelection.set(null)
+  }
+
   return {
     cols: 96,
     source: 'desktop',
     ...(cwd && { cwd }),
     ...(profile ? { profile } : {}),
-    ...(selection.model
-      ? { model: selection.model, ...(selection.provider ? { provider: selection.provider } : {}) }
-      : {}),
-    ...(selection.effort ? { reasoning_effort: selection.effort } : {}),
+    ...(policySelection
+      ? { policy_selection: policySelection }
+      : {
+          ...(selection.model
+            ? { model: selection.model, ...(selection.provider ? { provider: selection.provider } : {}) }
+            : {}),
+          ...(selection.effort ? { reasoning_effort: selection.effort } : {})
+        }),
     fast: selection.fast
   }
 }

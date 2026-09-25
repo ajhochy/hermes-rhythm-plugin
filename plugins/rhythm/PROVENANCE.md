@@ -4,7 +4,7 @@ Source: Hermes Rhythm feature-pack source tree.
 
 Revision: fork build base `c2133cc477` plus the B1 working-tree packaging and
 host-origin changes recorded in the 2026-09-18 worker report. Vendored UI source
-remains `d676faae5aff11796f39cb5f09031f57d5c5d061`.
+is `98874481285250b7441b68744787051a4b286fc1` (#1540 P4 re-vendor).
 
 Transformation: deterministic local feature-pack build.  The package builder
 stages the declared source, rebuilds the API-only dashboard entry, and emits one

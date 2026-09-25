@@ -1,7 +1,7 @@
 /**
  * Thin host integration for the accepted @ajhochy/rhythm-workspace-ui
  * artifact, built from accepted source revision
- * d676faae5aff11796f39cb5f09031f57d5c5d061 (see vendor provenance).
+ * 98874481285250b7441b68744787051a4b286fc1 (see vendor provenance).
  * The package remains the owner of Dashboard/Tasks JSX and styles; this file
  * owns only the Hermes transport, lifecycle and bounded chat handoff.
  */
@@ -15,6 +15,7 @@ import {
   defaultRhythmTokens,
   RhythmGatewayError,
   RhythmWorkspaceProvider,
+  SharedAgentsScreen,
   TasksScreen,
   PlannerScreen,
   RhythmsScreen,
@@ -37,6 +38,7 @@ import {
 import '../vendor/rhythm-workspace-ui/dist/styles/rhythm.css'
 
 import { rhythmRouteTarget } from './route-state'
+import { createHermesSharedAgentsPort } from './shared-agents'
 
 type Rest = PluginContext['rest']
 type RestFailure = { statusCode?: unknown; status?: unknown; detail?: unknown; body?: unknown; response?: { status?: unknown; statusCode?: unknown; detail?: unknown; body?: unknown; data?: unknown } }
@@ -276,7 +278,7 @@ export function RhythmWorkspace({ rest, openExternal }: { rest: Rest; openExtern
   const gatewayState = useValue(host.state.gateway)
   const [connectionState, setConnectionState] = useState<ConnectionState>('loading')
   const target = rhythmRouteTarget(window.location.hash.split('?')[1] ? `?${window.location.hash.split('?')[1]}` : '')
-  const tab = (['tasks', 'planner', 'rhythms', 'projects', 'facilities', 'messages', 'automations', 'integrations', 'artifacts'] as const).find(candidate => target.includes(`tab=${candidate}`)) ?? 'overview'
+  const tab = (['tasks', 'planner', 'rhythms', 'projects', 'facilities', 'messages', 'automations', 'integrations', 'artifacts', 'agents'] as const).find(candidate => target.includes(`tab=${candidate}`)) ?? 'overview'
   // A changed identity is a synchronous re-home: React unmounts old screen
   // state before the replacement gateway can publish, invalidating stale work.
   const generation = `${connectionId}:${profile}:${gatewayState}`
@@ -322,6 +324,7 @@ export function RhythmWorkspace({ rest, openExternal }: { rest: Rest; openExtern
   const confirmations = useMemo(() => new Map<string, ConfirmationReceipt>(), [generation])
   const gateway = useMemo(() => createGateway(rest, confirmations), [rest, confirmations])
   const artifactHostPort = useMemo(() => createArtifactHostPort(rest), [rest])
+  const sharedAgentsPort = useMemo(() => createHermesSharedAgentsPort(rest), [rest])
   const adapter = useMemo<RhythmHostAdapter>(() => ({
     tokens: defaultRhythmTokens,
     viewport: 'expanded',
@@ -358,7 +361,7 @@ export function RhythmWorkspace({ rest, openExternal }: { rest: Rest; openExtern
 
   return <main className="rhythm-workspace-root" aria-label="Rhythm workspace" data-testid="rhythm-workspace-readonly" data-readonly="false">
     <RhythmWorkspaceProvider gateway={gateway} host={adapter} key={generation}>
-      {tab === 'tasks' ? <TasksScreen /> : tab === 'planner' ? <PlannerScreen /> : tab === 'rhythms' ? <RhythmsScreen /> : tab === 'projects' ? <ProjectsScreen /> : tab === 'facilities' ? <FacilitiesScreen /> : tab === 'messages' ? <MessagesScreen /> : tab === 'automations' ? <AutomationsScreen /> : tab === 'integrations' ? <IntegrationsScreen /> : tab === 'artifacts' ? <ArtifactsScreen artifactsGateway={{ list: async () => (await read<{ items?: Array<{ id: string; title: string; kind: 'document' | 'image' | 'other' }> }>(rest, '/artifacts')).items ?? [] }} artifactHostPort={artifactHostPort} /> : <DashboardScreen />}
+      {tab === 'tasks' ? <TasksScreen /> : tab === 'planner' ? <PlannerScreen /> : tab === 'rhythms' ? <RhythmsScreen /> : tab === 'projects' ? <ProjectsScreen /> : tab === 'facilities' ? <FacilitiesScreen /> : tab === 'messages' ? <MessagesScreen /> : tab === 'automations' ? <AutomationsScreen /> : tab === 'integrations' ? <IntegrationsScreen /> : tab === 'artifacts' ? <ArtifactsScreen artifactsGateway={{ list: async () => (await read<{ items?: Array<{ id: string; title: string; kind: 'document' | 'image' | 'other' }> }>(rest, '/artifacts')).items ?? [] }} artifactHostPort={artifactHostPort} /> : tab === 'agents' ? <SharedAgentsScreen port={sharedAgentsPort} viewport="expanded" /> : <DashboardScreen />}
     </RhythmWorkspaceProvider>
   </main>
 }

@@ -45,6 +45,7 @@ import {
   retireLocalProfileGateways
 } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
+import { setNewChatPolicySelection } from '@/store/policy-selection'
 import {
   $activeGatewayProfile,
   $gatewaySwapTarget,
@@ -246,12 +247,24 @@ export interface NewChatOptions {
   prefill?: string
   profile?: null | string
   source?: NewChatSource
+  /** A host-issued session-policy selection (§5.4) — e.g. a Rhythm
+   *  shared-agent launch. Consumed once by the next `session.create` and
+   *  cleared; malformed values are dropped rather than reaching the gateway. */
+  policySelection?: string
 }
 
 const NEW_CHAT_MAX_PREFILL = 1_024
 const NEW_CHAT_MAX_METADATA_FIELDS = 8
 const NEW_CHAT_MAX_METADATA_VALUE = 120
 const NEW_CHAT_MAX_DRAFT = 2_048
+const POLICY_SELECTION_MAX_LENGTH = 1_024
+const POLICY_SELECTION_RE = /^[A-Za-z0-9:._@-]+$/
+
+function newChatPolicySelection(options: NewChatOptions): string | null {
+  const raw = (options.policySelection ?? '').trim()
+
+  return raw && raw.length <= POLICY_SELECTION_MAX_LENGTH && POLICY_SELECTION_RE.test(raw) ? raw : null
+}
 
 function newChatDraft(options: NewChatOptions): string {
   const prefill = (options.prefill ?? '').trim().slice(0, NEW_CHAT_MAX_PREFILL)
@@ -835,6 +848,10 @@ export const host = {
     // It is intentionally an overwrite: repeated automation/clicks result in
     // exactly one editable draft, with the newest explicit user intent winning.
     stashSessionDraft(null, newChatDraft(options), [])
+    // Own every call's intent: a call without a selection must clear a stale
+    // one from an earlier, never-consumed newChat rather than leaving it for
+    // a later, unrelated session-create to pick up.
+    setNewChatPolicySelection(newChatPolicySelection(options))
     newSessionInProfile((options.profile ?? '').trim() || $activeGatewayProfile.get())
     window.location.hash = '#/'
   },

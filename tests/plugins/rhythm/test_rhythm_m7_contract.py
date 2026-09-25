@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -12,6 +14,7 @@ from fastapi.testclient import TestClient
 
 
 ROOT = Path(__file__).parents[3]
+VENDOR_DIR = ROOT / "plugins/rhythm/desktop/vendor/rhythm-workspace-ui"
 
 
 def _router_module():
@@ -20,13 +23,25 @@ def _router_module():
 
 
 def test_issue_11_vendor_artifact_runtime_is_exact_and_opaque_origin():
-    """Catches a hand-edited or weaker vendored iframe runtime."""
-    runtime = (ROOT / "plugins/rhythm/desktop/vendor/rhythm-workspace-ui/dist/index.js").read_text()
-    source_runtime = Path("/Users/ajhochhalter/.hermes/worktrees/rhythm-feature-pack/integration/packages/rhythm-workspace-ui/dist/index.js").read_text()
-    assert runtime == source_runtime
+    """Catches a hand-edited or weaker vendored iframe runtime, or a vendor/PROVENANCE drift.
+
+    The prior version of this test diffed against a second copy of the built
+    package at a hard-coded path outside the repo
+    (``/Users/ajhochhalter/.hermes/worktrees/...``), which does not exist on a
+    fresh checkout or in CI. The repo's own recorded provenance is the source
+    of truth instead: PROVENANCE.md's SHA-256 for ``index.js`` must match the
+    vendored file byte-for-byte (see plugins/rhythm/desktop/vendor/rhythm-workspace-ui/PROVENANCE.md).
+    """
+    runtime = (VENDOR_DIR / "dist/index.js").read_text()
+    provenance = (VENDOR_DIR / "PROVENANCE.md").read_text()
+    recorded = re.search(r"`index\.js`\s*`([0-9a-f]{64})`", provenance)
+    assert recorded, "PROVENANCE.md must record index.js's SHA-256"
+    assert hashlib.sha256(runtime.encode("utf-8")).hexdigest() == recorded.group(1), (
+        "vendored dist/index.js no longer matches the hash recorded in PROVENANCE.md"
+    )
     for required in ('sandbox: "allow-scripts"', "default-src 'none'", "connect-src 'none'", "form-action 'none'", "base-uri 'none'", "frame-src 'none'", "object-src 'none'", "navigate-to 'none'"):
         assert required in runtime
-    assert "ArtifactHostPort" in (ROOT / "plugins/rhythm/desktop/vendor/rhythm-workspace-ui/dist/index.d.ts").read_text()
+    assert "ArtifactHostPort" in (VENDOR_DIR / "dist/index.d.ts").read_text()
 
 
 def test_issue_11_artifact_capabilities_are_session_bound_and_preserve_conflicts(monkeypatch, tmp_path):

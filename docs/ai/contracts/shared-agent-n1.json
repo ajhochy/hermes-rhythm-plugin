@@ -97,10 +97,10 @@
     {"criterion_id": "UI-7", "text": "Preserve the package public API and forbidden-term invariant.", "mode": "unit", "status": "pending", "test_id": "UI-7"},
     {"criterion_id": "UI-8", "text": "Represent confirmation waits and retain rejected drafts.", "mode": "unit", "status": "pending", "test_id": "UI-8"},
     {"criterion_id": "UI-WEB-1", "text": "Map web adapter routes and conflict and forbidden errors.", "mode": "integration", "status": "pending", "test_id": "UI-WEB-1"},
-    {"criterion_id": "HD-1", "text": "Pass and clear desktop policy selections on session creation.", "mode": "unit", "status": "pending", "test_id": "HD-1"},
-    {"criterion_id": "HD-2", "text": "Use the desktop REST seam without credentials and bound polling.", "mode": "unit", "status": "pending", "test_id": "HD-2"},
-    {"criterion_id": "HD-3", "text": "Match the vendored shared UI provenance hash.", "mode": "unit", "status": "pending", "test_id": "HD-3"},
-    {"criterion_id": "HD-4", "text": "Round-trip the agents tab without adding a desktop route.", "mode": "unit", "status": "pending", "test_id": "HD-4"},
+    {"criterion_id": "HD-1", "text": "Pass and clear desktop policy selections on session creation.", "mode": "unit", "status": "pass", "test_id": "HD-1", "evidence": "npx vitest run src/app/session/hooks/use-session-actions/policy-selection.test.ts (apps/desktop): 2 passed, 0 failed"},
+    {"criterion_id": "HD-2", "text": "Use the desktop REST seam without credentials and bound polling.", "mode": "unit", "status": "pass", "test_id": "HD-2", "evidence": "npx vitest run src/contrib/rhythm-shared-agents.test.tsx (apps/desktop): 8 passed, 0 failed; bounded save-status poll verified with fake timers (~130 polls, then server_error)"},
+    {"criterion_id": "HD-3", "text": "Match the vendored shared UI provenance hash.", "mode": "unit", "status": "pass", "test_id": "HD-3", "evidence": "npx vitest run src/contrib/rhythm-vendor-provenance.test.ts (apps/desktop): 2 passed, 0 failed; tests/plugins/rhythm/test_rhythm_m7_contract.py::test_issue_11_vendor_artifact_runtime_is_exact_and_opaque_origin: 1 passed (re-vendored from 98874481285250b7441b68744787051a4b286fc1)"},
+    {"criterion_id": "HD-4", "text": "Round-trip the agents tab without adding a desktop route.", "mode": "unit", "status": "pass", "test_id": "HD-4", "evidence": "npx vitest run src/contrib/rhythm-shell.test.ts (apps/desktop): 7 passed, 0 failed, including 'HD-4: the agents tab round-trips through rhythmRouteTarget and the desktop route count stays unchanged'"},
     {"criterion_id": "X-1", "text": "Accept and reproduce the Rhythm golden snapshot evaluation vectors.", "mode": "integration", "status": "pending", "test_id": "X-1"}
   ]
 }

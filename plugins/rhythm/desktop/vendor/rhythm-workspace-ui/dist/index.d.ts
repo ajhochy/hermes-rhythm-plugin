@@ -769,4 +769,132 @@ interface QuickActionPreset {
 }
 declare const quickActionPresets: QuickActionPreset[];
 
-export { type ArtifactHostCapability, type ArtifactHostCapabilityMessage, type ArtifactHostCapabilityResult, type ArtifactHostDocument, type ArtifactHostPort, type ArtifactsGateway, ArtifactsScreen, type ArtifactsScreenProps, type AutomationActionType, type AutomationCondition, type AutomationSource, type AutomationsGateway, AutomationsScreen, type CreateAutomationInput, type CreateDashboardTaskInput, type CreateFacilityInput, type CreateReservationInput, type CreateRhythmRhythmInput, type CreateRhythmTaskInput, type DashboardGateway, DashboardScreen, type FacilitiesGateway, FacilitiesScreen, FocusDialog, HeaderTaskAction, Icon, type IconName, type IntegrationAccountStatus, type IntegrationProviderId, type IntegrationsGateway, IntegrationsScreen, type MessageThreadType, type MessagesGateway, MessagesScreen, type PlannerGateway, PlannerScreen, type PreferredAgent, type ProjectInstanceStatus, type ProjectsGateway, ProjectsScreen, type QuickActionPreset, type QuickActionPresetId, RHYTHM_ROOT_CLASS, type RhythmArtifact, type RhythmArtifactKind, type RhythmAutomation, type RhythmCadence, type RhythmCalendarSource, type RhythmCurrentUser, type RhythmDashboardProject, type RhythmDashboardProjectStep, type RhythmDashboardSummary, type RhythmDashboardTask, type RhythmDashboardThreadPreview, type RhythmDomainGateway, type RhythmFacility, RhythmGatewayError, type RhythmGatewayErrorKind, type RhythmGmailSignal, type RhythmHostAdapter, type RhythmHostTokens, type RhythmIntegrationAccount, type RhythmMessage, type RhythmMessageThread, type RhythmPlannerDay, type RhythmPlannerEvent, type RhythmPlannerTask, type RhythmPlannerWeek, type RhythmProject, type RhythmProjectMilestone, type RhythmProjectStep, type RhythmProjectTemplate, type RhythmProjectTemplateStep, type RhythmReservation, type RhythmRhythm, type RhythmScreenId, type RhythmStep, type RhythmTask, type RhythmTaskCollaborator, type RhythmTaskOperationConfirmation, type RhythmThemeMode, type RhythmViewport, type RhythmWorkspaceMember, type RhythmWorkspaceOperationConfirmation, RhythmWorkspaceProvider, type RhythmWorkspaceProviderProps, type RhythmsGateway, RhythmsScreen, type TaskBucket, TaskCreateForm, type TaskCreateMember, type TaskEnergy, type TaskStatus, type TasksGateway, TasksScreen, type UpdateDashboardTaskInput, type UpdateFacilityInput, type UpdateRhythmTaskInput, defaultRhythmTokens, mapHostTokens, quickActionPresets, useRhythmDomainGateway, useRhythmHost };
+interface ListInspectorItem {
+    id: string;
+    title: string;
+    subtitle?: string;
+    meta?: string;
+    badge?: string;
+    badgeTestId?: string;
+    group?: string;
+    disabled?: boolean;
+    testId?: string;
+    testAliases?: string[];
+}
+interface ListInspectorProps {
+    label: string;
+    items: ListInspectorItem[];
+    groups?: Array<{
+        id: string;
+        label: string;
+    }>;
+    selectedId: string | null;
+    onSelect: (id: string) => void;
+    /** Stable host identity. Changing it resets transient query, focus, pane, and split state. */
+    identityKey?: string;
+    toolbar?: ReactNode;
+    inspector: (item: ListInspectorItem | null) => ReactNode;
+    emptyState?: ReactNode;
+    noResultsState?: ReactNode;
+    loadingState?: ReactNode;
+    filterItem?: (item: ListInspectorItem) => boolean;
+    loading?: boolean;
+    error?: ReactNode;
+    searchable?: boolean;
+    searchPlaceholder?: string;
+    searchTestId?: string;
+    className?: string;
+    listWidth?: number;
+    listFooter?: ReactNode;
+    listTestId?: string;
+    emptySelection?: ReactNode;
+}
+/** Controlled, host-neutral list/detail primitive. It owns no route or durable storage. */
+declare function ListInspector({ label, items, groups, selectedId, onSelect, identityKey, toolbar, inspector, emptyState, noResultsState, loadingState, filterItem, loading, error, searchable, searchPlaceholder, searchTestId, className, listWidth, listFooter, listTestId, emptySelection }: ListInspectorProps): react.JSX.Element;
+
+type SplitterOrientation = 'horizontal' | 'vertical';
+type SplitterResizeEdge = 'start' | 'end';
+interface SplitterProps {
+    orientation: SplitterOrientation;
+    min: number;
+    max: number;
+    defaultSize: number;
+    onResize?: (size: number) => void;
+    ariaLabel?: string;
+    resizeEdge?: SplitterResizeEdge;
+    className?: string;
+    testId?: string;
+}
+/** Host-neutral pane resizer. Size is deliberately transient; persistence belongs to the host. */
+declare function Splitter({ orientation, min, max, defaultSize, onResize, ariaLabel, resizeEdge, className, testId }: SplitterProps): react.JSX.Element;
+
+declare const SHARED_AGENT_SCHEMA: "rhythm.shared-agent.v1";
+declare const SHARED_AGENT_CATALOG_SCHEMA: "rhythm.shared-agent-catalog.v1";
+type SharedAgentRuntime = 'opencode' | 'hermes';
+type SharedAgentReadiness = 'supported' | 'unsupported' | 'unavailable' | 'pending-new-session';
+type SharedAgentFieldApplicability = 'enforced' | 'restrictive' | 'blocked' | 'presentation' | 'not-set';
+declare const CANONICAL_FIELDS: readonly ["id", "label", "icon", "enabled", "isAgent", "isManager", "systemPrompt", "allowedMcpsJson", "allowedSkillsJson", "corePermissionsJson", "allowedDelegatesJson", "presetId", "sortOrder", "createdAt", "updatedAt", "revision", "modelProvider", "modelId", "ocAgent", "sessionSelectable", "schedulable", "schedulableOverride", "modelTierHint", "defaultAnthropicAccountId", "imageGenerationEnabled", "reasoningEffort", "locked", "disabledReason", "lockedAt", "lockedBy", "autoApproveActions"];
+type SharedAgentCanonicalField = typeof CANONICAL_FIELDS[number];
+type SharedAgentCanonical = {
+    [K in SharedAgentCanonicalField]: unknown;
+};
+type SharedAgentReasonCode = 'permission_shape_unsupported' | 'external_directory_pattern_unsupported' | 'oc_agent_unsupported' | 'account_binding_unmapped' | 'instructions_blocked_by_scanner' | 'model_unpinned' | 'model_provider_unmapped' | 'reasoning_invalid' | 'terminal_backend_unsupported' | 'agent_id_unsupported' | 'agent_locked' | 'agent_disabled' | 'agent_not_runnable' | 'viewer_unauthenticated' | 'runtime_unowned' | 'bridge_unavailable' | 'runtime_not_connected' | 'runtime_not_reported' | 'model_provider_unavailable' | 'launch_kind_not_allowed' | 'executor_not_ready' | 'mcp_inherit_restricted' | 'mcp_unmapped' | 'skills_not_applied' | 'path_pattern_inert' | 'permission_key_not_applied' | 'write_permission_inert' | 'process_tool_not_applied' | 'image_generation_not_applied' | 'auto_approve_not_applied' | 'model_tier_hint_ignored' | 'schedulable_not_applied' | 'ask_headless_denied' | 'revision_newer_than_session' | 'policy_shape_invalid' | 'projection_version_unsupported' | 'selection_invalid' | 'profile_unsupported' | 'transport_not_allowed' | 'revision_conflict' | 'projection_unsupported' | 'job_not_claimed' | 'lease_invalid' | 'target_revision_changed' | 'cwd_mismatch' | 'cwd_invalid' | 'session_key_reused' | 'binding_mismatch' | 'provider_runtime_mismatch' | 'projection_revoked' | 'rate_limited' | 'provider_failed';
+interface SharedAgentReason {
+    code: SharedAgentReasonCode;
+    field?: SharedAgentCanonicalField;
+    message: string;
+}
+interface SharedAgentRuntimeProjection {
+    runtime: SharedAgentRuntime;
+    readiness: SharedAgentReadiness;
+    reasons: SharedAgentReason[];
+    launchKinds: {
+        interactive: boolean;
+        delegated: boolean;
+    };
+    fields: Record<SharedAgentCanonicalField, SharedAgentFieldApplicability>;
+}
+interface SharedAgent {
+    schema: typeof SHARED_AGENT_SCHEMA;
+    id: string;
+    revision: number;
+    canonical: SharedAgentCanonical;
+    runtimes: {
+        opencode: SharedAgentRuntimeProjection;
+        hermes: SharedAgentRuntimeProjection;
+    };
+}
+interface SharedAgentCatalog {
+    schema: typeof SHARED_AGENT_CATALOG_SCHEMA;
+    generatedAt: string;
+    scope: string;
+    agents: SharedAgent[];
+}
+declare const PRESENTATION_EDIT_FIELDS: readonly ["label", "icon"];
+declare const CONFIRMED_EDIT_FIELDS: readonly ["enabled", "isAgent", "isManager", "systemPrompt", "allowedMcpsJson", "allowedSkillsJson", "corePermissionsJson", "allowedDelegatesJson", "modelProvider", "modelId", "ocAgent", "sessionSelectable", "schedulable", "imageGenerationEnabled", "modelTierHint", "defaultAnthropicAccountId", "reasoningEffort", "autoApproveActions"];
+type SharedAgentEditableField = typeof PRESENTATION_EDIT_FIELDS[number] | typeof CONFIRMED_EDIT_FIELDS[number];
+type SharedAgentEditableValue = string | boolean | null;
+type SharedAgentChanges = Partial<Record<SharedAgentEditableField, SharedAgentEditableValue>>;
+interface SharedAgentsPort {
+    readonly hostRuntime: SharedAgentRuntime;
+    list(): Promise<SharedAgentCatalog>;
+    get(id: string): Promise<SharedAgent>;
+    save(id: string, expectedRevision: number, changes: SharedAgentChanges, opts?: {
+        onConfirmationRequired?: () => void;
+    }): Promise<SharedAgent>;
+    launch?(id: string, expectedRevision: number): Promise<{
+        ok: true;
+    } | {
+        ok: false;
+        reason: string;
+    }>;
+}
+
+interface SharedAgentsScreenProps {
+    port: SharedAgentsPort;
+    readOnly?: boolean;
+    viewport?: RhythmViewport;
+}
+declare function SharedAgentsScreen({ port, readOnly, viewport }: SharedAgentsScreenProps): react.JSX.Element;
+
+export { type ArtifactHostCapability, type ArtifactHostCapabilityMessage, type ArtifactHostCapabilityResult, type ArtifactHostDocument, type ArtifactHostPort, type ArtifactsGateway, ArtifactsScreen, type ArtifactsScreenProps, type AutomationActionType, type AutomationCondition, type AutomationSource, type AutomationsGateway, AutomationsScreen, CANONICAL_FIELDS, CONFIRMED_EDIT_FIELDS, type CreateAutomationInput, type CreateDashboardTaskInput, type CreateFacilityInput, type CreateReservationInput, type CreateRhythmRhythmInput, type CreateRhythmTaskInput, type DashboardGateway, DashboardScreen, type FacilitiesGateway, FacilitiesScreen, FocusDialog, HeaderTaskAction, Icon, type IconName, type IntegrationAccountStatus, type IntegrationProviderId, type IntegrationsGateway, IntegrationsScreen, ListInspector, type ListInspectorItem, type ListInspectorProps, type MessageThreadType, type MessagesGateway, MessagesScreen, PRESENTATION_EDIT_FIELDS, type PlannerGateway, PlannerScreen, type PreferredAgent, type ProjectInstanceStatus, type ProjectsGateway, ProjectsScreen, type QuickActionPreset, type QuickActionPresetId, RHYTHM_ROOT_CLASS, type RhythmArtifact, type RhythmArtifactKind, type RhythmAutomation, type RhythmCadence, type RhythmCalendarSource, type RhythmCurrentUser, type RhythmDashboardProject, type RhythmDashboardProjectStep, type RhythmDashboardSummary, type RhythmDashboardTask, type RhythmDashboardThreadPreview, type RhythmDomainGateway, type RhythmFacility, RhythmGatewayError, type RhythmGatewayErrorKind, type RhythmGmailSignal, type RhythmHostAdapter, type RhythmHostTokens, type RhythmIntegrationAccount, type RhythmMessage, type RhythmMessageThread, type RhythmPlannerDay, type RhythmPlannerEvent, type RhythmPlannerTask, type RhythmPlannerWeek, type RhythmProject, type RhythmProjectMilestone, type RhythmProjectStep, type RhythmProjectTemplate, type RhythmProjectTemplateStep, type RhythmReservation, type RhythmRhythm, type RhythmScreenId, type RhythmStep, type RhythmTask, type RhythmTaskCollaborator, type RhythmTaskOperationConfirmation, type RhythmThemeMode, type RhythmViewport, type RhythmWorkspaceMember, type RhythmWorkspaceOperationConfirmation, RhythmWorkspaceProvider, type RhythmWorkspaceProviderProps, type RhythmsGateway, RhythmsScreen, SHARED_AGENT_CATALOG_SCHEMA, SHARED_AGENT_SCHEMA, type SharedAgent, type SharedAgentCanonical, type SharedAgentCanonicalField, type SharedAgentCatalog, type SharedAgentChanges, type SharedAgentEditableField, type SharedAgentFieldApplicability, type SharedAgentReadiness, type SharedAgentReason, type SharedAgentReasonCode, type SharedAgentRuntime, type SharedAgentRuntimeProjection, type SharedAgentsPort, SharedAgentsScreen, type SharedAgentsScreenProps, Splitter, type SplitterOrientation, type SplitterProps, type SplitterResizeEdge, type TaskBucket, TaskCreateForm, type TaskCreateMember, type TaskEnergy, type TaskStatus, type TasksGateway, TasksScreen, type UpdateDashboardTaskInput, type UpdateFacilityInput, type UpdateRhythmTaskInput, defaultRhythmTokens, mapHostTokens, quickActionPresets, useRhythmDomainGateway, useRhythmHost };

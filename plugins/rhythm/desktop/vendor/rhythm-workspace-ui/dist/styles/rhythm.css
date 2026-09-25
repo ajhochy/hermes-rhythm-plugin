@@ -8,7 +8,9 @@
 @import './screens/dashboard.css';
 /* This is the supported public stylesheet exported as ./styles.css. */
 @import './collaboration.css';
+@import './list-inspector.css';
 @import './operations.css';
+@import './screens/shared-agents.css';
 
 .rhythm-workspace-root {
   background: var(--rhythm-bg);
