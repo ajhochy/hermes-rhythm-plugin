@@ -1770,6 +1770,7 @@ class PluginContext:
         is_async: bool = False,
         description: str = "",
         emoji: str = "",
+        policy_scoped: bool = False,
         override: bool = False,
     ) -> Optional[PluginRegistration]:
         """Register a tool in the global registry **and** track it as plugin-provided.
@@ -1818,6 +1819,7 @@ class PluginContext:
             is_async=is_async,
             description=description,
             emoji=emoji,
+            policy_scoped=policy_scoped,
             override=override,
             scope=scope,
         )

@@ -1559,6 +1559,7 @@ def init_agent(
         enabled_toolsets=enabled_toolsets,
         disabled_toolsets=disabled_toolsets,
         quiet_mode=agent.quiet_mode,
+        session_policy=session_policy,
     )
     if session_policy is not None:
         if session_policy.version == 1 and session_policy.binding.session_id != session_id:

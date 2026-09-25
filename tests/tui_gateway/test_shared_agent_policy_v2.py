@@ -294,6 +294,7 @@ def test_n1_ac13_restore_uses_provider_copy_and_turn_gate_rechecks(tmp_path, mon
     try:
         restored = server._restore_session_policy(row, "lineage-root", "default")
         assert restored.instructions == "SERVER-AUTHORITATIVE"
+        assert restored.binding.owner_id == "owner-v2"
         assert restored.restored_tainted is True
         assert provider.restore_calls == [("projection-v2", {"lineage_root": "lineage-root", "profile_id": "default"})]
         session = {"session_policy": restored, "session_key": "lineage-root"}

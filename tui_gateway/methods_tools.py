@@ -1544,7 +1544,11 @@ def _(rid, params: dict) -> dict:
         # Pre-assembly list: /tools is a discovery surface and must show
         # tools deferred behind the tool_search bridge (same as the CLI).
         tools = get_tool_definitions(enabled_toolsets=enabled, quiet_mode=True,
-                                     skip_tool_search_assembly=True)
+                                     skip_tool_search_assembly=True,
+                                     session_policy=(
+                                         session.get("session_policy")
+                                         if session else None
+                                     ))
         sections = {}
 
         for tool in sorted(tools, key=lambda t: t["function"]["name"]):

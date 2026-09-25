@@ -325,6 +325,7 @@ def get_tool_definitions(
     disabled_toolsets: Optional[List[str]] = None,
     quiet_mode: bool = False,
     skip_tool_search_assembly: bool = False,
+    session_policy=None,
 ) -> List[Dict[str, Any]]:
     """
     Get tool definitions for model API calls with toolset-based filtering.
@@ -340,10 +341,19 @@ def get_tool_definitions(
             tool_search / tool_describe bridge handlers so they can read the
             real catalog, not the already-collapsed one. Public callers should
             leave this False.
+        session_policy: Bound frozen session policy. Policy-scoped tools are
+            offered only to v2 snapshots whose allowlist includes them.
 
     Returns:
         Filtered list of OpenAI-format tool definitions.
     """
+    if session_policy is None:
+        from agent.session_policy import current_policy
+
+        active_policy = current_policy()
+        if active_policy is not None:
+            session_policy = active_policy[0]
+
     # Fast path: memoized result when the caller doesn't need stdout prints.
     # The cache key captures every argument-level input; the registry
     # generation captures registry mutations (MCP refresh, plugin load).
@@ -374,6 +384,12 @@ def get_tool_definitions(
                 _is_delegated_child_context(),
                 _is_dispatcher_owned_worker(),
                 profile_scope,
+                (
+                    2,
+                    tuple(session_policy.allowed_tools or ()),
+                )
+                if getattr(session_policy, "version", None) == 2
+                else None,
             )
         with _tool_defs_cache_lock:
             cached = _tool_defs_cache.get(cache_key) if cache_key is not None else None
@@ -386,8 +402,13 @@ def get_tool_definitions(
             # schemas are treated as read-only by all known callers.
             return list(cached)
 
-    result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode,
-                                       skip_tool_search_assembly=skip_tool_search_assembly)
+    result = _compute_tool_definitions(
+        enabled_toolsets,
+        disabled_toolsets,
+        quiet_mode,
+        skip_tool_search_assembly=skip_tool_search_assembly,
+        session_policy=session_policy,
+    )
     if quiet_mode and cache_key is not None:
         # Cache the freshly-computed list, but hand callers a shallow copy so
         # downstream mutations (e.g. run_agent appending memory/LCM tool
@@ -419,6 +440,7 @@ def _compute_tool_definitions(
     disabled_toolsets: Optional[List[str]] = None,
     quiet_mode: bool = False,
     skip_tool_search_assembly: bool = False,
+    session_policy=None,
 ) -> List[Dict[str, Any]]:
     """Uncached implementation of :func:`get_tool_definitions`."""
     # Determine which tool names the caller wants
@@ -506,8 +528,14 @@ def _compute_tool_definitions(
     # needed; plugins respect enabled_toolsets / disabled_toolsets like any
     # other toolset.
 
-    # Ask the registry for schemas (only returns tools whose check_fn passes)
-    filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
+    # Ask the registry for schemas. It owns both check_fn availability and the
+    # fail-closed policy-scoped registration gate so direct schema consumers
+    # cannot bypass the session-aware model_tools path.
+    filtered_tools = registry.get_definitions(
+        tools_to_include,
+        quiet=quiet_mode,
+        session_policy=session_policy,
+    )
 
     # The set of tool names that actually passed check_fn filtering.
     # Use this (not tools_to_include) for any downstream schema that references
@@ -1240,6 +1268,16 @@ def handle_function_call(
         function_args = {}
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
 
+    entry = registry.get_entry(function_name)
+    if entry is not None and entry.policy_scoped:
+        from agent.session_policy import policy_scoped_tool_available
+
+        if not policy_scoped_tool_available(function_name, session_policy):
+            return tool_error(
+                "policy_scoped_tool_unavailable",
+                code="policy_scoped_tool_unavailable",
+            )
+
     # ── Tool Search bridge dispatch ──────────────────────────────────
     # tool_search and tool_describe are pure catalog reads — handle them
     # inline. tool_call is unwrapped to the underlying tool so that every
@@ -1286,7 +1324,9 @@ def handle_function_call(
             current_defs = get_tool_definitions(
                 enabled_toolsets=enabled_toolsets,
                 disabled_toolsets=disabled_toolsets,
-                quiet_mode=True, skip_tool_search_assembly=True,
+                quiet_mode=True,
+                skip_tool_search_assembly=True,
+                session_policy=session_policy,
             ) or []
             if session_policy is not None:
                 current_defs = session_policy.filter_tool_schemas(

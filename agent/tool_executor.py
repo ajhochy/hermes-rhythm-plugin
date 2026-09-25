@@ -377,11 +377,18 @@ def _tool_search_scoped_names(agent) -> frozenset:
 
     enabled = getattr(agent, "enabled_toolsets", None)
     disabled = getattr(agent, "disabled_toolsets", None)
+    session_policy = getattr(agent, "session_policy", None)
     cache_key = (
         _registry.current_scope_key(),
         getattr(_registry, "_generation", 0),
         frozenset(enabled) if enabled is not None else None,
         frozenset(disabled) if disabled is not None else None,
+        (
+            2,
+            tuple(getattr(session_policy, "allowed_tools", ()) or ()),
+        )
+        if getattr(session_policy, "version", None) == 2
+        else None,
     )
     cached = getattr(agent, "_tool_search_scope_cache", None)
     if cached is not None and cached[0] == cache_key:
@@ -392,6 +399,7 @@ def _tool_search_scoped_names(agent) -> frozenset:
             disabled_toolsets=disabled,
             quiet_mode=True,
             skip_tool_search_assembly=True,
+            session_policy=session_policy,
         ) or []
         names = _ts.scoped_deferrable_names(scoped_defs)
     except Exception:
@@ -619,7 +627,22 @@ def _run_agent_tool_execution_middleware(
             begin_execution(callback)
 
         block_message = scope_block
+        block_code = None
         block_error_type = "tool_scope_block"
+        from agent.session_policy import policy_scoped_tool_available
+        from tools.registry import registry
+
+        entry = registry.get_entry(function_name)
+        if (
+            entry is not None
+            and entry.policy_scoped
+            and not policy_scoped_tool_available(
+                function_name, getattr(agent, "session_policy", None)
+            )
+        ):
+            block_message = "policy_scoped_tool_unavailable"
+            block_code = "policy_scoped_tool_unavailable"
+            block_error_type = "policy_scoped_tool_unavailable"
         if block_message is None:
             block_error_type = "plugin_block"
 
@@ -694,7 +717,10 @@ def _run_agent_tool_execution_middleware(
             _advance_start_order()
             state["blocked"] = True
             if block_message is not None:
-                result = json.dumps({"error": block_message}, ensure_ascii=False)
+                result_payload = {"error": block_message}
+                if block_code is not None:
+                    result_payload["code"] = block_code
+                result = json.dumps(result_payload, ensure_ascii=False)
                 error_type = block_error_type
                 error_message = block_message
             else:

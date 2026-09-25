@@ -221,6 +221,22 @@ def current_policy() -> tuple["SessionPolicySnapshot", str] | None:
     return _active_policy.get()
 
 
+def policy_scoped_tool_available(
+    tool_name: str,
+    snapshot: "SessionPolicySnapshot" | None = None,
+) -> bool:
+    """Return whether a policy-scoped tool belongs to a bound v2 snapshot."""
+    if snapshot is None:
+        active = current_policy()
+        snapshot = active[0] if active is not None else None
+    return bool(
+        isinstance(snapshot, SessionPolicySnapshot)
+        and snapshot.version == 2
+        and snapshot.allowed_tools is not None
+        and tool_name in snapshot.allowed_tools
+    )
+
+
 def _strictest(*effects: str) -> str:
     return max(effects, key=_STRICTNESS.__getitem__)
 
