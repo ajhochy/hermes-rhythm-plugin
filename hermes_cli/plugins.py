@@ -4335,6 +4335,11 @@ class PluginManager:
         # don't collide even when both manifests say ``name: openai``.
         disabled = _get_disabled_plugins()
         enabled = _get_enabled_plugins()  # None = opt-in default (nothing enabled)
+        required = {
+            name.strip()
+            for name in os.environ.get("HERMES_HOST_REQUIRED_PLUGINS", "").split(",")
+            if name.strip()
+        }
         stale_relay_keys = legacy_relay_plugin_keys(enabled)
         if stale_relay_keys:
             logger.warning(
@@ -4346,12 +4351,27 @@ class PluginManager:
         winners: Dict[str, PluginManifest] = {}
         for manifest in manifests:
             winners[manifest.key or manifest.name] = manifest
+        # A trusted embedded host may require a bundled integration without
+        # mutating the user's opt-in plugin config. Never grant this shortcut
+        # to user, project, or entry-point code, including name collisions.
+        for manifest in manifests:
+            lookup_key = manifest.key or manifest.name
+            if manifest.source == "bundled" and (
+                manifest.name in required or lookup_key in required
+            ):
+                winners[lookup_key] = manifest
         # Standalone/user plugins that pass the gates below are collected
         # here and loaded AFTER the sweep in dependency-respecting order
         # (requires_plugins topological sort, #64165).
         to_load: Dict[str, PluginManifest] = {}
         for manifest in winners.values():
             lookup_key = manifest.key or manifest.name
+
+            if manifest.source == "bundled" and (
+                manifest.name in required or lookup_key in required
+            ):
+                to_load[lookup_key] = manifest
+                continue
 
             action, gated = self._classify_manifest_load(
                 manifest, lookup_key, disabled, enabled

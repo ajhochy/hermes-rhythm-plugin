@@ -375,6 +375,11 @@ const CHILD_BINARY_DIRS = process.platform === 'win32'
   ? ['C:\\Windows\\System32', 'C:\\Windows']
   : [path.join(os.userInfo().homedir, '.local', 'bin'), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin']
 const APPROVED_BROKER_KEYS = ['OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GOOGLE_API_KEY'] as const
+const HOST_CAPABILITY_TOKEN_KEY = 'HERMES_HOST_CAPABILITY_RHYTHM_BRIDGE'
+const HOST_CAPABILITY_ORIGIN_KEY = 'HERMES_HOST_CAPABILITY_RHYTHM_BRIDGE_ORIGIN'
+const HOST_CAPABILITY_TOKEN_RE = /^[A-Za-z0-9_-]{43}$/
+const HOST_CAPABILITY_ORIGIN_RE = /^http:\/\/127\.0\.0\.1:([1-9][0-9]{0,4})$/
+const activeHostCapabilityFiles = new WeakMap<EmbeddedHermesHostOptions, Set<string>>()
 
 function resolveBinary(command: string) {
   const entries = CHILD_BINARY_DIRS
@@ -416,7 +421,8 @@ function controlledChildEnv(options: EmbeddedHermesHostOptions, token: string): 
     LANG: 'C.UTF-8',
     HERMES_HOME: home,
     HERMES_DASHBOARD_SESSION_TOKEN: token,
-    HERMES_DESKTOP: '1'
+    HERMES_DESKTOP: '1',
+    HERMES_HOST_REQUIRED_PLUGINS: 'rhythm'
   }
   if (process.platform === 'win32') {
     env.SystemRoot = 'C:\\Windows'
@@ -425,9 +431,66 @@ function controlledChildEnv(options: EmbeddedHermesHostOptions, token: string): 
   return env
 }
 
-async function brokeredChildEnv(options: EmbeddedHermesHostOptions, env: NodeJS.ProcessEnv, profile?: string): Promise<{ names: BrokeredKeyName[]; values: string[] }> {
-  const empty = () => ({ names: [] as BrokeredKeyName[], values: [] as string[] })
+function removeHostCapabilityFile(options: EmbeddedHermesHostOptions, handoffPath?: string) {
+  if (!handoffPath) return
+  activeHostCapabilityFiles.get(options)?.delete(handoffPath)
+  try { fs.unlinkSync(handoffPath) } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') logLine(options.log, 'Failed to remove host capability handoff.')
+  }
+}
+
+function cleanupStaleHostCapabilityFiles(options: EmbeddedHermesHostOptions) {
+  const temp = path.resolve(options.userDataPath, 'hermes-temp')
+  fs.mkdirSync(temp, { recursive: true, mode: 0o700 })
+  const active = activeHostCapabilityFiles.get(options) || new Set<string>()
+  activeHostCapabilityFiles.set(options, active)
+  try {
+    for (const name of fs.readdirSync(temp)) {
+      if (!name.startsWith('host-capabilities-') || !name.endsWith('.json')) continue
+      const candidate = path.join(temp, name)
+      if (active.has(candidate)) continue
+      try { fs.unlinkSync(candidate) } catch { /* A concurrent cleanup is harmless. */ }
+    }
+  } catch { /* The exclusive create below remains authoritative. */ }
+  return { active, temp }
+}
+
+function writeHostCapabilityHandoff(
+  options: EmbeddedHermesHostOptions,
+  attemptId: string,
+  result: Record<string, string>
+): { path?: string; token?: string } {
+  const token = result[HOST_CAPABILITY_TOKEN_KEY]
+  const origin = result[HOST_CAPABILITY_ORIGIN_KEY]
+  const match = typeof origin === 'string' ? HOST_CAPABILITY_ORIGIN_RE.exec(origin) : null
+  if (typeof token !== 'string' || !HOST_CAPABILITY_TOKEN_RE.test(token) || !match || Number(match[1]) > 65535) {
+    return {}
+  }
+
+  const { active, temp } = cleanupStaleHostCapabilityFiles(options)
+
+  const handoffPath = path.join(temp, `host-capabilities-${attemptId}.json`)
+  let fd: number | undefined
+  try {
+    fd = fs.openSync(handoffPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600)
+    fs.writeFileSync(fd, JSON.stringify({
+      version: 1,
+      capabilities: { rhythm_bridge: { token, origin } }
+    }), 'utf8')
+  } catch (error) {
+    try { if (fd !== undefined) fs.closeSync(fd) } catch { /* best effort */ }
+    try { fs.unlinkSync(handoffPath) } catch { /* best effort */ }
+    throw error
+  }
+  fs.closeSync(fd)
+  active.add(handoffPath)
+  return { path: handoffPath, token }
+}
+
+async function brokeredChildEnv(options: EmbeddedHermesHostOptions, env: NodeJS.ProcessEnv, profile: string | undefined, attemptId: string): Promise<{ names: BrokeredKeyName[]; values: string[]; handoffPath?: string }> {
+  const empty = () => ({ names: [] as BrokeredKeyName[], values: [] as string[], handoffPath: undefined })
   if (profile && profile !== 'default') return empty()
+  cleanupStaleHostCapabilityFiles(options)
   const context = options.backendEnvContext
   if (!options.backendEnv || !context || !validEnvValue(context.serverOrigin) ||
     !validEnvValue(context.rhythmUserId) || !validEnvValue(context.authGeneration)) return empty()
@@ -461,7 +524,13 @@ async function brokeredChildEnv(options: EmbeddedHermesHostOptions, env: NodeJS.
       if (validEnvValue(value)) staged.push([key, value])
     }
     for (const [key, value] of staged) env[key] = value
-    return { names: staged.map(([name]) => name), values: staged.map(([, value]) => value) }
+    const capability = writeHostCapabilityHandoff(options, attemptId, result)
+    if (capability.path) env.HERMES_HOST_CAPABILITIES_FILE = capability.path
+    return {
+      names: staged.map(([name]) => name),
+      values: [...staged.map(([, value]) => value), ...(capability.token ? [capability.token] : [])],
+      handoffPath: capability.path
+    }
   } catch {
     logLine(options.log, 'Credential broker unavailable; starting without grants.')
     return empty()
@@ -482,9 +551,10 @@ async function prepareNativeOwnedAttempt(options: EmbeddedHermesHostOptions, pro
   let granted: Awaited<ReturnType<typeof brokeredChildEnv>>
   try {
     env = controlledChildEnv(options, token)
-    granted = await brokeredChildEnv(options, env, profile)
+    granted = await brokeredChildEnv(options, env, profile, attemptId)
     if (isDisposed()) {throw new Error('Embedded Hermes host was disposed while a native backend was starting.')}
   } catch (error) {
+    removeHostCapabilityFile(options, granted?.handoffPath)
     if (isDefault && options.onOwnedBackendAttempt) {
       try {
         observe({ attemptId, phase: 'retired', profile: 'default', acceptedEnvNames: Object.freeze([]), cause: 'failed' })
@@ -509,6 +579,7 @@ async function prepareNativeOwnedAttempt(options: EmbeddedHermesHostOptions, pro
     retire: (cause: 'failed' | 'exited' | 'disposed') => {
       if (retired) {return}
       retired = true
+      removeHostCapabilityFile(options, granted.handoffPath)
       if (isDefault && options.onOwnedBackendAttempt) {
         try {
           observe({ attemptId, phase: 'retired', profile: 'default', acceptedEnvNames: Object.freeze([]), cause })
@@ -616,11 +687,13 @@ function createSpawnRuntime(options: EmbeddedHermesHostOptions): EmbeddedRuntime
         let accepted = false
         let retired = false
         let child: ChildProcess | undefined
+        let hostCapabilityPath: string | undefined
         let retiredListener: (() => void) | undefined
         const observe = (event: OwnedBackendAttemptEvent) => options.onOwnedBackendAttempt?.(Object.freeze(event))
         const retire = (cause: 'failed' | 'exited' | 'disposed') => {
           if (retired) {return}
           retired = true
+          removeHostCapabilityFile(options, hostCapabilityPath)
           if (connections.get(profileKey) === pending) {connections.delete(profileKey)}
           retiredListener?.()
           if (started) {
@@ -636,7 +709,8 @@ function createSpawnRuntime(options: EmbeddedHermesHostOptions): EmbeddedRuntime
           const token = crypto.randomBytes(32).toString('base64url')
           const args = [...(!isDefault ? ['--profile', profileKey] : []), 'serve', '--host', '127.0.0.1', '--port', '0']
           const env = controlledChildEnv(options, token)
-          const granted = await brokeredChildEnv(options, env, profile)
+          const granted = await brokeredChildEnv(options, env, profile, attemptId)
+          hostCapabilityPath = granted.handoffPath
           const hermes = resolveHermesBinary(env.HERMES_HOME)
 
           child = spawn(hermes, args, {

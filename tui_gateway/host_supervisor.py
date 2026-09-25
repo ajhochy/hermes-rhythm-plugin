@@ -128,6 +128,23 @@ def is_compute_host_identity(pid: int) -> bool:
     return "tui_gateway.compute_host" in cmd
 
 
+def _compute_host_child_env(overrides: dict[str, str] | None = None) -> dict[str, str]:
+    """Build the compute environment without transferring host authority."""
+    env = hermes_subprocess_env(inherit_credentials=True)
+    if overrides:
+        env.update(overrides)
+    for key in list(env):
+        if key.startswith("HERMES_HOST_CAPABILIT"):
+            env.pop(key, None)
+    return env
+
+
+def _host_capabilities_frame() -> dict[str, Any]:
+    from agent.host_capabilities import export_for_child
+
+    return {"type": "host_capabilities", "capabilities": export_for_child()}
+
+
 class HostSupervisor:
     """Own one persistent compute-host child and relay its frames."""
 
@@ -315,10 +332,7 @@ class HostSupervisor:
             raise RuntimeError("compute host respawn disabled after crash loop")
         self._hello_event.clear()
         self._hello = {}
-        env = hermes_subprocess_env(inherit_credentials=True)
-        env.update(os.environ)
-        if self.env:
-            env.update(self.env)
+        env = _compute_host_child_env(self.env)
         env["HERMES_COMPUTE_HOST_HEARTBEAT_SECS"] = str(self.heartbeat_secs)
         env.setdefault("PYTHONPATH", str(_repo_root()))
         if str(_repo_root()) not in env["PYTHONPATH"].split(os.pathsep):
@@ -350,6 +364,7 @@ class HostSupervisor:
             self._terminate_process(proc)
             raise RuntimeError(f"compute host did not send hello; stderr={self._stderr_tail[-5:]}")
         self._validate_hello()
+        self._send_frame(_host_capabilities_frame())
         self._persist_registry()
         logger.info("compute host started pid=%s reason=%s", proc.pid, reason)
 
