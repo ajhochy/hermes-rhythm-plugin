@@ -34,5 +34,6 @@
     "forbidden_port_dependency"
   ],
   "embed_electron_allowed": false,
-  "embed_second_agent_ui_allowed": false
+  "embed_second_agent_ui_allowed": false,
+  "shared_agent_catalog_allowed": true
 }

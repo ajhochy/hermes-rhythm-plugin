@@ -10,11 +10,47 @@ violation via a synthetic fixture, not just that the current (still-empty)
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+
+BRIDGE_OPERATIONS = [
+    {"op": "catalog.list", "scope": "catalog.read", "method": "GET", "path": "/catalog"},
+    {"op": "catalog.get", "scope": "catalog.read", "method": "GET", "path": "/catalog/{agentId}"},
+    {"op": "runtime.report", "scope": "runtime.report", "method": "POST", "path": "/runtime/report"},
+    {"op": "agent.patch", "scope": "agent.write", "method": "POST", "path": "/agents/{agentId}/patch"},
+    {"op": "agent.patch-status", "scope": "agent.write", "method": "POST", "path": "/agents/{agentId}/patch-status"},
+    {"op": "projection.issue", "scope": "projection.issue", "method": "POST", "path": "/projections"},
+    {"op": "projection.check", "scope": "projection.issue", "method": "POST", "path": "/projections/{projectionId}/check"},
+    {"op": "delegation.dispatch", "scope": "delegation.dispatch", "method": "POST", "path": "/delegations"},
+    {"op": "delegation.status", "scope": "delegation.dispatch", "method": "POST", "path": "/delegations/query"},
+    {"op": "delegation.result", "scope": "delegation.dispatch", "method": "POST", "path": "/delegations/{jobId}/result"},
+    {"op": "delegation.cancel", "scope": "delegation.dispatch", "method": "POST", "path": "/delegations/{jobId}/cancel"},
+    {"op": "delegation.claim", "scope": "delegation.execute", "method": "POST", "path": "/delegations/claim"},
+    {"op": "delegation.report", "scope": "delegation.execute", "method": "POST", "path": "/delegations/{jobId}/report"},
+    {"op": "memory.search", "scope": "memory.search", "method": "POST", "path": "/memory/search"},
+]
+
+SHARED_AGENT_TEST_IDS = [
+    "C0-R1", "C0-H1", "C0-H2", "C0-H3",
+    *(f"SA-CAT-{i}" for i in range(1, 6)),
+    *(f"SA-PROJ-{i}" for i in range(1, 12)),
+    *(f"SA-AUTH-{i}" for i in range(1, 7)),
+    *(f"SA-PATCH-{i}" for i in range(1, 3)),
+    *(f"SA-DEL-{i}" for i in range(1, 10)),
+    *(f"SA-MEM-{i}" for i in range(1, 4)),
+    "MCP-DEL-1", "SA-LIVE-1",
+    *(f"EB-{i}" for i in range(1, 10)),
+    *(f"N1-AC{i}" for i in range(1, 17)), "N1-LIVE-1",
+    *(f"HP-{i}" for i in range(1, 8)),
+    *(f"RP-{i}" for i in range(1, 10)),
+    *(f"UI-{i}" for i in range(1, 9)), "UI-WEB-1",
+    *(f"HD-{i}" for i in range(1, 5)),
+    "X-1",
+]
 
 
 # ── Contract files exist, parse, and have the expected shape ──────────────
@@ -49,6 +85,14 @@ class TestContractFilesLoad:
         assert contract["contract"] == "rhythm-first-slice-architecture"
         assert contract["owner_root"] == "plugins/rhythm"
 
+    def test_shared_agent_n1_contract_lists_each_frozen_test_once(self):
+        contract_path = REPO_ROOT / "docs" / "ai" / "contracts" / "shared-agent-n1.json"
+        contract = json.loads(contract_path.read_text(encoding="utf-8"))
+        test_ids = [criterion["test_id"] for criterion in contract["criteria"]]
+
+        assert len(test_ids) == len(set(test_ids))
+        assert set(test_ids) == set(SHARED_AGENT_TEST_IDS)
+
 
 # ── Ownership contract ──────────────────────────────────────────────────
 
@@ -65,6 +109,32 @@ class TestOwnershipContract:
         from plugins.rhythm.contracts.validate import is_path_owned
 
         assert is_path_owned("plugins/rhythm/package/src/index.ts") is True
+
+    def test_shared_agent_slices_have_exact_owned_file_lists(self):
+        from plugins.rhythm.contracts.validate import load_contract
+
+        contract = load_contract("ownership")
+        assert contract["shared_agent_slices"] == {
+            "S5": [
+                "plugins/rhythm/shared_agents.py",
+                "plugins/rhythm/agent_bridge.py",
+                "plugins/rhythm/bridge_tools.py",
+                "plugins/rhythm/delegation_worker.py",
+                "plugins/rhythm/dashboard/shared_agents_api.py",
+                "plugins/rhythm/__init__.py",
+                "plugins/rhythm/plugin.yaml",
+                "plugins/rhythm/dashboard/plugin_api.py",
+            ],
+            "S7": [
+                "apps/desktop/src/store/policy-selection.ts",
+                "apps/desktop/src/sdk/index.ts",
+                "apps/desktop/src/app/session/hooks/use-session-actions/index.ts",
+                "plugins/rhythm/desktop/src/shared-agents.tsx",
+                "plugins/rhythm/desktop/src/plugin.tsx",
+                "plugins/rhythm/desktop/src/route-state.ts",
+                "plugins/rhythm/desktop/vendor/rhythm-workspace-ui/**",
+            ],
+        }
 
 
 # ── Permission contract ────────────────────────────────────────────────
@@ -127,6 +197,12 @@ class TestApiOperationsContract:
             "readback": "200_matching_canonical_or_conflict", "ambiguous": "uncertain_never_success",
         }]
 
+    def test_bridge_operations_equal_frozen_runtime_table(self):
+        from plugins.rhythm.contracts.validate import load_contract
+
+        contract = load_contract("api-operations")
+        assert contract["bridge_operations"] == BRIDGE_OPERATIONS
+
 
 # ── Architecture contract: structural ───────────────────────────────────
 
@@ -146,6 +222,14 @@ class TestArchitectureContractStructure:
         assert contract["embed_electron_allowed"] is False
         assert contract["embed_second_agent_ui_allowed"] is False
 
+    def test_shared_agent_catalog_is_the_only_second_surface_exception(self):
+        from plugins.rhythm.contracts.validate import load_contract
+
+        contract = load_contract("architecture")
+        assert contract["shared_agent_catalog_allowed"] is True
+        assert contract["embed_second_agent_ui_allowed"] is False
+        assert contract["desktop_routes"]["allowed"] == ["/rhythm"]
+
     def test_current_repo_tree_is_clean(self):
         from plugins.rhythm.contracts.validate import validate_architecture
 
@@ -156,6 +240,26 @@ class TestArchitectureContractStructure:
 
 
 class TestArchitectureScanners:
+    def test_loopback_origin_validator_is_allowed_but_literal_4001_is_not(
+        self, tmp_path
+    ):
+        from plugins.rhythm.contracts.validate import validate_architecture
+
+        target = tmp_path / "plugins" / "rhythm" / "agent_bridge.py"
+        target.parent.mkdir(parents=True)
+        target.write_text(
+            "import re\n"
+            "LOOPBACK_ORIGIN = re.compile(\n"
+            "    r'^http://127\\.0\\.0\\.1:([1-9][0-9]{0,4})$'\n"
+            ")\n",
+            encoding="utf-8",
+        )
+        assert validate_architecture(tmp_path) == []
+
+        target.write_text("BRIDGE_ORIGIN = 'http://127.0.0.1:4001'\n", encoding="utf-8")
+        violations = validate_architecture(tmp_path)
+        assert any("4001" in violation for violation in violations)
+
     def test_detects_hardcoded_port_4001_dependency(self, tmp_path):
         from plugins.rhythm.contracts.validate import scan_port_dependency_violations
 

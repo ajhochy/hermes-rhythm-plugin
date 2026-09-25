@@ -8,6 +8,27 @@
   "shared_seams": [
     "apps/desktop/src/contrib/**"
   ],
+  "shared_agent_slices": {
+    "S5": [
+      "plugins/rhythm/shared_agents.py",
+      "plugins/rhythm/agent_bridge.py",
+      "plugins/rhythm/bridge_tools.py",
+      "plugins/rhythm/delegation_worker.py",
+      "plugins/rhythm/dashboard/shared_agents_api.py",
+      "plugins/rhythm/__init__.py",
+      "plugins/rhythm/plugin.yaml",
+      "plugins/rhythm/dashboard/plugin_api.py"
+    ],
+    "S7": [
+      "apps/desktop/src/store/policy-selection.ts",
+      "apps/desktop/src/sdk/index.ts",
+      "apps/desktop/src/app/session/hooks/use-session-actions/index.ts",
+      "plugins/rhythm/desktop/src/shared-agents.tsx",
+      "plugins/rhythm/desktop/src/plugin.tsx",
+      "plugins/rhythm/desktop/src/route-state.ts",
+      "plugins/rhythm/desktop/vendor/rhythm-workspace-ui/**"
+    ]
+  },
   "forbidden_paths": [
     "cli.py",
     "run_agent.py",

@@ -2,6 +2,22 @@
   "contract": "rhythm-api-operations",
   "version": 1,
   "description": "Which Rhythm API operations are permitted at each campaign milestone. Credentials stay server-side; the desktop/renderer side never receives raw Rhythm tokens.",
+  "bridge_operations": [
+    {"op": "catalog.list", "scope": "catalog.read", "method": "GET", "path": "/catalog"},
+    {"op": "catalog.get", "scope": "catalog.read", "method": "GET", "path": "/catalog/{agentId}"},
+    {"op": "runtime.report", "scope": "runtime.report", "method": "POST", "path": "/runtime/report"},
+    {"op": "agent.patch", "scope": "agent.write", "method": "POST", "path": "/agents/{agentId}/patch"},
+    {"op": "agent.patch-status", "scope": "agent.write", "method": "POST", "path": "/agents/{agentId}/patch-status"},
+    {"op": "projection.issue", "scope": "projection.issue", "method": "POST", "path": "/projections"},
+    {"op": "projection.check", "scope": "projection.issue", "method": "POST", "path": "/projections/{projectionId}/check"},
+    {"op": "delegation.dispatch", "scope": "delegation.dispatch", "method": "POST", "path": "/delegations"},
+    {"op": "delegation.status", "scope": "delegation.dispatch", "method": "POST", "path": "/delegations/query"},
+    {"op": "delegation.result", "scope": "delegation.dispatch", "method": "POST", "path": "/delegations/{jobId}/result"},
+    {"op": "delegation.cancel", "scope": "delegation.dispatch", "method": "POST", "path": "/delegations/{jobId}/cancel"},
+    {"op": "delegation.claim", "scope": "delegation.execute", "method": "POST", "path": "/delegations/claim"},
+    {"op": "delegation.report", "scope": "delegation.execute", "method": "POST", "path": "/delegations/{jobId}/report"},
+    {"op": "memory.search", "scope": "memory.search", "method": "POST", "path": "/memory/search"}
+  ],
   "milestones": {
     "M0": {
       "allowed_operations": [],
