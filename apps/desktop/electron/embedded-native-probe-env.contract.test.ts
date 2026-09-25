@@ -56,24 +56,31 @@ test('embedded native resolver version and serve-support helpers receive no ambi
   fs.mkdirSync(bin)
   fs.mkdirSync(home)
   fixture.executable = path.join(bin, 'hermes')
-  const capture = (target: string) => `: > '${target}'\n[ -n "$OPENAI_API_KEY" ] && echo OPENAI_API_KEY >> '${target}'\n[ -n "$HTTPS_PROXY" ] && echo HTTPS_PROXY >> '${target}'\n[ -n "$NODE_PATH" ] && echo NODE_PATH >> '${target}'\n`
+  const capture = (target: string) => `: > '${target}'\n[ -n "$OPENAI_API_KEY" ] && echo OPENAI_API_KEY >> '${target}'\n[ -n "$ANTHROPIC_API_KEY" ] && echo ANTHROPIC_API_KEY >> '${target}'\n[ -n "$HTTPS_PROXY" ] && echo HTTPS_PROXY >> '${target}'\n[ -n "$NODE_OPTIONS" ] && echo NODE_OPTIONS >> '${target}'\n[ -n "$NODE_PATH" ] && echo NODE_PATH >> '${target}'\n[ -n "$HERMES_DASHBOARD_SESSION_TOKEN" ] && echo HERMES_DASHBOARD_SESSION_TOKEN >> '${target}'\n`
   fs.writeFileSync(fixture.executable, `#!/bin/sh\nif [ "$1" = '--version' ]; then\n${capture(versionNames)}exit 0\nfi\n${capture(serveNames)}exit 0\n`)
   fs.chmodSync(fixture.executable, 0o755)
-  const keys = ['PATH', 'OPENAI_API_KEY', 'HTTPS_PROXY', 'NODE_PATH', 'HERMES_DESKTOP_HERMES'] as const
+  const keys = ['PATH', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'HTTPS_PROXY', 'NODE_OPTIONS', 'NODE_PATH', 'HERMES_DASHBOARD_SESSION_TOKEN', 'HERMES_DESKTOP_HERMES'] as const
   const before = Object.fromEntries(keys.map(key => [key, process.env[key]]))
+  let probeCalls = 0
   let runtime: ReturnType<typeof initializeDesktopNativeRuntime> | undefined
   try {
     process.env.PATH = `${bin}:/usr/bin:/bin`
     process.env.OPENAI_API_KEY = 'synthetic-credential-never-forward'
+    process.env.ANTHROPIC_API_KEY = 'synthetic-credential-never-forward'
     process.env.HTTPS_PROXY = 'http://synthetic-proxy.invalid:9999'
+    process.env.NODE_OPTIONS = '--synthetic-loader-option'
     process.env.NODE_PATH = '/synthetic-loader'
+    process.env.HERMES_DASHBOARD_SESSION_TOKEN = 'synthetic-dashboard-token-never-forward'
     delete process.env.HERMES_DESKTOP_HERMES
     const contents = { getURL: () => 'file:///tmp/synthetic-hermes-artifact/renderer/index.html', isDestroyed: () => false, send: fixture.noop }
     runtime = initializeDesktopNativeRuntime({
       mode: 'embedded', paths: { assetRoot: '/tmp/synthetic-hermes-artifact', hermesHome: home, userData: path.join(root, 'user-data') },
       backend: { ensure: async () => null, gatewayWsUrl: async () => null, handleApi: async () => null, disposeOwned: fixture.noop },
       ownedSpawn: {
-        probeEnv: () => ({ PATH: `${bin}:/usr/bin:/bin`, HOME: root, HERMES_HOME: home }),
+        probeEnv: () => {
+          probeCalls += 1
+          return { PATH: `${bin}:/usr/bin:/bin`, HOME: root, HERMES_HOME: home }
+        },
         prepare: async () => { throw new Error('fixture stops before long-lived backend spawn') }
       },
       windowAdapter: {
@@ -90,6 +97,7 @@ test('embedded native resolver version and serve-support helpers receive no ambi
     assert.ok(fs.existsSync(serveNames), 'the actual resolver must run the synthetic serve --help helper')
     assert.equal(fs.readFileSync(versionNames, 'utf8'), '')
     assert.equal(fs.readFileSync(serveNames, 'utf8'), '')
+    assert.equal(probeCalls, 3, 'each resolver helper must use one host-supplied environment snapshot')
   } finally {
     await runtime?.dispose()
     fixture.handlers.clear()

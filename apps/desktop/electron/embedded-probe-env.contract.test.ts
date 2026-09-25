@@ -8,7 +8,14 @@ import { test } from 'vitest'
 import { canImportHermesCli, execProbeSync, verifyHermesCli } from './backend-probes'
 import { resolveVenvHermesCommand } from './windows-hermes-path'
 
-const HOSTILE_KEYS = ['OPENAI_API_KEY', 'HTTPS_PROXY', 'NODE_PATH'] as const
+const HOSTILE_KEYS = [
+  'OPENAI_API_KEY',
+  'ANTHROPIC_API_KEY',
+  'HTTPS_PROXY',
+  'NODE_OPTIONS',
+  'NODE_PATH',
+  'HERMES_DASHBOARD_SESSION_TOKEN'
+] as const
 
 function syntheticProbe() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-probe-env-contract-'))
@@ -17,8 +24,11 @@ function syntheticProbe() {
   fs.writeFileSync(executable, `#!/bin/sh
 : > '${names}'
 [ -n "$OPENAI_API_KEY" ] && echo OPENAI_API_KEY >> '${names}'
+[ -n "$ANTHROPIC_API_KEY" ] && echo ANTHROPIC_API_KEY >> '${names}'
 [ -n "$HTTPS_PROXY" ] && echo HTTPS_PROXY >> '${names}'
+[ -n "$NODE_OPTIONS" ] && echo NODE_OPTIONS >> '${names}'
 [ -n "$NODE_PATH" ] && echo NODE_PATH >> '${names}'
+[ -n "$HERMES_DASHBOARD_SESSION_TOKEN" ] && echo HERMES_DASHBOARD_SESSION_TOKEN >> '${names}'
 [ "$PYTHONPATH" = '${root}/hermes-source' ] && echo DERIVED_PYTHONPATH >> '${names}'
 [ "$PATH" = '/usr/bin:/bin' ] && echo CLEAN_PATH >> '${names}'
 exit 0
@@ -31,8 +41,11 @@ function withSyntheticAmbient<T>(body: () => T): T {
   const previous = Object.fromEntries([...HOSTILE_KEYS, 'PYTHONPATH'].map(key => [key, process.env[key]]))
   try {
     process.env.OPENAI_API_KEY = 'synthetic-credential-never-forward'
+    process.env.ANTHROPIC_API_KEY = 'synthetic-credential-never-forward'
     process.env.HTTPS_PROXY = 'http://synthetic-proxy.invalid:9999'
+    process.env.NODE_OPTIONS = '--synthetic-loader-option'
     process.env.NODE_PATH = '/synthetic-loader'
+    process.env.HERMES_DASHBOARD_SESSION_TOKEN = 'synthetic-dashboard-token-never-forward'
     process.env.PYTHONPATH = '/synthetic-python-loader'
     return body()
   } finally {
@@ -118,7 +131,7 @@ test('timeout retry receives the same clean probe environment on both executions
   const observed = path.join(root, 'observed')
   const marker = path.join(root, 'first-run')
   fs.writeFileSync(executable, `#!/bin/sh
-if [ -n "$OPENAI_API_KEY$HTTPS_PROXY$NODE_PATH" ]; then echo LEAK >> '${observed}'; else echo CLEAN >> '${observed}'; fi
+if [ -n "$OPENAI_API_KEY$ANTHROPIC_API_KEY$HTTPS_PROXY$NODE_OPTIONS$NODE_PATH$HERMES_DASHBOARD_SESSION_TOKEN" ]; then echo LEAK >> '${observed}'; else echo CLEAN >> '${observed}'; fi
 if [ ! -e '${marker}' ]; then touch '${marker}'; sleep 1; fi
 `)
   fs.chmodSync(executable, 0o755)

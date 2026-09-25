@@ -3,7 +3,7 @@ date: 2026-09-24
 repo: hermes-rhythm-plugin
 branch: codex/hermes-probe-env-implementation
 issues: [1569]
-status: implementation-candidate
+status: verified-local
 tags: [plan, hermes]
 ---
 
@@ -23,6 +23,7 @@ Standalone Desktop keeps its existing environment semantics. Do not change `canI
 - In `backend-probes.ts`, give `verifyHermesCli` an explicit `env` option. Give `canImportHermesCli` an explicit `baseEnv` option; merge its existing `opts.env` onto that base only for embedded calls, retaining the current ambient merge when `baseEnv` is absent. Pass the resulting exact environment to `execProbeSync` for initial and retry attempts.
 - Thread the clean base through `resolveHermesBackend`, `isActiveRuntimeUsable`, `unwrapWindowsVenvHermesCommand`/`resolveVenvHermesCommand`, and `backendSupportsServe`. Rebuild source/active/Windows-venv Python paths from selected roots and site-packages against this base. Avoid using `backend.env` computed from ambient process state for embedded `serve --help`.
 - On POSIX, `findSystemPython` uses PATH to choose a command; on Windows it can invoke `reg query` and `py -c`. Retain the current discovery order, but make every executed discovery helper use the same clean base. Explicit override binaries remain the selected executable. Review `HERMES_DESKTOP_PYTHON`, `HERMES_DESKTOP_HERMES`, and timeout overrides as selection knobs; do not treat their values as permission to forward arbitrary environment variables.
+- First-run bootstrap passes the same host base through manifest, stage, and checkout-HEAD helpers. Direct and multi-connection Desktop update IPC plus uninstall IPC remain unregistered in embedded mode because Rhythm owns that lifecycle; packaged Windows bootstrap recovery likewise refuses the Desktop updater path instead of spawning it with ambient state.
 
 ## RED evidence and next checks
 
@@ -34,4 +35,4 @@ env -i PATH=/Users/ajhochhalter/.local/bin:/usr/bin:/bin HOME=/private/tmp/herme
 
 The direct probes, Windows venv shim, and real initializer/`hermes:connection` tests failed RED against the unmodified `db0cba2d3c` base. Synthetic `PYTHONPATH` and `PATH` checks remain green after repair. The timeout retry test confirms both executions receive the same clean env. The initializer test uses a synthetic shell executable only; it does not start Hermes, an API server, or a provider.
 
-The Windows-shim/import contract uses the real import helper and asserts that the verified interpreter is retained and the descriptor derives from the clean base. The implementation passed 100 focused tests across 12 files and Electron typecheck. A subsequently added timeout-retry test failed at a 100 ms fixture timeout; after raising that fixture budget to 500 ms, its four-test contract file passed. The full 12-file selection was not rerun after this fixture-only change. Native Windows `reg`/`py.exe` execution, real Python package import, and packaged/legacy runtime behavior remain unqualified. First-run bootstrap and update subprocesses can still inherit ambient environment and require a separate contract before claiming all embedded helper execution is sanitized. Uninstall helpers are likewise outside this startup slice.
+The Windows-shim/import contract uses the real import helper and asserts that the verified interpreter is retained and the descriptor derives from the clean base. The timeout-retry test gives the synthetic first attempt a 500 ms budget and confirms both executions receive the identical explicit environment. A lifecycle contract now records variable names observed by real synthetic manifest/stage and checkout-HEAD subprocesses and proves that embedded update/uninstall channels are refused before any child spawn. The original focused 12-file selection passes 101 tests with one worker; the expanded post-change selection passes 114 tests across 14 files. The desktop package's renderer, Electron, and e2e TypeScript projects also pass. Native Windows `reg.exe`/`py.exe` execution, real Python package import, and packaged/legacy runtime behavior remain unqualified.
