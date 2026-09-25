@@ -266,7 +266,12 @@ class ComputeHost:
 
     def handle_frame(self, frame: dict[str, Any]) -> None:
         kind = str(frame.get("type") or "")
-        if kind == "session.seed":
+        if kind == "host_capabilities":
+            from agent.host_capabilities import install_from_parent
+
+            mapping = frame.get("capabilities")
+            install_from_parent(mapping if isinstance(mapping, dict) else {})
+        elif kind == "session.seed":
             self._handle_seed(frame)
         elif kind == "turn.start":
             self._handle_turn_start(frame)
@@ -444,6 +449,7 @@ class ComputeHost:
             from tui_gateway import server
 
             session = self._ensure_server_session(server, frame)
+            server.session_policy_turn_gate(session)
             with session["history_lock"]:
                 queued_prompt_generation = frame.get("queued_prompt_generation")
                 if (

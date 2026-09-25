@@ -18976,6 +18976,18 @@ def _demo() -> None:
     print("web_server parent-death watchdog self-check: OK")
 
 
+def _initialize_host_runtime() -> None:
+    """Consume parent authority before loading any required host plugins."""
+    from agent import host_capabilities
+
+    host_capabilities.load_from_handoff()
+    host_capabilities.mark_serving_process()
+    if os.environ.get("HERMES_HOST_REQUIRED_PLUGINS", "").strip():
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()
+
+
 def start_server(
     host: str = "127.0.0.1",
     port: int = 9119,
@@ -19000,6 +19012,7 @@ def start_server(
     ``ssh_session_token`` and ``ssh_owner_nonce`` are process-local Desktop SSH
     bootstrap state. Neither is persisted or exported to child processes.
     """
+    _initialize_host_runtime()
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
 
