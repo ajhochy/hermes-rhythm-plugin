@@ -85,6 +85,7 @@ test('HP-7: embedded host delivers one-shot handoffs only to owned default attem
   const bridgeToken = 'D'.repeat(43)
   const providerToken = 'provider-synthetic-token'
   const receipts: unknown[] = []
+  const logs: string[] = []
   const spawned = child()
   const backendEnv = vi.fn(() => ({
     HERMES_HOST_CAPABILITY_RHYTHM_BRIDGE: bridgeToken,
@@ -105,6 +106,7 @@ test('HP-7: embedded host delivers one-shot handoffs only to owned default attem
     },
     hermesHome: fs.realpathSync(home),
     hostWindow: {},
+    log: line => logs.push(line),
     onOwnedBackendAttempt: event => receipts.push(event),
     userDataPath,
     webContents: contents()
@@ -165,6 +167,25 @@ test('HP-7: embedded host delivers one-shot handoffs only to owned default attem
     HERMES_HOST_CAPABILITY_RHYTHM_BRIDGE_ORIGIN: 'http://127.0.0.1:7363',
     OPENAI_API_KEY: providerToken
   })
+
+  const originalOpenSync = fs.openSync.bind(fs)
+  const openSpy = vi.spyOn(fs, 'openSync').mockImplementation(((target: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) => {
+    if (String(target).includes('host-capabilities-')) {
+      const error = new Error('synthetic handoff write failure') as NodeJS.ErrnoException
+      error.code = 'EACCES'
+      throw error
+    }
+    return originalOpenSync(target, flags, mode)
+  }) as typeof fs.openSync)
+  const failedWrite = await options.ownedSpawn.prepare('default', 'write-failure-session-token')
+  openSpy.mockRestore()
+  assert.equal(failedWrite.env.HERMES_HOST_CAPABILITIES_FILE, undefined)
+  assert.equal(failedWrite.env.OPENAI_API_KEY, undefined)
+  assert.equal(failedWrite.redactValues.includes(bridgeToken), false)
+  assert.equal(failedWrite.redactValues.includes(providerToken), false)
+  assert.ok(!logs.join('\n').includes(bridgeToken))
+  assert.ok(!logs.join('\n').includes(providerToken))
+  failedWrite.retire('failed')
 
   const stale = path.join(userDataPath, 'hermes-temp', 'host-capabilities-stale.json')
   fs.writeFileSync(stale, 'stale')

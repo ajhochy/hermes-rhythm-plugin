@@ -51,3 +51,38 @@ def test_hp_4_serve_startup_initializes_capabilities_before_discovery(monkeypatc
 
     assert order == ["load", "mark", "discover"]
 
+
+def test_hp_4_cmd_dashboard_initializes_capabilities_before_plugins_and_mcp(monkeypatch):
+    """Regression caught: the real serve path discovers extensions before its handoff."""
+    from types import SimpleNamespace
+
+    from hermes_cli import main, mcp_startup, plugins, resource_limits, web_server
+
+    order = []
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setenv("HERMES_SERVE_HEADLESS", "0")
+    monkeypatch.setattr("agent.host_capabilities.load_from_handoff", lambda: order.append("load"))
+    monkeypatch.setattr("agent.host_capabilities.mark_serving_process", lambda: order.append("mark"))
+    monkeypatch.setattr(resource_limits, "apply_nofile_soft_limit", lambda: None)
+    monkeypatch.setattr(main, "_sync_bundled_skills_quietly", lambda: None)
+    monkeypatch.setattr(main, "_maybe_setup_dashboard_auth_interactively", lambda _args: None)
+    monkeypatch.setattr(plugins, "discover_plugins", lambda: order.append("discover"))
+    monkeypatch.setattr(mcp_startup, "start_background_mcp_discovery", lambda **_kwargs: order.append("mcp"))
+    monkeypatch.setattr(web_server, "start_server", lambda **_kwargs: order.append("server"))
+
+    main.cmd_dashboard(SimpleNamespace(
+        status=False,
+        stop=False,
+        headless_backend=True,
+        ssh_owner_nonce=None,
+        ssh_session_token_file=None,
+        host="127.0.0.1",
+        port=7360,
+        no_open=True,
+        insecure=False,
+        open_profile="",
+        isolated=True,
+        skip_build=False,
+    ))
+
+    assert order == ["load", "mark", "discover", "mcp", "server"]

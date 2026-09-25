@@ -537,6 +537,7 @@ class ComputeHost:
     def _ensure_server_session(self, server: Any, frame: dict[str, Any]) -> dict:
         sid = str(frame.get("sid") or "")
         key = str(frame.get("session_key") or sid)
+        policy_entry = frame.get("native_session_policy")
         session = server._sessions.get(sid)
         if session is not None:
             session["transport"] = self._transport
@@ -548,6 +549,8 @@ class ComputeHost:
                 session["profile_home"] = str(frame.get("profile_home"))
             if isinstance(frame.get("attached_images"), list):
                 session["attached_images"] = list(frame.get("attached_images") or [])
+            if isinstance(policy_entry, dict):
+                session["native_session_policy_entry"] = dict(policy_entry)
             return session
 
         history = frame.get("history") if isinstance(frame.get("history"), list) else []
@@ -571,6 +574,35 @@ class ComputeHost:
                 # _make_agent that RAISES is the one path where nothing takes it.
                 session_db = SessionDB(db_path=Path(profile_home) / "state.db")
                 owns_db = True
+            restored_policy = None
+            if policy_entry is not None:
+                profile_id = policy_entry["profile_id"]
+                row = {"model_config": {"native_session_policy": policy_entry}}
+                try:
+                    restored_policy = server._restore_session_policy(row, key, profile_id)
+                except ValueError:
+                    # Older restore validators require an exact entry shape.
+                    # Preserve the opaque frame on the host session, while
+                    # passing only the version's recognized envelope fields to
+                    # that validator. Payload validation remains unchanged.
+                    if not isinstance(policy_entry, dict):
+                        raise
+                    payload = policy_entry.get("payload")
+                    version = payload.get("version") if isinstance(payload, dict) else None
+                    known = {"payload", "owner_id", "profile_id"}
+                    if version == 2:
+                        known.update({"lineage_root", "tainted"})
+                    if not set(policy_entry) - known:
+                        raise
+                    projected_entry = {
+                        name: value for name, value in policy_entry.items() if name in known
+                    }
+                    restored_policy = server._restore_session_policy(
+                        {"model_config": {"native_session_policy": projected_entry}},
+                        key,
+                        profile_id,
+                    )
+
             agent = server._make_agent(
                 sid,
                 key,
@@ -580,13 +612,7 @@ class ComputeHost:
                 service_tier_override=frame.get("service_tier_override"),
                 platform_override=frame.get("source"),
                 session_db=session_db,
-                session_policy=(
-                    server._restore_session_policy(
-                        {"model_config": {"native_session_policy": frame["native_session_policy"]}},
-                        key,
-                        frame["native_session_policy"]["profile_id"],
-                    ) if frame.get("native_session_policy") is not None else None
-                ),
+                session_policy=restored_policy,
             )
             if server._transfer_db_to_agent(agent, session_db):
                 owns_db = False
@@ -654,6 +680,8 @@ class ComputeHost:
             session["attached_images"] = list(frame.get("attached_images") or [])
         if frame.get("model_override") is not None:
             session["model_override"] = frame.get("model_override")
+        if isinstance(policy_entry, dict):
+            session["native_session_policy_entry"] = dict(policy_entry)
         return session
 
     def _handle_reload_mcp(self, frame: dict[str, Any]) -> None:

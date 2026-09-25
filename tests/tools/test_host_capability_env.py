@@ -41,7 +41,12 @@ def test_hp_2_all_child_environment_builders_scrub_host_capabilities(monkeypatch
     monkeypatch.setenv("HERMES_HOST_CAPABILITIES_FILE", CAPABILITY_ENV["HERMES_HOST_CAPABILITIES_FILE"])
     monkeypatch.setenv("HERMES_HOST_CAPABILITY_TEST", TOKEN)
     monkeypatch.setenv("SAFE_VALUE", "kept")
-    _assert_scrubbed(_compute_host_child_env())
+    monkeypatch.setenv("HASS_TOKEN", "standalone-runtime-token")
+    monkeypatch.setenv("HOME", "/tmp/standalone-runtime-home")
+    compute_env = _compute_host_child_env()
+    _assert_scrubbed(compute_env)
+    assert compute_env["HASS_TOKEN"] == "standalone-runtime-token"
+    assert compute_env["HOME"] == "/tmp/standalone-runtime-home"
 
 
 def test_hp_2_dashboard_pty_env_uses_the_scrubbed_factory(monkeypatch):

@@ -75,8 +75,15 @@ class DriverSession:
         error = response.get("error")
         if isinstance(error, dict):
             data = error.get("data")
-            code = data.get("code") if isinstance(data, dict) else error.get("code")
-            raise DriverError(str(error.get("message") or "driver request failed"), code=str(code or "driver_error"))
+            message = str(error.get("message") or "driver request failed")
+            code = data.get("code") if isinstance(data, dict) else None
+            if not code and message.startswith("unsupported_policy:"):
+                candidate = message.partition(":")[2]
+                if candidate and len(candidate) <= 64 and candidate.replace("_", "").isalnum():
+                    code = candidate
+            if not code:
+                code = error.get("code")
+            raise DriverError(message, code=str(code or "driver_error"))
         result = response.get("result")
         return result if isinstance(result, dict) else {}
 

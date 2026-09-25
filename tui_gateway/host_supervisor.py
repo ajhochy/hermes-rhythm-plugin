@@ -131,6 +131,10 @@ def is_compute_host_identity(pid: int) -> bool:
 def _compute_host_child_env(overrides: dict[str, str] | None = None) -> dict[str, str]:
     """Build the compute environment without transferring host authority."""
     env = hermes_subprocess_env(inherit_credentials=True)
+    # Standalone compute hosts must see the same launchd/systemd/shell runtime
+    # as inline turns. The sanitizer is a safe baseline, not a replacement for
+    # the parent environment; capability authority alone is removed below.
+    env.update(os.environ)
     if overrides:
         env.update(overrides)
     for key in list(env):

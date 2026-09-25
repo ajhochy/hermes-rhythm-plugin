@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import importlib
 import io
-from types import SimpleNamespace
+import threading
 
 from tui_gateway.compute_host import ComputeHost
 
@@ -36,49 +36,60 @@ def test_hp_6_policy_entry_is_opaque_and_turn_gate_runs_before_prompt(monkeypatc
 
     host = ComputeHost(stdout=io.StringIO(), heartbeat_secs=0)
     opaque_entry = {
-        "payload": {"version": 2, "future_key": {"nested": True}},
+        "payload": {
+            "version": 1,
+            "source": {"agent_id": "shared-agent", "revision": 7},
+            "instructions": "Keep the frozen policy.",
+            "model": {"provider": "fixture", "model": "fixture", "reasoning": "none"},
+            "allowed_tools": ["read_file"],
+            "rules": [],
+        },
         "owner_id": "owner",
         "profile_id": "default",
-        "lineage_root": "lineage",
-        "tainted": False,
         "unknown_entry_key": "preserve-me",
     }
-    restored = []
-    fake_server = SimpleNamespace(
-        _sessions={},
-        _restore_session_policy=lambda row, key, profile: restored.append((row, key, profile)) or "snapshot",
-        _make_agent=lambda *args, **kwargs: object(),
-        _transfer_db_to_agent=lambda _agent, _db: False,
-    )
+    captured = {}
+
+    class Agent:
+        pass
+
+    def make_agent(*_args, **kwargs):
+        captured["snapshot"] = kwargs["session_policy"]
+        return Agent()
 
     def init_session(sid, key, agent, history, **kwargs):
-        fake_server._sessions[sid] = {
+        server._sessions[sid] = {
             "agent": agent,
             "session_key": key,
             "history": history,
-            "history_lock": __import__("threading").Lock(),
+            "history_lock": threading.Lock(),
             "running": False,
             "last_active": 0.0,
             "transport": kwargs.get("transport"),
-            "session_policy": "snapshot",
+            "session_policy": captured["snapshot"],
         }
 
-    fake_server._init_session = init_session
-    host._ensure_server_session(
-        fake_server,
-        {
-            "sid": "sid",
-            "session_key": "lineage",
-            "native_session_policy": opaque_entry,
-        },
-    )
-    assert restored == [
-        ({"model_config": {"native_session_policy": opaque_entry}}, "lineage", "default")
-    ]
+    monkeypatch.setattr(server, "_make_agent", make_agent)
+    monkeypatch.setattr(server, "_transfer_db_to_agent", lambda _agent, _db: False)
+    monkeypatch.setattr(server, "_init_session", init_session)
+    server._sessions.pop("sid", None)
+    try:
+        restored_session = host._ensure_server_session(
+            server,
+            {
+                "sid": "sid",
+                "session_key": "lineage",
+                "native_session_policy": opaque_entry,
+            },
+        )
+        assert captured["snapshot"].instructions == "Keep the frozen policy."
+        assert restored_session["native_session_policy_entry"] == opaque_entry
+    finally:
+        server._sessions.pop("sid", None)
 
     order = []
     session = {
-        "history_lock": __import__("threading").Lock(),
+        "history_lock": threading.Lock(),
         "running": False,
         "last_active": 0.0,
         "session_key": "lineage",
