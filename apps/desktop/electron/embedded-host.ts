@@ -1027,6 +1027,10 @@ export async function createEmbeddedHermesHost(options: EmbeddedHermesHostOption
       ? { localBackend: { connect: async profile => connectionForRenderer(await connect(profile), profile) } }
       : {}),
     ownedSpawn: {
+      probeEnv: () => {
+        const { HERMES_DASHBOARD_SESSION_TOKEN: _token, ...env } = controlledChildEnv(options, '')
+        return env
+      },
       prepare: (profile, token) => {
         const pending = prepareNativeOwnedAttempt(options, profile, token, () => nativeOwnedDisposed)
         nativeOwnedPending.add(pending)

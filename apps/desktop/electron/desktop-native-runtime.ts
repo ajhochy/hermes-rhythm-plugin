@@ -405,6 +405,8 @@ export interface DesktopOwnedSpawnAttempt {
 
 export interface DesktopOwnedSpawnAdapter {
   prepare: (profile: string, token: string) => Promise<DesktopOwnedSpawnAttempt>
+  /** Fresh, grant-free environment for embedded resolver helpers. */
+  probeEnv: () => NodeJS.ProcessEnv
 }
 
 export type DesktopConnectionDescriptorEvent =
@@ -526,7 +528,8 @@ const EMBEDDED_HOST_CHANNELS = new Set([
   'hermes:updates:check',
   'hermes:updates:apply',
   'hermes:updates:branch:get',
-  'hermes:updates:branch:set'
+  'hermes:updates:branch:set',
+  'hermes:connections:update-all'
 ])
 
 export function isHostOwnedEmbeddedChannel(channel: string): boolean {
@@ -623,6 +626,11 @@ function createEmbeddedMainWindow(contents: any) {
  */
 export function initializeDesktopNativeRuntime(options: DesktopNativeRuntimeOptions = {}) {
   const embedded = options.mode === 'embedded'
+  const probeEnv = () => {
+    if (!embedded) return process.env
+    if (!options.ownedSpawn?.probeEnv) throw new Error('Embedded Hermes probe environment is unavailable.')
+    return options.ownedSpawn.probeEnv()
+  }
   const runtimeWindowAdapter = options.windowAdapter
   const app = embedded ? embeddedAppFacade(options.app ?? electronApp, options.paths) : options.app ?? electronApp
   const embeddedContents = embedded ? runtimeWindowAdapter?.getRendererWebContents() : null
@@ -2488,7 +2496,7 @@ function unpackedPathFor(filePath) {
   return filePath.replace(/app\.asar(?=$|[\\/])/, 'app.asar.unpacked')
 }
 
-function findOnPath(command) {
+function findOnPath(command, suppliedBaseEnv?) {
   if (!command) {
     return null
   }
@@ -2505,7 +2513,8 @@ function findOnPath(command) {
     return command
   }
 
-  const pathEntries = String(process.env.PATH || '')
+  const baseEnv = suppliedBaseEnv ?? probeEnv()
+  const pathEntries = String(baseEnv.PATH || '')
     .split(path.delimiter)
     .filter(Boolean)
 
@@ -2515,7 +2524,7 @@ function findOnPath(command) {
   // shell-script shim named `hermes` — must not shadow `hermes.cmd`/`hermes.exe`.
   // The empty entry is kept LAST so callers that already include the extension
   // (py.exe, pwsh.exe, powershell.exe) still resolve.
-  const extensions = buildPathExtCandidates(process.env.PATHEXT, IS_WINDOWS)
+  const extensions = buildPathExtCandidates(baseEnv.PATHEXT, IS_WINDOWS)
 
   for (const entry of pathEntries) {
     for (const extension of extensions) {
@@ -2548,7 +2557,8 @@ function unwrapWindowsVenvHermesCommand(command, backendArgs) {
     resolvePath: (...segments) => path.resolve(...segments),
     dirname: p => path.dirname(p),
     basename: p => path.basename(p),
-    rememberLog
+    rememberLog,
+    ...(embedded && IS_WINDOWS ? { probeBaseEnv: probeEnv() } : {})
   })
 }
 
@@ -2589,6 +2599,7 @@ function backendSupportsServe(backend) {
   if (supported === null) {
     try {
       const prefix = backend.args && backend.args[0] === '-m' ? backend.args.slice(0, 2) : []
+      const baseEnv = embedded ? probeEnv() : process.env
       // Same cold-Windows Python-startup class as the runtime probes
       // (#61764/#72632/#72707): `serve --help` imports at least as much as
       // `hermes --version` (~10.5s measured cold), and a false negative here
@@ -2597,7 +2608,9 @@ function backendSupportsServe(backend) {
       // and its timeout-only retry instead of a thinner local bound.
       execProbeSync(backend.command, [...prefix, 'serve', '--help'], {
         cwd: backend.root || undefined,
-        env: { ...process.env, HERMES_HOME, ...(backend.env || {}) },
+        env: embedded
+          ? { ...baseEnv, ...embeddedBackendPythonEnv(backend, baseEnv) }
+          : { ...process.env, HERMES_HOME, ...(backend.env || {}) },
         timeout: PROBE_TIMEOUT_MS,
         stdio: 'ignore',
         // `.cmd`/`.bat` shim backends carry shell: true in their descriptor
@@ -2711,6 +2724,8 @@ function findSystemPython() {
     return null
   }
 
+  const baseEnv = embedded ? probeEnv() : process.env
+
   // Windows: PATH-based detection has TWO landmines we have to dodge.
   //
   //  (1) The Microsoft Store "Python stub" lives at
@@ -2764,7 +2779,12 @@ function findSystemPython() {
           // Registry reads are near-instant; the bound only exists so a
           // pathologically wedged reg.exe can't hang the synchronous boot
           // resolver forever (this ran unbounded before).
-          hiddenWindowsChildOptions({ encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5_000 })
+          hiddenWindowsChildOptions({
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore'],
+            timeout: 5_000,
+            ...(embedded ? { env: baseEnv } : {})
+          })
         )
 
         // Output format: "    (Default)    REG_SZ    C:\Path\To\Python\"
@@ -2785,8 +2805,8 @@ function findSystemPython() {
   }
 
   // Pass 2: filesystem probe of standard locations.
-  const programFiles = process.env['ProgramFiles'] || 'C:\\Program Files'
-  const localAppData = process.env.LOCALAPPDATA || ''
+  const programFiles = baseEnv['ProgramFiles'] || 'C:\\Program Files'
+  const localAppData = baseEnv.LOCALAPPDATA || ''
 
   for (const versionDir of SUPPORTED_VERSIONS_NO_DOT) {
     const systemWide = path.join(programFiles, `Python${versionDir}`, 'python.exe')
@@ -2809,7 +2829,7 @@ function findSystemPython() {
   // print(sys.executable)"` resolves to the actual python.exe path of
   // the requested version. We try in version-priority order so the
   // first hit wins.
-  const pyExe = findOnPath('py.exe')
+  const pyExe = findOnPath('py.exe', baseEnv)
 
   if (pyExe) {
     for (const version of SUPPORTED_VERSIONS) {
@@ -2820,6 +2840,7 @@ function findSystemPython() {
           hiddenWindowsChildOptions({
             encoding: 'utf8',
             stdio: ['ignore', 'pipe', 'ignore'],
+            ...(embedded ? { env: baseEnv } : {}),
             // Bare interpreter startup — much lighter than the hermes-import
             // probes, but still python.exe under cold cache / AV scan, so
             // share the probe budget rather than running unbounded (this
@@ -4158,7 +4179,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
 }
 
 async function handOffWindowsBootstrapRecovery(reason) {
-  if (!IS_WINDOWS || !IS_PACKAGED) {
+  if (embedded || !IS_WINDOWS || !IS_PACKAGED) {
     return false
   }
 
@@ -4530,15 +4551,18 @@ function readBootstrapMarker() {
 function isActiveRuntimeUsable() {
   const venvPython = getVenvPython(VENV_ROOT)
 
-  return (
-    isHermesSourceRoot(ACTIVE_HERMES_ROOT) &&
-    fileExists(venvPython) &&
-    canImportHermesCli(venvPython, {
-      env: {
-        PYTHONPATH: [ACTIVE_HERMES_ROOT, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
-      }
-    })
-  )
+  if (!isHermesSourceRoot(ACTIVE_HERMES_ROOT) || !fileExists(venvPython)) {
+    return false
+  }
+
+  const baseEnv = embedded ? probeEnv() : process.env
+
+  return canImportHermesCli(venvPython, {
+    env: {
+      PYTHONPATH: [ACTIVE_HERMES_ROOT, baseEnv.PYTHONPATH].filter(Boolean).join(path.delimiter)
+    },
+    ...(embedded ? { baseEnv } : {})
+  })
 }
 
 function activeRuntimeState() {
@@ -4917,7 +4941,10 @@ function resolveHermesBackend(backendArgs) {
       // the Nix wrapper), not a discovered PATH candidate. It must not fall
       // through to the install-script bootstrap if the optional probe times
       // out under load; the pinned backend is the only valid runtime there.
-      if (shouldTrustHermesOverride(hermesOverride) || verifyHermesCli(hermesCommand, { shell: shellForProbe })) {
+      if (shouldTrustHermesOverride(hermesOverride) || verifyHermesCli(hermesCommand, {
+        shell: shellForProbe,
+        ...(embedded ? { env: probeEnv() } : {})
+      })) {
         // `unwrapped` above already answered "is this a Windows venv shim?" —
         // it was null (not a shim, or its import probe failed). Do NOT re-run
         // unwrapWindowsVenvHermesCommand here: the second call repeats the
@@ -4954,7 +4981,7 @@ function resolveHermesBackend(backendArgs) {
     // Verify the import works before trusting the candidate; on
     // failure, fall through to step 6 so the bootstrap runner pulls
     // a uv-managed 3.11 into %LOCALAPPDATA%\hermes\hermes-agent\venv.
-    if (canImportHermesCli(python)) {
+    if (canImportHermesCli(python, embedded ? { baseEnv: probeEnv() } : undefined)) {
       return {
         kind: 'python',
         label: `installed hermes_cli module via ${python}`,
@@ -5048,12 +5075,23 @@ async function ensureRuntime(backend) {
     bootstrapRepairRequested = false
     bootstrapRepairAttempt = 0
 
+    const bootstrapBaseEnv = embedded ? probeEnv() : null
+
     const bootstrapResult = await runBootstrap({
       installStamp: backend.installStamp,
       activeRoot: backend.activeRoot,
       sourceRepoRoot: SOURCE_REPO_ROOT,
       hermesHome: HERMES_HOME,
       logRoot: path.join(HERMES_HOME, 'logs'),
+      ...(bootstrapBaseEnv
+        ? {
+            baseEnv: {
+              ...bootstrapBaseEnv,
+              HERMES_HOME,
+              ...buildDesktopBackendEnv({ hermesHome: HERMES_HOME, currentEnv: bootstrapBaseEnv })
+            }
+          }
+        : {}),
       abortSignal: bootstrapAbortController.signal,
       onEvent: ev => {
         // Tee every bootstrap event to (a) the desktop log for forensics
@@ -10917,7 +10955,9 @@ async function startHermes() {
     // availability checks, stdio MCP servers) can find Homebrew-, nvm-, and
     // ~/.local/bin-installed CLIs. Single-flight with the whenReady warmup;
     // failure-hardened — a broken shell profile never blocks boot.
-    const loginShellPath = await ensureLoginShellPath()
+    // A login shell runs user startup scripts; embedded resolver helpers use
+    // the host's explicit binary path instead of launching that shell.
+    const loginShellPath = embedded ? { applied: false, reason: 'embedded' } : await ensureLoginShellPath()
 
     if (loginShellPath.applied) {
       rememberLog('[env] merged login-shell PATH into process.env for backend spawn')
@@ -15271,7 +15311,7 @@ app.on('open-url', (event, url) => {
 app.whenReady().then(() => {
   // Warm the login-shell PATH resolution immediately so it usually completes
   // before the backend start path awaits the same single-flight promise.
-  void ensureLoginShellPath()
+  if (!embedded) void ensureLoginShellPath()
 
   const systemCa = installWindowsSystemCaTrust(tls)
 
