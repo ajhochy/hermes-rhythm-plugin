@@ -1,0 +1,73 @@
+{
+  "version": 2,
+  "source": {
+    "agent_id": "sa-specialist",
+    "revision": 7,
+    "reference": "3f9f1c2e-6c55-4a53-9d8e-2a7d9a6b1c01"
+  },
+  "instructions": "You are a shared Rhythm agent.",
+  "model": {
+    "provider": "openrouter",
+    "model": "anthropic/claude-sonnet-4.5",
+    "reasoning": "high"
+  },
+  "allowed_tools": [
+    "clarify",
+    "read_file",
+    "rhythm_memory_search",
+    "search_files",
+    "terminal",
+    "todo"
+  ],
+  "tool_effects": {
+    "clarify": "ask"
+  },
+  "paths": {
+    "root": "/work/proj",
+    "boundary": [
+      "/work/proj/sub",
+      "/work/proj"
+    ],
+    "external": "ask",
+    "protected": [
+      "/Users/u/Library/Application Support/Rhythm",
+      "/Users/u/Vault"
+    ]
+  },
+  "rules": [
+    {
+      "tool": "read_file",
+      "argument": "path",
+      "pattern": "*",
+      "effect": "ask"
+    },
+    {
+      "tool": "read_file",
+      "argument": "path",
+      "pattern": "*",
+      "effect": "allow"
+    },
+    {
+      "tool": "terminal",
+      "argument": "command",
+      "pattern": "*",
+      "effect": "ask"
+    },
+    {
+      "tool": "terminal",
+      "argument": "command",
+      "pattern": "git status",
+      "effect": "allow"
+    }
+  ],
+  "taint_gate": {
+    "sources": [
+      "rhythm_memory_search"
+    ],
+    "gated": []
+  },
+  "launch": {
+    "kind": "interactive",
+    "cwd": "/work/proj/sub"
+  }
+}

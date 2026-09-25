@@ -53,9 +53,16 @@ def _(rid, params: dict) -> dict:
                 profile_id=_response_profile_name(profile),
                 runtime_generation=_SESSION_POLICY_RUNTIME_GENERATION,
                 transport=current_transport() or _stdio_transport,
+                cwd=os.path.realpath(resolved_cwd) if explicit_cwd else None,
             )
-        except Exception:
-            return _err(rid, 4000, "unsupported_policy")
+        except Exception as exc:
+            code = getattr(exc, "code", "provider_failed")
+            message = (
+                "unsupported_policy"
+                if code == "unsupported_policy" or " " in code
+                else f"unsupported_policy:{code}"
+            )
+            return _err(rid, 4000, message)
 
     # The desktop composer owns its model/effort/fast as plain UI state and ships
     # it on every session.create. Honor each as a PER-SESSION override (built into

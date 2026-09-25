@@ -1208,6 +1208,7 @@ def handle_function_call(
     session_policy=None,
     policy_binding=None,
     policy_approval_callback=None,
+    policy_tainted: bool = False,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -1354,6 +1355,7 @@ def handle_function_call(
                 session_policy=session_policy,
                 policy_binding=policy_binding,
                 policy_approval_callback=policy_approval_callback,
+                policy_tainted=policy_tainted,
             )
 
     _tool_original_args = dict(function_args)
@@ -1508,6 +1510,9 @@ def handle_function_call(
                         decision = session_policy.authorize_tool_call(
                             tool_name=function_name, arguments=next_args,
                             binding=policy_binding,
+                            lineage_root=session_policy.binding.session_id,
+                            task_id=task_id or "default",
+                            tainted=policy_tainted,
                         )
                         if decision.effect == "ask":
                             approved = (policy_approval_callback(function_name, dict(next_args))
@@ -1518,7 +1523,17 @@ def handle_function_call(
                             return tool_error("Session policy denied tool call")
                     except Exception:
                         return tool_error("Session policy evaluation failed")
-                return registry.dispatch(function_name, next_args, **dispatch_kwargs)
+                if session_policy is None:
+                    return registry.dispatch(function_name, next_args, **dispatch_kwargs)
+                from agent.session_policy import bind_active_policy, reset_active_policy
+                token = bind_active_policy(
+                    session_policy,
+                    session_policy.binding.session_id,
+                )
+                try:
+                    return registry.dispatch(function_name, next_args, **dispatch_kwargs)
+                finally:
+                    reset_active_policy(token)
 
             if function_name == "execute_code":
                 # Prefer the caller-provided list so subagents can't overwrite
