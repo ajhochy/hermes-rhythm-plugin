@@ -69,7 +69,7 @@ def render_css(tokens: dict) -> str:
   --color-success: {light['successAccessible']};
   --color-warning: {light['warning']};
   --color-border: var(--rhythm-border);
-  --color-input: var(--rhythm-border);
+  --color-input: {light['input']};
   --color-ring: var(--rhythm-primary);
 
   --color-text-primary: var(--rhythm-text-primary);

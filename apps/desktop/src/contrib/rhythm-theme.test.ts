@@ -21,6 +21,7 @@ describe('Rhythm desktop theme contribution (#1543-a)', () => {
       popover: '#FFFFFF',
       sidebar: '#D8EEE5',
       border: '#C0D7D1',
+      input: '#5D837B',
       textPrimary: '#03201D',
       textSecondary: '#19403A',
       textMuted: '#2E5951',

@@ -61,7 +61,7 @@ export const rhythmDesktopTheme: RhythmDesktopTheme = {
     accent: '#D8EEE5',
     accentForeground: '#03201D',
     border: '#C0D7D1',
-    input: '#C0D7D1',
+    input: '#5D837B',
     ring: '#007760',
     midground: '#007760',
     destructive: '#AC1730',
