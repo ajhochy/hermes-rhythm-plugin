@@ -23,7 +23,7 @@
   --color-foreground: var(--rhythm-text-primary);
   --color-card: #F8FDFB;
   --color-card-foreground: var(--rhythm-text-primary);
-  --color-popover: #F8FDFB;
+  --color-popover: #FFFFFF;
   --color-popover-foreground: var(--rhythm-text-primary);
   /* Slightly darker text/control aliases preserve AA contrast on white while
      the palette retains the requested brand hues above. */
@@ -77,7 +77,7 @@
     --color-foreground: var(--rhythm-text-primary);
     --color-card: #2B2E2D;
     --color-card-foreground: var(--rhythm-text-primary);
-    --color-popover: #2B2E2D;
+    --color-popover: #363C39;
     --color-popover-foreground: var(--rhythm-text-primary);
     --color-primary: #42C3A6;
     --color-primary-foreground: #010E0C;

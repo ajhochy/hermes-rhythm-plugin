@@ -52,7 +52,7 @@ def render_css(tokens: dict) -> str:
   --color-foreground: var(--rhythm-text-primary);
   --color-card: {light['card']};
   --color-card-foreground: var(--rhythm-text-primary);
-  --color-popover: {light['card']};
+  --color-popover: {light['popover']};
   --color-popover-foreground: var(--rhythm-text-primary);
   /* Slightly darker text/control aliases preserve AA contrast on white while
      the palette retains the requested brand hues above. */
@@ -106,7 +106,7 @@ def render_css(tokens: dict) -> str:
     --color-foreground: var(--rhythm-text-primary);
     --color-card: {dark['card']};
     --color-card-foreground: var(--rhythm-text-primary);
-    --color-popover: {dark['card']};
+    --color-popover: {dark['popover']};
     --color-popover-foreground: var(--rhythm-text-primary);
     --color-primary: {dark['primary']};
     --color-primary-foreground: {dark['primaryForeground']};
@@ -145,7 +145,7 @@ def render_desktop_theme_ts(tokens: dict) -> str:
     cardForeground: '{foreground}',
     muted: '{t['muted']}',
     mutedForeground: '{t['textSecondary']}',
-    popover: '{card}',
+    popover: '{t['popover']}',
     popoverForeground: '{foreground}',
     primary: '{primary}',
     primaryForeground: '{primary_fg}',
@@ -241,7 +241,7 @@ def desktop_theme(tokens: dict) -> dict:
             "cardForeground": foreground,
             "muted": t["muted"],
             "mutedForeground": t["textSecondary"],
-            "popover": card,
+            "popover": t["popover"],
             "popoverForeground": foreground,
             "primary": primary,
             "primaryForeground": primary_fg,

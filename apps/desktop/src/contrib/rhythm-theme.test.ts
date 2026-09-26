@@ -18,6 +18,7 @@ describe('Rhythm desktop theme contribution (#1543-a)', () => {
     expect(tokens.light).toMatchObject({
       background: '#ECF6F2',
       card: '#F8FDFB',
+      popover: '#FFFFFF',
       sidebar: '#D8EEE5',
       border: '#C0D7D1',
       textPrimary: '#03201D',
@@ -33,6 +34,7 @@ describe('Rhythm desktop theme contribution (#1543-a)', () => {
     expect(tokens.dark).toMatchObject({
       background: '#252727',
       card: '#2B2E2D',
+      popover: '#363C39',
       sidebar: '#323735',
       border: '#3E4542',
       textPrimary: '#DEDFDF',
