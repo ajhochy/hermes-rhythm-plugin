@@ -22,7 +22,7 @@
     "ring": "#007760",
     "midground": "#007760",
     "destructive": "#AC1730",
-    "destructiveForeground": "#F2FBF7",
+    "destructiveForeground": "#FFF6F6",
     "sidebarBackground": "#D8EEE5",
     "sidebarBorder": "#C0D7D1"
   },
@@ -46,7 +46,7 @@
     "ring": "#42C3A6",
     "midground": "#42C3A6",
     "destructive": "#FF666F",
-    "destructiveForeground": "#010E0C",
+    "destructiveForeground": "#140707",
     "sidebarBackground": "#323735",
     "sidebarBorder": "#3E4542"
   }

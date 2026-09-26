@@ -25,6 +25,7 @@ describe('Rhythm desktop theme contribution (#1543-a)', () => {
       textMuted: '#2E5951',
       primary: '#007760',
       primaryForeground: '#F2FBF7',
+      destructiveForeground: '#FFF6F6',
       error: '#AC1730',
       success: '#00631B',
       warning: '#6D4800'
@@ -39,6 +40,7 @@ describe('Rhythm desktop theme contribution (#1543-a)', () => {
       textMuted: '#ABB2B0',
       primary: '#42C3A6',
       primaryForeground: '#010E0C',
+      destructiveForeground: '#140707',
       error: '#FF666F',
       success: '#60C473',
       warning: '#F0BB3B'

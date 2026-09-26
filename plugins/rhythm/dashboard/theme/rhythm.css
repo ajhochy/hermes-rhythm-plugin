@@ -36,7 +36,7 @@
   --color-accent: #D8EEE5;
   --color-accent-foreground: #03201D;
   --color-destructive: #AC1730;
-  --color-destructive-foreground: #F2FBF7;
+  --color-destructive-foreground: #FFF6F6;
   --color-success: #00631B;
   --color-warning: #6D4800;
   --color-border: var(--rhythm-border);
@@ -88,7 +88,7 @@
     --color-accent: #363C39;
     --color-accent-foreground: #DEDFDF;
     --color-destructive: #FF666F;
-    --color-destructive-foreground: #010E0C;
+    --color-destructive-foreground: #140707;
     --color-success: #60C473;
     --color-warning: #F0BB3B;
     --color-border: var(--rhythm-border);

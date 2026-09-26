@@ -65,7 +65,7 @@ def render_css(tokens: dict) -> str:
   --color-accent: {light['accent']};
   --color-accent-foreground: {light['accentForeground']};
   --color-destructive: {light['destructiveAccessible']};
-  --color-destructive-foreground: {light['primaryForeground']};
+  --color-destructive-foreground: {light['destructiveForeground']};
   --color-success: {light['successAccessible']};
   --color-warning: {light['warning']};
   --color-border: var(--rhythm-border);
@@ -117,7 +117,7 @@ def render_css(tokens: dict) -> str:
     --color-accent: {dark['accent']};
     --color-accent-foreground: {dark['accentForeground']};
     --color-destructive: {dark['destructiveAccessible']};
-    --color-destructive-foreground: {dark['primaryForeground']};
+    --color-destructive-foreground: {dark['destructiveForeground']};
     --color-success: {dark['successAccessible']};
     --color-warning: {dark['warning']};
     --color-border: var(--rhythm-border);
@@ -158,7 +158,7 @@ def render_desktop_theme_ts(tokens: dict) -> str:
     ring: '{t.get('primary', primary)}',
     midground: '{t.get('primary', primary)}',
     destructive: '{t['destructiveAccessible']}',
-    destructiveForeground: '{primary_fg}',
+    destructiveForeground: '{t['destructiveForeground']}',
     sidebarBackground: '{t.get('sidebar', secondary)}',
     sidebarBorder: '{t['border']}',
   }}"""
@@ -254,7 +254,7 @@ def desktop_theme(tokens: dict) -> dict:
             "ring": t.get("primary", primary),
             "midground": t.get("primary", primary),
             "destructive": t["destructiveAccessible"],
-            "destructiveForeground": primary_fg,
+            "destructiveForeground": t["destructiveForeground"],
             "sidebarBackground": t.get("sidebar", secondary),
             "sidebarBorder": t["border"],
         }
