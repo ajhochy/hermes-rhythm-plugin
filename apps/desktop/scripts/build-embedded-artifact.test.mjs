@@ -93,6 +93,7 @@ test('buildEmbeddedArtifact packages the actual renderer, host, preload, and nat
     assert.equal(manifest.schemaVersion, 1)
     assert.equal(manifest.sourceCommit, '9c8dcf4230cbf3d386c29b730c5f82deea9523b0')
     assert.equal(manifest.electronMajor, 40)
+    assert.equal(manifest.dirty, false)
     assert.match(manifest.integrity['renderer/index.html'], /^sha256-[A-Za-z0-9+/]+={0,2}$/)
     assert.equal(readFileSync(path.join(artifactRoot, 'renderer', 'assets', 'main.js'), 'utf8'), 'window.desktop = true')
     assert.equal(readFileSync(path.join(artifactRoot, 'electron', 'embedded-host.mjs'), 'utf8'), 'export async function createEmbeddedHermesHost() {}')

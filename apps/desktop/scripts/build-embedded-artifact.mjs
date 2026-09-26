@@ -239,6 +239,7 @@ export function buildEmbeddedArtifact({
     schemaVersion: 1,
     product: 'hermes-desktop',
     sourceCommit,
+    dirty: sourceDirty,
     electronMajor,
     files: REQUIRED_FILES,
     integrity: collectIntegrity(output),
