@@ -16,7 +16,7 @@ import {
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 
 const desktopRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const repositoryRoot = resolve(desktopRoot, '..', '..')
@@ -341,8 +341,9 @@ function installedElectronVersion() {
  *  read from the SAME bytes being packaged so the manifest can never drift
  *  from what actually ships. Exported for behavioral tests. */
 export async function hostApiVersionOf(hostFile) {
-  const module = await import(pathToFileURL(hostFile).href)
-  const version = module.EMBEDDED_HOST_API_VERSION
+  const source = readFileSync(hostFile, 'utf8')
+  const match = /\b(?:const|let|var)\s+EMBEDDED_HOST_API_VERSION\s*=\s*(\d+)\b/.exec(source)
+  const version = match ? Number.parseInt(match[1], 10) : undefined
   if (!Number.isInteger(version) || version < 1) {
     throw new Error(`Embedded host module does not export a valid EMBEDDED_HOST_API_VERSION: ${hostFile}`)
   }

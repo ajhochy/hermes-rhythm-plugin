@@ -267,7 +267,7 @@ test('hostApiVersionOf reads EMBEDDED_HOST_API_VERSION from the actual compiled 
   const root = mkdtempSync(path.join(os.tmpdir(), 'hermes-embedded-host-api-version-'))
   try {
     const hostFile = path.join(root, 'embedded-host.mjs')
-    write(hostFile, 'export const EMBEDDED_HOST_API_VERSION = 3\nexport async function createEmbeddedHermesHost() {}\n')
+    write(hostFile, "import { definitelyNotAnExport } from 'node:fs'\nexport const EMBEDDED_HOST_API_VERSION = 3\nexport async function createEmbeddedHermesHost() { return definitelyNotAnExport }\n")
     assert.equal(await hostApiVersionOf(hostFile), 3)
 
     const badHostFile = path.join(root, 'embedded-host-bad.mjs')
