@@ -1,0 +1,33 @@
+{
+  "issue": "task-hermes-rhythm-skin",
+  "date": "2026-09-26",
+  "test_command": "cd apps/desktop && npm exec vitest run --project ui src/contrib/rhythm-theme.test.ts",
+  "waiver": null,
+  "criteria": [
+    {
+      "criterion_id": "task-hermes-rhythm-skin-c1",
+      "text": "The embedded Hermes Rhythm skin uses the canonical teal-on-neutral Rhythm Electron palette in light and dark modes.",
+      "mode": "ui",
+      "test": "apps/desktop/src/contrib/rhythm-theme.test.ts",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "criterion_id": "task-hermes-rhythm-skin-c2",
+      "text": "Accessible foreground/background pairs clear WCAG AA contrast.",
+      "mode": "unit",
+      "test": "apps/desktop/src/contrib/rhythm-theme.test.ts",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "criterion_id": "task-hermes-rhythm-skin-c3",
+      "text": "Dark, light, and open-menu screenshots visually match the Rhythm product palette.",
+      "mode": "manual",
+      "test": null,
+      "status": "UNVERIFIED",
+      "reason": "Requires human image comparison against the supplied Rhythm Agent Settings reference."
+    }
+  ],
+  "not_tested": ["task-hermes-rhythm-skin-c3"]
+}

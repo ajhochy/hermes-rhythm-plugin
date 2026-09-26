@@ -1,17 +1,17 @@
 :root[data-theme="rhythm"] {
   color-scheme: light;
 
-  --rhythm-primary: #4F6AF5;
-  --rhythm-sidebar: #F8F9FA;
-  --rhythm-border: #E5E7EB;
-  --rhythm-text-primary: #111827;
-  --rhythm-text-secondary: #6B7280;
-  --rhythm-text-muted: #9CA3AF;
-  --rhythm-error: #EF4444;
-  --rhythm-success: #10B981;
+  --rhythm-primary: #007760;
+  --rhythm-sidebar: #D8EEE5;
+  --rhythm-border: #C0D7D1;
+  --rhythm-text-primary: #03201D;
+  --rhythm-text-secondary: #19403A;
+  --rhythm-text-muted: #2E5951;
+  --rhythm-error: #AC1730;
+  --rhythm-success: #00631B;
 
-  --background: #FFFFFF;
-  --background-base: #FFFFFF;
+  --background: #ECF6F2;
+  --background-base: #ECF6F2;
   --background-alpha: 1;
   --midground: var(--rhythm-text-primary);
   --midground-base: var(--rhythm-text-primary);
@@ -21,24 +21,24 @@
   --foreground-alpha: 1;
 
   --color-foreground: var(--rhythm-text-primary);
-  --color-card: #FFFFFF;
+  --color-card: #F8FDFB;
   --color-card-foreground: var(--rhythm-text-primary);
-  --color-popover: #FFFFFF;
+  --color-popover: #F8FDFB;
   --color-popover-foreground: var(--rhythm-text-primary);
   /* Slightly darker text/control aliases preserve AA contrast on white while
      the palette retains the requested brand hues above. */
-  --color-primary: #4E69F2;
-  --color-primary-foreground: #FFFFFF;
+  --color-primary: #007760;
+  --color-primary-foreground: #F2FBF7;
   --color-secondary: var(--rhythm-sidebar);
   --color-secondary-foreground: var(--rhythm-text-primary);
-  --color-muted: #F3F4F6;
+  --color-muted: #D8EEE5;
   --color-muted-foreground: var(--rhythm-text-secondary);
-  --color-accent: #EEF1FF;
-  --color-accent-foreground: #263CA8;
-  --color-destructive: #DC2626;
-  --color-destructive-foreground: #FFFFFF;
-  --color-success: #047857;
-  --color-warning: #B45309;
+  --color-accent: #D8EEE5;
+  --color-accent-foreground: #03201D;
+  --color-destructive: #AC1730;
+  --color-destructive-foreground: #F2FBF7;
+  --color-success: #00631B;
+  --color-warning: #6D4800;
   --color-border: var(--rhythm-border);
   --color-input: var(--rhythm-border);
   --color-ring: var(--rhythm-primary);
@@ -51,49 +51,49 @@
   --component-sidebar-background: var(--rhythm-sidebar);
   --component-sidebar-border-image: none;
 
-  --radius: 0.5rem;
-  --theme-radius: 0.5rem;
-  --theme-terminal-background: #111827;
-  --theme-terminal-foreground: #F9FAFB;
+  --radius: 0.625rem;
+  --theme-radius: 0.625rem;
+  --theme-terminal-background: #252727;
+  --theme-terminal-foreground: #DEDFDF;
 }
 
 @media (prefers-color-scheme: dark) {
   :root[data-theme="rhythm"] {
     color-scheme: dark;
 
-    --rhythm-sidebar: #1F2937;
-    --rhythm-border: #374151;
-    --rhythm-text-primary: #F9FAFB;
-    --rhythm-text-secondary: #D1D5DB;
-    --rhythm-text-muted: #9CA3AF;
+    --rhythm-sidebar: #323735;
+    --rhythm-border: #3E4542;
+    --rhythm-text-primary: #DEDFDF;
+    --rhythm-text-secondary: #BFC6C3;
+    --rhythm-text-muted: #ABB2B0;
 
-    --background: #111827;
-    --background-base: #111827;
+    --background: #252727;
+    --background-base: #252727;
     --midground: var(--rhythm-text-primary);
     --midground-base: var(--rhythm-text-primary);
-    --foreground: #8EA0FF;
-    --foreground-base: #8EA0FF;
+    --foreground: #42C3A6;
+    --foreground-base: #42C3A6;
 
     --color-foreground: var(--rhythm-text-primary);
-    --color-card: #1F2937;
+    --color-card: #2B2E2D;
     --color-card-foreground: var(--rhythm-text-primary);
-    --color-popover: #1F2937;
+    --color-popover: #2B2E2D;
     --color-popover-foreground: var(--rhythm-text-primary);
-    --color-primary: #8EA0FF;
-    --color-primary-foreground: #111827;
-    --color-secondary: #273449;
+    --color-primary: #42C3A6;
+    --color-primary-foreground: #010E0C;
+    --color-secondary: #323735;
     --color-secondary-foreground: var(--rhythm-text-primary);
-    --color-muted: #273449;
+    --color-muted: #323735;
     --color-muted-foreground: var(--rhythm-text-secondary);
-    --color-accent: #283667;
-    --color-accent-foreground: #E0E7FF;
-    --color-destructive: #F87171;
-    --color-destructive-foreground: #111827;
-    --color-success: #34D399;
-    --color-warning: #FBBF24;
+    --color-accent: #363C39;
+    --color-accent-foreground: #DEDFDF;
+    --color-destructive: #FF666F;
+    --color-destructive-foreground: #010E0C;
+    --color-success: #60C473;
+    --color-warning: #F0BB3B;
     --color-border: var(--rhythm-border);
-    --color-input: #4B5563;
-    --color-ring: #8EA0FF;
+    --color-input: #697571;
+    --color-ring: #42C3A6;
 
     --color-text-primary: var(--rhythm-text-primary);
     --color-text-secondary: var(--rhythm-text-secondary);

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Single source of truth for the Rhythm theme: tokens.json in, two generated
-files out (the dashboard CSS and the desktop theme contribution). Both
-generated files are committed; this script only re-derives them.
+"""Single source of truth for the Rhythm theme: tokens.json in, generated
+dashboard CSS, desktop TypeScript, and embedded-theme JSON out. All generated
+files are committed; this script only re-derives them.
 
 Regenerate after editing tokens.json:
     python3 plugins/rhythm/theme/generate.py --write
@@ -18,6 +18,7 @@ THEME_DIR = Path(__file__).resolve().parent
 TOKENS_PATH = THEME_DIR / "tokens.json"
 CSS_PATH = THEME_DIR.parent / "dashboard" / "theme" / "rhythm.css"
 DESKTOP_THEME_PATH = THEME_DIR.parent / "desktop" / "src" / "theme.ts"
+EMBEDDED_THEME_PATH = THEME_DIR.parent / "desktop" / "rhythm-theme.json"
 
 
 def load_tokens() -> dict:
@@ -228,6 +229,55 @@ export default rhythmDesktopTheme
 """
 
 
+def desktop_theme(tokens: dict) -> dict:
+    light, dark = tokens["light"], tokens["dark"]
+
+    def colors(t: dict, *, primary: str, primary_fg: str, secondary: str,
+               background: str, card: str, foreground: str) -> dict:
+        return {
+            "background": background,
+            "foreground": foreground,
+            "card": card,
+            "cardForeground": foreground,
+            "muted": t["muted"],
+            "mutedForeground": t["textSecondary"],
+            "popover": card,
+            "popoverForeground": foreground,
+            "primary": primary,
+            "primaryForeground": primary_fg,
+            "secondary": secondary,
+            "secondaryForeground": foreground,
+            "accent": t["accent"],
+            "accentForeground": t["accentForeground"],
+            "border": t["border"],
+            "input": t.get("input", t["border"]),
+            "ring": t.get("primary", primary),
+            "midground": t.get("primary", primary),
+            "destructive": t["destructiveAccessible"],
+            "destructiveForeground": primary_fg,
+            "sidebarBackground": t.get("sidebar", secondary),
+            "sidebarBorder": t["border"],
+        }
+
+    return {
+        "name": "rhythm",
+        "label": "Rhythm",
+        "description": "Rhythm workspace colors",
+        "colors": colors(light, primary=light["primaryAccessible"],
+                         primary_fg=light["primaryForeground"], secondary=light["sidebar"],
+                         background=light["background"], card=light["card"],
+                         foreground=light["textPrimary"]),
+        "darkColors": colors(dark, primary=dark["primary"],
+                             primary_fg=dark["primaryForeground"], secondary=dark["secondary"],
+                             background=dark["background"], card=dark["card"],
+                             foreground=dark["textPrimary"]),
+    }
+
+
+def render_embedded_theme_json(tokens: dict) -> str:
+    return json.dumps(desktop_theme(tokens), indent=2) + "\n"
+
+
 def main(argv: list | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--write", action="store_true", help="write the generated files to disk")
@@ -237,10 +287,12 @@ def main(argv: list | None = None) -> int:
     tokens = load_tokens()
     css = render_css(tokens)
     theme_ts = render_desktop_theme_ts(tokens)
+    embedded_theme_json = render_embedded_theme_json(tokens)
 
     if args.write:
         CSS_PATH.write_text(css, encoding="utf-8")
         DESKTOP_THEME_PATH.write_text(theme_ts, encoding="utf-8")
+        EMBEDDED_THEME_PATH.write_text(embedded_theme_json, encoding="utf-8")
         return 0
 
     if args.check:
@@ -249,6 +301,8 @@ def main(argv: list | None = None) -> int:
             stale.append(str(CSS_PATH))
         if not DESKTOP_THEME_PATH.is_file() or DESKTOP_THEME_PATH.read_text(encoding="utf-8") != theme_ts:
             stale.append(str(DESKTOP_THEME_PATH))
+        if not EMBEDDED_THEME_PATH.is_file() or EMBEDDED_THEME_PATH.read_text(encoding="utf-8") != embedded_theme_json:
+            stale.append(str(EMBEDDED_THEME_PATH))
         if stale:
             print("Stale generated file(s), run with --write:\n  " + "\n  ".join(stale), file=sys.stderr)
             return 1
@@ -256,6 +310,7 @@ def main(argv: list | None = None) -> int:
 
     sys.stdout.write(css)
     sys.stdout.write(theme_ts)
+    sys.stdout.write(embedded_theme_json)
     return 0
 
 

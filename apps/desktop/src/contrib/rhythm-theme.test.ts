@@ -14,16 +14,35 @@ const tokens = JSON.parse(
 ) as { light: Record<string, string>; dark: Record<string, string> }
 
 describe('Rhythm desktop theme contribution (#1543-a)', () => {
-  it('tokens.json declares the exact canonical brand hexes', () => {
-    expect(tokens.light.primary).toBe('#4F6AF5')
-    expect(tokens.light.sidebar).toBe('#F8F9FA')
-    expect(tokens.light.border).toBe('#E5E7EB')
-    expect(tokens.light.textPrimary).toBe('#111827')
-    expect(tokens.light.textSecondary).toBe('#6B7280')
-    expect(tokens.light.textMuted).toBe('#9CA3AF')
-    expect(tokens.light.error).toBe('#EF4444')
-    expect(tokens.light.success).toBe('#10B981')
-    expect(tokens.dark).toBeTruthy()
+  it('uses the canonical Rhythm Electron palette instead of the old indigo skin', () => {
+    expect(tokens.light).toMatchObject({
+      background: '#ECF6F2',
+      card: '#F8FDFB',
+      sidebar: '#D8EEE5',
+      border: '#C0D7D1',
+      textPrimary: '#03201D',
+      textSecondary: '#19403A',
+      textMuted: '#2E5951',
+      primary: '#007760',
+      primaryForeground: '#F2FBF7',
+      error: '#AC1730',
+      success: '#00631B',
+      warning: '#6D4800'
+    })
+    expect(tokens.dark).toMatchObject({
+      background: '#252727',
+      card: '#2B2E2D',
+      sidebar: '#323735',
+      border: '#3E4542',
+      textPrimary: '#DEDFDF',
+      textSecondary: '#BFC6C3',
+      textMuted: '#ABB2B0',
+      primary: '#42C3A6',
+      primaryForeground: '#010E0C',
+      error: '#FF666F',
+      success: '#60C473',
+      warning: '#F0BB3B'
+    })
   })
 
   it('every accessible foreground/background pair clears WCAG AA (4.5:1) in light and dark', () => {
