@@ -1,0 +1,12 @@
+{
+  "issue": 10,
+  "generated": "2026-08-21",
+  "criteria": [
+    {"criterion_id":"issue-10-c1","text":"Messages list/members/markRead/markUnread; explicitly unavailable createThread/send/rename/delete and no backend routes.","mode":"unit","test_file":"apps/desktop/src/contrib/rhythm-workspace-ui.test.tsx","test_id":"issue-10-c1: messages use only pinned reads and receipt-bound state operations","status":"pass"},
+    {"criterion_id":"issue-10-c2","text":"Facilities reads and granular confirmed operations defined by shared host type; pinned endpoints, server-derived manager/reserver role, exact payload receipt, canonical identity readback, conflict/uncertain no retry.","mode":"integration","test_file":"tests/plugins/test_rhythm_issue_10_contract.py","test_id":"issue-10-c2: facility and message writes are explicit and no create/send is allowlisted","status":"pass"},
+    {"criterion_id":"issue-10-c3","text":"Build/sync exact dist, provenance/comment.","mode":"unit","test_file":"tests/plugins/test_rhythm_issue_10_contract.py","test_id":"issue-10-c3: vendor provenance names shared head","status":"pass"},
+    {"criterion_id":"issue-10-c4","text":"Add issue-10 contract, backend and mounted tests including zero message POST and no background mutation.","mode":"unit","test_file":"apps/desktop/src/contrib/rhythm-workspace-ui.test.tsx","test_id":"issue-10-c4: mounted confirmation prevents background mutation","status":"pass"}
+  ],
+  "stack":"python",
+  "not_tested":[]
+}

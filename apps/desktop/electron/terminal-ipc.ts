@@ -7,7 +7,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { app, ipcMain } from 'electron'
+import { app, ipcMain as electronIpcMain } from 'electron'
 import nodePty from 'node-pty'
 
 import { resolveTerminalConnection } from './connection-apply'
@@ -16,6 +16,8 @@ import { buildInteractiveSshArgs } from './ssh-connection'
 import { buildWindowsInteractiveCommand } from './windows-remote-lifecycle'
 
 export interface TerminalIpcDeps {
+  /** An embedded host supplies a sender-scoped registrar. */
+  ipcMain?: Pick<typeof electronIpcMain, 'handle'>
   isWindows: boolean
   findOnPath: (command: string) => null | string
   rememberLog: (line: string) => void
@@ -31,6 +33,7 @@ export interface TerminalIpcApi {
 }
 
 export function registerTerminalIpc({
+  ipcMain = electronIpcMain,
   isWindows,
   findOnPath,
   rememberLog,

@@ -11371,6 +11371,14 @@ def cmd_dashboard(args):
         else:
             os.execvpe(sys.executable, reexec_argv, env)
 
+    # This is the final serving process after any profile re-exec. Consume its
+    # one-shot authority and establish serving identity before *any* plugin or
+    # MCP discovery can observe host capabilities.
+    from agent import host_capabilities
+
+    host_capabilities.load_from_handoff()
+    host_capabilities.mark_serving_process()
+
     # Apply the final process/profile policy after dashboard routing, but before
     # importing the web server or opening dashboard state. Applying it before a
     # named-profile re-exec could leak that profile's higher limit into the

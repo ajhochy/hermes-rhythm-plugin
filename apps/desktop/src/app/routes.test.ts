@@ -1,9 +1,20 @@
 import { describe, expect, it } from 'vitest'
 
-import { NEW_CHAT_ROUTE, primaryRouteSelectedSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
+import { contributedRoutes, NEW_CHAT_ROUTE, primaryRouteSelectedSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
 
 const SESS_A = 'sess-a'
 const SESS_B = 'sess-b'
+
+describe('contributedRoutes', () => {
+  it('resolves the supplied reactive route snapshot', () => {
+    const render = () => 'Rhythm workspace'
+    const snapshot = [{ area: 'routes', id: 'rhythm:page', source: 'plugin:rhythm', data: { path: '/rhythm' }, render }]
+
+    expect(contributedRoutes(snapshot)).toEqual([
+      { key: 'plugin:rhythm:rhythm:page', path: '/rhythm', title: undefined, render }
+    ])
+  })
+})
 
 describe('primaryRouteSelectedSessionId', () => {
   it('prefers the routed session id over a stale/different store selection (#59305)', () => {

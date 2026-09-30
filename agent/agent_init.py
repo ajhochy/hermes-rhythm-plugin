@@ -511,6 +511,8 @@ def _normalize_run_budget_seconds(value) -> Optional[float]:
 
 def init_agent(
     agent,
+    session_policy=None,
+    policy_approval_callback=None,
     base_url: str = None,
     api_key: str = None,
     provider: str = None,
@@ -1551,11 +1553,26 @@ def init_agent(
         agent._tool_snapshot_generation = _snapshot_registry._generation
     except Exception:
         agent._tool_snapshot_generation = 0
+    agent.session_policy = session_policy
+    agent.policy_approval_callback = policy_approval_callback
     agent.tools = _ra().get_tool_definitions(
         enabled_toolsets=enabled_toolsets,
         disabled_toolsets=disabled_toolsets,
         quiet_mode=agent.quiet_mode,
+        session_policy=session_policy,
     )
+    if session_policy is not None:
+        if session_policy.version == 1 and session_policy.binding.session_id != session_id:
+            raise ValueError("policy binding mismatch")
+        # Tool schemas use the OpenAI function wrapper, not a flat name.
+        agent.tools = session_policy.filter_tool_schemas(
+            agent.tools, binding={
+                "session_id": session_id,
+                "owner_id": session_policy.binding.owner_id,
+                "profile_id": session_policy.binding.profile_id,
+                "runtime_generation": session_policy.binding.runtime_generation,
+            },
+        )
     
     # Show tool configuration and store valid tool names for validation
     agent.valid_tool_names = set()
@@ -1724,6 +1741,12 @@ def init_agent(
         "reasoning_config": reasoning_config,
         "max_tokens": max_tokens,
     }
+    if session_policy is not None:
+        agent._session_init_model_config["native_session_policy"] = (
+            session_policy.persistence_entry(
+                tainted=bool(getattr(agent, "session_policy_tainted", False))
+            )
+        )
     # Persist a process-scoped --yolo launch into the session row so a later
     # `hermes --resume <id>` can restore the bypass (CLI resume paths read
     # model_config.yolo_mode back via SessionDB.session_yolo_enabled).
@@ -2840,6 +2863,18 @@ def init_agent(
             agent.valid_tool_names.add(_tname)
             agent._context_engine_tool_names.add(_tname)
             _existing_tool_names.add(_tname)
+
+    if session_policy is not None:
+        # Memory/context providers inject schemas after the initial registry
+        # snapshot. Apply the same frozen filter to the final offered surface.
+        agent.tools = session_policy.filter_tool_schemas(agent.tools, binding={
+            "session_id": session_id,
+            "owner_id": session_policy.binding.owner_id,
+            "profile_id": session_policy.binding.profile_id,
+            "runtime_generation": session_policy.binding.runtime_generation,
+        })
+        agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools}
+        agent._context_engine_tool_names.intersection_update(agent.valid_tool_names)
 
     # Notify context engine of session start
     if hasattr(agent, "context_compressor") and agent.context_compressor:

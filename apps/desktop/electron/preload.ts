@@ -1,5 +1,17 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
 
+function isEmbeddedRenderer(): boolean {
+  try {
+    const params = new URLSearchParams(window.location.search)
+
+    return params.get('embedded') === '1' && !params.has('win')
+  } catch {
+    return false
+  }
+}
+
+const embeddedRenderer = isEmbeddedRenderer()
+
 // Which translucency the OS can back. Asked synchronously because the renderer
 // needs it before its first paint, and answered by main because deciding it
 // needs `os.release()` — a sandboxed preload may only require electron, events,
@@ -7,9 +19,29 @@ import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
 // and takes the ENTIRE bridge down with it (window.hermesDesktop undefined =>
 // "Desktop IPC bridge is unavailable"). No reply means no glass, which degrades
 // to an ordinary opaque window rather than a page thinned over nothing.
-const translucencySupport = ipcRenderer.sendSync('hermes:translucency:support')
+// Rhythm owns the outer native window. Do not invoke the standalone window
+// capability during embedded boot: an unregistered sync channel would make the
+// real renderer look broken before its gateway can connect.
+const translucencySupport = embeddedRenderer ? null : ipcRenderer.sendSync('hermes:translucency:support')
 
 contextBridge.exposeInMainWorld('hermesDesktop', {
+  embedded: {
+    enabled: embeddedRenderer,
+    metadata: () =>
+      embeddedRenderer
+        ? ipcRenderer.invoke('hermes:embedded:metadata')
+        : Promise.resolve({ embedded: false }),
+    onIntent: callback => {
+      if (!embeddedRenderer) {
+        return () => undefined
+      }
+
+      const listener = (_event, intent) => callback(intent)
+      ipcRenderer.on('hermes:embedded:intent', listener)
+
+      return () => ipcRenderer.removeListener('hermes:embedded:intent', listener)
+    }
+  },
   glassSupported: translucencySupport?.glass === true,
   translucencySupported: translucencySupport?.translucency === true,
   getConnection: profile => ipcRenderer.invoke('hermes:connection', profile),
@@ -227,7 +259,13 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   setActiveWork: payload => ipcRenderer.send('hermes:active-work', payload),
   setTitleBarTheme: payload => ipcRenderer.send('hermes:titlebar-theme', payload),
   setNativeTheme: mode => ipcRenderer.send('hermes:native-theme', mode),
-  setTranslucency: payload => ipcRenderer.send('hermes:translucency', payload),
+  // The Rhythm-owned outer window owns translucency. Avoid sending an
+  // unhandled standalone-window IPC event from the real embedded renderer.
+  setTranslucency: payload => {
+    if (!embeddedRenderer) {
+      ipcRenderer.send('hermes:translucency', payload)
+    }
+  },
   setKeepAwake: on => ipcRenderer.send('hermes:keep-awake', on),
   setDisableF12: blocked => ipcRenderer.send('hermes:devtools:disable-f12', blocked),
   setPreviewShortcutActive: active => ipcRenderer.send('hermes:previewShortcutActive', Boolean(active)),

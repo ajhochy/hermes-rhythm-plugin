@@ -34,6 +34,7 @@ import {
 import { onGatewayEvent } from '@/contrib/events'
 import { registry } from '@/contrib/registry'
 import { deleteProfile, getLogs, getStatus, type HermesGateway } from '@/hermes'
+import { stashSessionDraft } from '@/store/composer'
 import {
   $gateway,
   activeGatewayConnectionId,
@@ -44,6 +45,7 @@ import {
   retireLocalProfileGateways
 } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
+import { setNewChatPolicySelection } from '@/store/policy-selection'
 import {
   $activeGatewayProfile,
   $gatewaySwapTarget,
@@ -234,6 +236,52 @@ interface PluginOpenSessionOptions {
    *  overlay ($resumeExhaustedSessionId) — a caller-side retry can't do this
    *  itself because only this SDK layer sees $resumeExhaustedSessionId. */
   retryHydrationTimeoutOnce?: boolean
+}
+
+export interface NewChatSource {
+  label?: string
+  metadata?: Record<string, unknown>
+}
+
+export interface NewChatOptions {
+  prefill?: string
+  profile?: null | string
+  source?: NewChatSource
+  /** A host-issued session-policy selection (§5.4) — e.g. a Rhythm
+   *  shared-agent launch. Consumed once by the next `session.create` and
+   *  cleared; malformed values are dropped rather than reaching the gateway. */
+  policySelection?: string
+}
+
+const NEW_CHAT_MAX_PREFILL = 1_024
+const NEW_CHAT_MAX_METADATA_FIELDS = 8
+const NEW_CHAT_MAX_METADATA_VALUE = 120
+const NEW_CHAT_MAX_DRAFT = 2_048
+const POLICY_SELECTION_MAX_LENGTH = 1_024
+const POLICY_SELECTION_RE = /^[A-Za-z0-9:._@-]+$/
+
+function newChatPolicySelection(options: NewChatOptions): string | null {
+  const raw = (options.policySelection ?? '').trim()
+
+  return raw && raw.length <= POLICY_SELECTION_MAX_LENGTH && POLICY_SELECTION_RE.test(raw) ? raw : null
+}
+
+function newChatDraft(options: NewChatOptions): string {
+  const prefill = (options.prefill ?? '').trim().slice(0, NEW_CHAT_MAX_PREFILL)
+  const label = (options.source?.label ?? '').trim().slice(0, NEW_CHAT_MAX_METADATA_VALUE)
+
+  const metadata = Object.entries(options.source?.metadata ?? {})
+    .sort(([a], [b]) => a.localeCompare(b))
+    .slice(0, NEW_CHAT_MAX_METADATA_FIELDS)
+    .map(([key, value]) => `${key.trim().slice(0, 64)}: ${String(value).slice(0, NEW_CHAT_MAX_METADATA_VALUE)}`)
+    .filter(line => !line.startsWith(': '))
+
+  const context = [label, ...metadata].filter(Boolean)
+
+  return [prefill, context.length ? `Source:\n${context.map(line => `- ${line}`).join('\n')}` : '']
+    .filter(Boolean)
+    .join('\n\n')
+    .slice(0, NEW_CHAT_MAX_DRAFT)
 }
 
 function waitForFocusedSessionHydration({
@@ -794,8 +842,17 @@ export const host = {
   /** Start a fresh chat draft, optionally pointed at another profile (its
    *  backend spins up in the background — same door the sidebar's per-profile
    *  "+" uses). */
-  newChat: (profile?: null | string): void => {
-    newSessionInProfile((profile ?? '').trim() || $activeGatewayProfile.get())
+  newChat: (input?: NewChatOptions | null | string): void => {
+    const options: NewChatOptions = typeof input === 'string' || input == null ? { profile: input } : input
+    // Write through the existing per-new-session stash before changing route.
+    // It is intentionally an overwrite: repeated automation/clicks result in
+    // exactly one editable draft, with the newest explicit user intent winning.
+    stashSessionDraft(null, newChatDraft(options), [])
+    // Own every call's intent: a call without a selection must clear a stale
+    // one from an earlier, never-consumed newChat rather than leaving it for
+    // a later, unrelated session-create to pick up.
+    setNewChatPolicySelection(newChatPolicySelection(options))
+    newSessionInProfile((options.profile ?? '').trim() || $activeGatewayProfile.get())
     window.location.hash = '#/'
   },
 
@@ -989,6 +1046,7 @@ export type {
   PluginNotificationAction,
   PluginOs,
   PluginRestOptions,
+  PluginRestRoute,
   PluginStorage
 } from '@/contrib/plugin'
 /** Mount-scoped contribution: while the rendering component is mounted, its

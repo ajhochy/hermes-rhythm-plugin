@@ -1,3 +1,4 @@
+import { JsonRpcGatewayError } from '@hermes/shared'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -183,6 +184,38 @@ describe('PluginsSettings', () => {
     // Active profile scope: no profile param — older backends unchanged.
     await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('plugins.manage', { action: 'list' }))
     await waitFor(() => expect(screen.getByText('Applies to:')).toBeTruthy())
+  })
+
+  it('refreshes the backend plugin inventory when Rescan is clicked', async () => {
+    $gatewayState.set('open')
+    requestGateway
+      .mockResolvedValueOnce({ plugins: [legacyRow] })
+      .mockResolvedValueOnce({ plugins: [] })
+
+    renderSettings()
+    await waitFor(() => expect(screen.getByText('Legacy plugin')).toBeTruthy())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rescan' }))
+
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledTimes(2))
+    expect(requestGateway).toHaveBeenLastCalledWith('plugins.manage', { action: 'reconcile' })
+    await waitFor(() => expect(screen.queryByText('Legacy plugin')).toBeNull())
+  })
+
+  it('refreshes through list when an older gateway lacks reconcile', async () => {
+    $gatewayState.set('open')
+    requestGateway
+      .mockResolvedValueOnce({ plugins: [legacyRow] })
+      .mockRejectedValueOnce(new JsonRpcGatewayError('unknown plugins action: reconcile', { code: 4017 }))
+      .mockResolvedValueOnce({ plugins: [] })
+
+    renderSettings()
+    await waitFor(() => expect(screen.getByText('Legacy plugin')).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'Rescan' }))
+
+    await waitFor(() => expect(screen.queryByText('Legacy plugin')).toBeNull())
+    expect(requestGateway).toHaveBeenNthCalledWith(2, 'plugins.manage', { action: 'reconcile' })
+    expect(requestGateway).toHaveBeenNthCalledWith(3, 'plugins.manage', { action: 'list' })
   })
 
   it('sends toggles through the selected profile scope', async () => {

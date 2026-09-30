@@ -1,8 +1,10 @@
 // IPC surface for the pop-out pet overlay (mascot window). Extracted from
 // main.ts; window handles stay injected because main.ts owns their lifecycle.
-import { type BrowserWindow, ipcMain } from 'electron'
+import { type BrowserWindow, ipcMain as electronIpcMain } from 'electron'
 
 export interface PetOverlayIpcDeps {
+  /** An embedded host supplies a sender-scoped registrar. */
+  ipcMain?: Pick<typeof electronIpcMain, 'handle' | 'on'>
   getMainWindow: () => BrowserWindow | null
   getPetOverlayWindow: () => BrowserWindow | null
   openPetOverlay: (bounds: unknown) => void
@@ -10,6 +12,7 @@ export interface PetOverlayIpcDeps {
 }
 
 export function registerPetOverlayIpc({
+  ipcMain = electronIpcMain,
   getMainWindow,
   getPetOverlayWindow,
   openPetOverlay,

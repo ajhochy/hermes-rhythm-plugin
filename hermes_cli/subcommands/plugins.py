@@ -142,6 +142,19 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     )
     plugins_disable.add_argument("name", help="Plugin name to disable")
 
+    plugins_reload = plugins_subparsers.add_parser(
+        "reload",
+        help="Reload one already-loaded plugin's code without restarting Hermes",
+        description=(
+            "Re-import a single plugin's module and re-run register() against "
+            "the live plugin manager — for iterating on plugin code without a "
+            "full restart. Prints a truthful success/failure outcome; exits "
+            "non-zero on any failure (disposal survivors, missing manifest, "
+            "or a broken register())."
+        ),
+    )
+    plugins_reload.add_argument("name", help="Plugin name or key to reload")
+
     plugins_capabilities = plugins_subparsers.add_parser(
         "capabilities",
         help="Show declared vs granted capabilities per plugin",

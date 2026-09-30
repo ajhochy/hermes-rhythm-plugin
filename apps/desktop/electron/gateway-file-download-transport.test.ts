@@ -1,5 +1,5 @@
 /**
- * Wiring coverage for the main.ts gateway download transports. These functions
+ * Wiring coverage for the side-effect-free Desktop runtime gateway download transports. These functions
  * pull in main-process singletons (https/http, electronNet, the OAuth session,
  * the save dialog), so we assert on their source shape — the same approach as
  * oauth-session-request.test.ts — while gateway-file-download.test.ts unit-tests
@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { test } from 'vitest'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const source = fs.readFileSync(path.join(__dirname, 'main.ts'), 'utf8')
+const source = fs.readFileSync(path.join(__dirname, 'desktop-native-runtime.ts'), 'utf8')
 
 function extract(startMarker: string, endMarker: string): string {
   const start = source.indexOf(startMarker)

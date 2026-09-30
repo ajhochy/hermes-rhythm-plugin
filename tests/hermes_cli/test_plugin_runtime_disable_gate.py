@@ -178,6 +178,40 @@ class TestPluginApiRuntimeGate:
         assert response.status_code == 404
         call_next.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_public_callback_ignores_legacy_token_when_oauth_auth_is_required(self, monkeypatch):
+        """A legacy loopback token is not OAuth authentication for a public callback."""
+        from starlette.requests import Request
+        from starlette.responses import JSONResponse
+
+        monkeypatch.setattr(web_server.app.state, "auth_required", True, raising=False)
+        scope = {
+            "type": "http",
+            "app": web_server.app,
+            "method": "GET",
+            "path": "/api/plugins/hot/callback",
+            "query_string": b"",
+            "headers": [
+                (
+                    web_server._SESSION_HEADER_NAME.lower().encode(),
+                    web_server._SESSION_TOKEN.encode(),
+                ),
+            ],
+            "state": {},
+        }
+        request = Request(scope)
+        call_next = AsyncMock(return_value=JSONResponse({"ok": True}))
+        fake_plugin = {"name": "hot", "source": "user"}
+
+        with patch.object(web_server, "_is_public_api_route", return_value=True), \
+             patch.object(web_server, "_get_dashboard_plugins", return_value=[fake_plugin]), \
+             patch("hermes_cli.plugins_cmd._get_enabled_set", return_value={"hot"}), \
+             patch("hermes_cli.plugins_cmd._get_disabled_set", return_value={"hot"}):
+            response = await web_server._plugin_api_runtime_gate(request, call_next)
+
+        assert response.status_code == 401
+        call_next.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Test 2: Disabled bundled plugin assets return 404
@@ -243,4 +277,3 @@ class TestBundledPluginAssetGate:
             ):
                 resp = test_client.get("/dashboard-plugins/goodbundled/dist/index.js")
                 assert resp.status_code == 200
-

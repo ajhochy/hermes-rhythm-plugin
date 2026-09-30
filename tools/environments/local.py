@@ -200,6 +200,18 @@ def _resolve_safe_cwd(cwd: str) -> str:
 
 # Hermes-internal env vars that should NOT leak into terminal subprocesses.
 _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
+_HERMES_HOST_CAPABILITY_PREFIX = "HERMES_HOST_CAPABILIT"
+
+
+def _strip_host_capability_env(env: dict[str, str]) -> dict[str, str]:
+    """Never delegate process-bound host authority to a child."""
+    for key in list(env):
+        if (
+            key.startswith(_HERMES_HOST_CAPABILITY_PREFIX)
+            or key == "HERMES_HOST_REQUIRED_PLUGINS"
+        ):
+            env.pop(key, None)
+    return env
 
 # Hermes-managed AWS *inference* credentials for ``auth_type="aws_sdk"``
 # providers (Bedrock).  Scoped DELIBERATELY NARROW: this lists only the
@@ -668,7 +680,7 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     # still see the parent's HERMES_HOME but lose the DB mutation guard.
     env = _scrub_delegated_child_kanban_env(env)
 
-    return env
+    return _strip_host_capability_env(env)
 
 
 def build_subprocess_env(
@@ -719,9 +731,11 @@ def build_subprocess_env(
         # _sanitize_subprocess_env already performs HERMES_HOME override
         # bridging + apply_subprocess_home_env unconditionally; delegating
         # wholesale keeps one owner and zero drift.
-        return _sanitize_subprocess_env(
-            dict(base) if base is not None else os.environ.copy(),
-            dict(extra) if extra else None,
+        return _strip_host_capability_env(
+            _sanitize_subprocess_env(
+                dict(base) if base is not None else os.environ.copy(),
+                dict(extra) if extra else None,
+            )
         )
 
     env: dict[str, str] = dict(base) if base is not None else os.environ.copy()
@@ -731,7 +745,7 @@ def build_subprocess_env(
         apply_subprocess_home_env(env)
     if extra:
         env.update(extra)
-    return env
+    return _strip_host_capability_env(env)
 
 
 def _find_bash() -> str:

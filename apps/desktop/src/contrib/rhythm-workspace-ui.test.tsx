@@ -1,0 +1,482 @@
+import { host as hermesHost } from '@hermes/plugin-sdk'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import { askHermes, confirmationKey, createGateway, gatewayError, RhythmWorkspace, workspaceKey } from '../../../../plugins/rhythm/desktop/src/plugin'
+import {
+  DashboardScreen,
+  ArtifactsScreen,
+  AutomationsScreen,
+  FacilitiesScreen,
+  IntegrationsScreen,
+  MessagesScreen,
+  defaultRhythmTokens,
+  type RhythmDomainGateway,
+  type RhythmHostAdapter,
+  RhythmWorkspaceProvider,
+  TasksScreen,
+  PlannerScreen,
+  RhythmsScreen,
+  ProjectsScreen,
+} from '../../../../plugins/rhythm/desktop/vendor/rhythm-workspace-ui/dist/index.js'
+
+const host: RhythmHostAdapter = {
+  tokens: defaultRhythmTokens,
+  viewport: 'expanded',
+  currentUser: { displayName: 'Hermes', initials: 'H', collaborationCapability: 'read' },
+}
+
+const task = {
+  id: 'task-1', title: 'Review brief', notes: 'Read the accepted artifact.', status: 'open' as const,
+  bucket: 'today' as const, priority: 1 as const, tags: ['work'], createdAt: '2026-08-21',
+  createdBy: 'Hermes', ownerId: 'H', isShared: false, sourceType: 'manual' as const,
+  preferredAgent: '' as const, energy: '' as const, collaborators: [],
+}
+
+const summary = { openTaskCount: 1, threadCount: 0, tasks: [{ id: task.id, title: task.title, notes: task.notes, status: 'open' as const, bucket: 'today' as const, dueLabel: 'Today' }], project: null, unreadThreads: [] }
+
+function renderScreen(screenNode: React.ReactNode, gateway: RhythmDomainGateway, adapter = host) {
+  return render(<div className="rhythm-workspace-root" data-readonly="true"><RhythmWorkspaceProvider gateway={gateway} host={adapter}>{screenNode}</RhythmWorkspaceProvider></div>)
+}
+
+function restFor(value: unknown | Error) {
+  const request = vi.fn(async (path: string) => {
+    if (value instanceof Error) {throw value}
+
+    if (path === '/dashboard-summary') {return summary}
+
+    if (path === '/tasks') {return { tasks: [task] }}
+    throw new Error(`unexpected GET ${path}`)
+  })
+
+  return request as unknown as Parameters<typeof createGateway>[0]
+}
+
+const plannerWeek = {
+  weekLabel: 'Aug 17 – Aug 23', weekStart: '2026-08-17', backlog: [],
+  days: [{ date: '2026-08-17', label: 'Monday', tasks: [{ id: 'planner-task-1', title: 'Plan launch', notes: '', status: 'open', source: 'task', scheduledOrder: 0, collaborators: [], readonly: false }], events: [] }],
+}
+
+const rhythmRules = [{
+  id: 'rule-1', title: 'Weekly review', frequency: 'weekly', dayOfWeek: 1, dayOfMonth: 1, month: 1, sequential: false, enabled: true,
+  ownerId: 'user-1', ownerName: 'Hermes', collaborators: [], steps: [], generatedCount: 1, completedCount: 0, remainingCount: 1,
+  waitingOn: null, nextDueDate: '2026-08-24', completionRatio: 0, createdAt: '2026-08-01',
+}]
+
+const projectTemplates = [{ id: 'template-1', name: 'Launch', description: 'Ship it.', anchorType: 'date', steps: [] }]
+const projectInstances = [{ id: 'project-1', templateId: 'template-1', name: 'August launch', anchorDate: '2026-08-17', status: 'active', ownerId: 'user-1', collaborators: [], milestones: [], steps: [] }]
+
+function m5Rest() {
+  return vi.fn(async (path: string) => {
+    if (path === '/planner/weeks/2026-08-17') return plannerWeek
+    if (path === '/rhythm-rules') return { items: rhythmRules }
+    if (path === '/project-templates') return { items: projectTemplates }
+    if (path === '/project-instances') return { items: projectInstances }
+    throw new Error(`unexpected M5 GET ${path}`)
+  })
+}
+
+afterEach(() => cleanup())
+
+describe('accepted Rhythm workspace package', () => {
+  it('offers visible profile-scoped OAuth when the mounted Rhythm profile is disconnected', async () => {
+    const authorizationUrl = 'https://accounts.google.com/o/oauth2/v2/auth?state=fixture'
+    const rest = vi.fn(async (path: string, opts?: { method?: string }) => {
+      if (path === '/connection') return { connected: false }
+      if (path === '/oauth/start' && opts?.method === 'POST') return { authorization_url: authorizationUrl }
+      throw new Error(`unexpected Rhythm request ${path}`)
+    })
+    const openExternal = vi.fn().mockResolvedValue(true)
+
+    render(<RhythmWorkspace rest={rest as never} openExternal={openExternal} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect Rhythm' }))
+
+    await waitFor(() => expect(openExternal).toHaveBeenCalledWith(authorizationUrl))
+    expect(rest).toHaveBeenCalledWith('/oauth/start', { method: 'POST' })
+    expect(rest.mock.calls.every(([path]) => path === '/connection' || path === '/oauth/start')).toBe(true)
+    expect(screen.getByText(/finish signing in/i)).toBeTruthy()
+  })
+
+  it('explains the login-only server gate without exposing an arbitrary OAuth error body', async () => {
+    // ipcRenderer.invoke serializes the main-process Error into this wrapper
+    // and drops its custom statusCode property before ctx.rest sees it.
+    const failure = new Error('Error invoking remote method \'hermes:api\': Error: 503: {"detail":{"error":"oauth_login_only_unavailable","recoverable":true}}')
+    const rest = vi.fn(async (path: string) => {
+      if (path === '/connection') return { connected: false }
+      if (path === '/oauth/start') throw failure
+      throw new Error(`unexpected Rhythm request ${path}`)
+    })
+    const openExternal = vi.fn()
+
+    render(<RhythmWorkspace rest={rest as never} openExternal={openExternal} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect Rhythm' }))
+
+    expect(await screen.findByText('Rhythm sign-in is unavailable until the server is updated.')).toBeTruthy()
+    expect(screen.queryByText(/oauth_login_only_unavailable/)).toBeNull()
+    expect(openExternal).not.toHaveBeenCalled()
+  })
+
+  it('issue-10-c1: messages use only pinned reads and receipt-bound state operations; creation stays unavailable', async () => {
+    const rest = vi.fn(async (path: string) => {
+      if (path === '/messages') return []
+      if (path === '/directory') return []
+      throw new Error(`unexpected ${path}`)
+    })
+    const gateway = createGateway(rest as never)
+    await expect(gateway.messages.list()).resolves.toEqual([])
+    await expect(gateway.messages.members()).resolves.toEqual([])
+    await expect(gateway.messages.markRead('thread-1')).rejects.toMatchObject({ kind: 'unavailable' })
+    await expect(gateway.messages.markUnread('thread-1')).rejects.toMatchObject({ kind: 'unavailable' })
+    await expect(gateway.messages.createThread({ participantIds: [], type: 'direct' })).rejects.toMatchObject({ kind: 'unavailable' })
+    await expect(gateway.messages.send('thread-1', 'nope')).rejects.toMatchObject({ kind: 'unavailable' })
+    await expect(gateway.messages.renameThread('thread-1', 'nope')).rejects.toMatchObject({ kind: 'unavailable' })
+    await expect(gateway.messages.deleteThread('thread-1')).rejects.toMatchObject({ kind: 'unavailable' })
+    expect(rest.mock.calls.map(([path]) => path)).toEqual(['/messages', '/directory'])
+  })
+
+  it('issue-10-c4: a Facilities operation has no background mutation without its exact foreground receipt', async () => {
+    const rest = vi.fn(async (path: string) => { throw new Error(`background transport ${path}`) })
+    const gateway = createGateway(rest as never)
+    await expect(gateway.facilities.createReservation({ facilityId: 'room-1', title: 'Quiet', requesterName: 'Hermes', start: '2026-08-21T09:00:00-07:00', end: '2026-08-21T10:00:00-07:00' })).rejects.toMatchObject({ kind: 'unavailable' })
+    expect(rest).not.toHaveBeenCalled()
+  })
+
+  it('mounts the actual Dashboard and Tasks screens read-only through their provider', async () => {
+    const rest = restFor(summary)
+    const gateway = createGateway(rest)
+    const view = renderScreen(<DashboardScreen />, gateway)
+    await screen.findByTestId('rhythm-dashboard-screen')
+    expect(screen.getByText('Dashboard')).not.toBeNull()
+    expect(view.container.querySelector('[data-readonly="true"]')).not.toBeNull()
+    view.unmount()
+
+    renderScreen(<TasksScreen />, gateway)
+    expect(await screen.findByTestId('rhythm-tasks-screen')).not.toBeNull()
+    expect(screen.getByText('Review brief')).not.toBeNull()
+    expect((rest as unknown as { mock: { calls: Array<[string]> } }).mock.calls.map(([path]) => path)).toEqual(expect.arrayContaining(['/dashboard-summary', '/tasks']))
+  })
+
+  it.each([
+    ['Planner', PlannerScreen, 'rhythm-planner-screen', 'Plan launch', '/planner/weeks/2026-08-17'],
+    ['Rhythms', RhythmsScreen, 'rhythm-rhythms-screen', 'Weekly review', '/rhythm-rules'],
+    ['Projects', ProjectsScreen, 'rhythm-projects-screen', 'August launch', '/project-templates'],
+  ])('mounts %s with canonical M5 content and its exact pinned GET paths', async (_name, Screen, testId, content, expectedPath) => {
+    const rest = m5Rest()
+    const view = renderScreen(<Screen />, createGateway(rest as never), { ...host, currentUser: { displayName: 'Hermes', initials: 'H', id: 'user-1' } })
+    expect(await screen.findByTestId(testId)).not.toBeNull()
+    expect((await screen.findAllByText(content)).length).toBeGreaterThan(0)
+    await waitFor(() => expect(rest.mock.calls.map(([path]) => path)).toContain(expectedPath))
+    expect(rest.mock.calls.map(([path]) => path).some(path => /collaborator|member/.test(path))).toBe(false)
+    view.unmount()
+  })
+
+  it.each([
+    ['Dashboard', DashboardScreen, 'rhythm-dashboard-screen'],
+    ['Tasks', TasksScreen, 'rhythm-tasks-screen'],
+    ['Planner', PlannerScreen, 'rhythm-planner-screen'],
+    ['Rhythms', RhythmsScreen, 'rhythm-rhythms-screen'],
+    ['Projects', ProjectsScreen, 'rhythm-projects-screen'],
+    ['Messages', MessagesScreen, 'rhythm-messages-screen'],
+    ['Facilities', FacilitiesScreen, 'rhythm-facilities-screen'],
+    ['Automations', AutomationsScreen, 'rhythm-automations-screen'],
+    ['Integrations', IntegrationsScreen, 'rhythm-integrations-screen'],
+  ])('issue-14: mounts %s through the real adapter with compact/expanded a11y failure recovery', async (_name, Screen, testId) => {
+    const unavailable = Object.assign(new Error('fixture unavailable'), { status: 503 })
+    const rest = vi.fn(async () => { throw unavailable })
+    const view = renderScreen(<Screen />, createGateway(rest as never), { ...host, viewport: 'compact' })
+    expect(await screen.findByTestId(testId)).not.toBeNull()
+    expect(await screen.findByTestId('page-state-unavailable')).not.toBeNull()
+    expect(screen.getByTestId('page-state-unavailable').getAttribute('role')).toMatch(/status|alert/)
+    view.rerender(<div className="rhythm-workspace-root" data-readonly="true"><RhythmWorkspaceProvider gateway={createGateway(rest as never)} host={{ ...host, viewport: 'expanded' }}><Screen /></RhythmWorkspaceProvider></div>)
+    expect(await screen.findByTestId(testId)).not.toBeNull()
+    view.unmount()
+  })
+
+  it('keeps generic M5 operations confirmation-bound, exact, one-use, and re-home scoped', async () => {
+    const operation = 'planner.update-task'
+    const entityId = 'planner-task-1'
+    const payload = { notes: 'Canonical note', dueDate: '2026-08-20' }
+    const rest = vi.fn(async (path: string, init?: { method: string, body: unknown }) => {
+      if (path === '/workspace-operations') return { id: entityId, ...payload }
+      throw new Error(`unexpected route ${path}`)
+    })
+    const confirmations = new Map<string, { receipt: string, generation: string }>()
+    const gateway = createGateway(rest as never, confirmations)
+    await expect(gateway.planner.update(entityId, payload)).rejects.toMatchObject({ kind: 'unavailable' })
+    expect(rest).not.toHaveBeenCalled()
+
+    const generation = 'generation-accepted-1'
+    const key = workspaceKey(operation, entityId, payload)
+    confirmations.set(key, { receipt: 'receipt-never-rendered', generation })
+    await expect(gateway.planner.update(entityId, payload)).resolves.toMatchObject({ id: entityId })
+    expect(rest).toHaveBeenCalledWith('/workspace-operations', { method: 'POST', body: { operation, entityId, payload, generation, confirmation: 'receipt-never-rendered' } })
+    await expect(gateway.planner.update(entityId, payload)).rejects.toMatchObject({ kind: 'unavailable' })
+
+    confirmations.set(key, { receipt: 'receipt-for-different-payload', generation })
+    await expect(gateway.planner.update(entityId, { ...payload, notes: 'changed' })).rejects.toMatchObject({ kind: 'unavailable' })
+    const rehomedGateway = createGateway(rest as never, new Map())
+    await expect(rehomedGateway.planner.update(entityId, payload)).rejects.toMatchObject({ kind: 'unavailable' })
+    expect(rest.mock.calls.every(([path]) => path === '/workspace-operations')).toBe(true)
+  })
+
+  it('advertises only granular M5 capabilities and keeps every collaborator/member port local', async () => {
+    const rest = m5Rest()
+    const gateway = createGateway(rest as never)
+    const granularHost: RhythmHostAdapter = {
+      ...host,
+      currentUser: { displayName: 'Hermes', initials: 'H', id: 'user-1', capabilities: ['planner.update-task', 'rhythms.update-rule', 'projects.update-template'] },
+    }
+    const view = renderScreen(<PlannerScreen />, gateway, granularHost)
+    await screen.findByTestId('planner-task-planner-task-1')
+    expect((screen.getByTestId('planner-header-add-task') as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByTestId('planner-complete-planner-task-1') as HTMLButtonElement).disabled).toBe(false)
+    await expect(gateway.planner.addCollaborator('planner-task-1', 'member-1')).rejects.toMatchObject({ kind: 'unavailable' })
+    await expect(gateway.rhythms.addCollaborator('rule-1', 'member-1')).rejects.toMatchObject({ kind: 'unavailable' })
+    await expect(gateway.projects.addCollaborator('project-1', 'member-1')).rejects.toMatchObject({ kind: 'unavailable' })
+    expect(rest.mock.calls.map(([path]) => path).every(path => !/collaborator|member/.test(path))).toBe(true)
+    view.unmount()
+  })
+
+  it.each([
+    ['forbidden', { statusCode: 403 }],
+    ['unavailable', { status: 503 }],
+    ['server_error', { statusCode: 500 }],
+    ['conflict', { statusCode: 409, detail: { error: 'conflict' } }],
+    ['uncertain', { statusCode: 409, response: { body: JSON.stringify({ detail: { error: 'uncertain' } }) } }],
+  ])('maps the real bridge error shape to %s', (kind, shape) => {
+    expect(gatewayError(shape).kind).toBe(kind)
+  })
+
+  it('does not reflect arbitrary backend error text into operation outcomes', () => {
+    expect(gatewayError({ statusCode: 409, detail: { error: 'unexpected upstream diagnostic' } }).kind).toBe('conflict')
+    expect(gatewayError({ statusCode: 500, detail: { error: 'uncertain-but-untrusted' } }).kind).toBe('server_error')
+  })
+
+  it('maps accepted follow-up context to exactly one bounded unsent host draft', () => {
+    const newChat = vi.spyOn(hermesHost, 'newChat').mockImplementation(() => undefined)
+    askHermes({ screen: 'tasks', label: 'Help me finish this', action: 'help', relatedId: 'task-1' })
+    expect(newChat).toHaveBeenCalledTimes(1)
+    expect(newChat).toHaveBeenCalledWith(expect.objectContaining({
+      prefill: 'Help me with Rhythm: Help me finish this',
+      source: expect.objectContaining({ label: 'Rhythm', metadata: expect.objectContaining({ screen: 'tasks', taskId: 'task-1' }) }),
+    }))
+  })
+
+  it('renders loading, empty, forbidden, unavailable, and error states from gateway behavior', async () => {
+    let resolveSummary: (value: typeof summary) => void = () => undefined
+    const pending = new Promise<typeof summary>(resolve => { resolveSummary = resolve })
+    const deferredGateway = { ...createGateway(restFor(summary)), dashboard: { ...createGateway(restFor(summary)).dashboard, summary: () => pending, members: async () => [] } }
+    const loading = renderScreen(<DashboardScreen />, deferredGateway)
+    expect(screen.getByTestId('page-state-loading')).not.toBeNull()
+    resolveSummary(summary)
+    await screen.findByText('Dashboard')
+    loading.unmount()
+
+    for (const [expected, failure] of [
+      ['page-state-empty', { openTaskCount: 0, threadCount: 0, tasks: [], project: null, unreadThreads: [] }],
+      ['page-state-forbidden', new (class extends Error { statusCode = 403 })()],
+      ['page-state-unavailable', new (class extends Error { status = 503 })()],
+      ['page-state-server-error', new (class extends Error { statusCode = 500 })()],
+    ] as const) {
+      const rest = failure instanceof Error
+        ? restFor(failure)
+        : vi.fn(async (path: string) => path === '/dashboard-summary' ? failure : { tasks: [] }) as never
+
+      const gateway = createGateway(rest)
+      const view = renderScreen(<DashboardScreen />, gateway)
+      await screen.findByTestId(expected)
+      view.unmount()
+    }
+  })
+
+  it('keeps detail failure local, sends one bounded Ask Hermes follow-up, and never invokes a mutation transport', async () => {
+    const followUp = vi.fn()
+    const rest = restFor(summary)
+    const gateway = createGateway(rest)
+    renderScreen(<DashboardScreen />, gateway, { ...host, onRequestFollowUp: followUp })
+    await screen.findByTestId('quick-action-help-me-finish-this')
+    fireEvent.click(screen.getByTestId('quick-action-help-me-finish-this'))
+    expect(followUp).toHaveBeenCalledTimes(1)
+    expect(followUp.mock.calls[0][0]).toMatchObject({ screen: 'dashboard', relatedId: 'task-1' })
+
+    renderScreen(<TasksScreen />, gateway, { ...host, onRequestFollowUp: followUp })
+    await screen.findByTestId('task-select-task-1')
+    fireEvent.click(screen.getByTestId('task-select-task-1'))
+    expect(await screen.findByTestId('task-inspector')).not.toBeNull()
+    await expect(gateway.tasks.update('task-1', { status: 'done' })).rejects.toMatchObject({ kind: 'unavailable' })
+    expect((rest as unknown as { mock: { calls: Array<[string]> } }).mock.calls.every(([path]) => ['/dashboard-summary', '/tasks'].includes(path))).toBe(true)
+  })
+
+  it('makes every visible Dashboard and Tasks mutation control inert without host write capabilities while preserving inspection and Ask Hermes', async () => {
+    const rest = restFor(summary)
+    const gateway = createGateway(rest)
+    const followUp = vi.fn()
+    const dashboard = renderScreen(<DashboardScreen />, gateway, { ...host, onRequestFollowUp: followUp })
+    await screen.findByTestId('dashboard-header-add-task')
+    for (const testId of ['dashboard-header-add-task', 'task-toggle-task-1']) {
+      const control = screen.getByTestId(testId) as HTMLButtonElement
+      expect(control.disabled).toBe(true)
+      fireEvent.click(control)
+    }
+
+    fireEvent.click(screen.getByTestId('task-row-task-1'))
+    expect(await screen.findByTestId('task-inspector')).not.toBeNull()
+
+    for (const testId of ['task-inspector-title', 'task-inspector-notes', 'task-inspector-scheduled', 'task-inspector-due', 'task-inspector-save']) {
+      expect((screen.getByTestId(testId) as HTMLInputElement | HTMLTextAreaElement | HTMLButtonElement).disabled).toBe(true)
+    }
+
+    fireEvent.click(screen.getByTestId('quick-action-help-me-finish-this'))
+    expect(followUp).toHaveBeenCalledTimes(1)
+    expect(screen.getByTestId('rhythm-dashboard-screen')).not.toBeNull()
+    dashboard.unmount()
+
+    const tasks = renderScreen(<TasksScreen />, gateway, { ...host, onRequestFollowUp: followUp })
+    await screen.findByTestId('tasks-header-add-task')
+    expect((screen.getByTestId('tasks-header-add-task') as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByTestId('task-complete-task-1') as HTMLInputElement).disabled).toBe(true)
+    fireEvent.click(screen.getByTestId('tasks-header-add-task'))
+    fireEvent.click(screen.getByTestId('task-complete-task-1'))
+    fireEvent.click(screen.getByTestId('task-menu-task-1'))
+    expect((await screen.findByTestId('task-delete-task-1') as HTMLButtonElement).disabled).toBe(true)
+
+    fireEvent.click(screen.getByTestId('task-select-task-1'))
+
+    for (const testId of ['task-edit-title', 'task-edit-notes', 'task-edit-scheduled-date', 'task-edit-due-date', 'task-edit-agent', 'task-edit-energy', 'task-detail-complete', 'task-save', 'task-add-collaborator']) {
+      expect((screen.getByTestId(testId) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLButtonElement).disabled).toBe(true)
+    }
+
+    fireEvent.click(screen.getByTestId('quick-action-help-finish'))
+    expect(followUp).toHaveBeenCalledTimes(2)
+    expect(screen.getByTestId('rhythm-tasks-screen')).not.toBeNull()
+    expect((rest as unknown as { mock: { calls: Array<[string]> } }).mock.calls.every(([path]) => ['/dashboard-summary', '/tasks'].includes(path))).toBe(true)
+    tasks.unmount()
+  })
+
+  it('does not let a deferred old gateway publish after a provider re-home', async () => {
+    let resolveOld: (value: typeof summary) => void = () => undefined
+    const oldSummary = new Promise<typeof summary>(resolve => { resolveOld = resolve })
+    const old = { ...createGateway(restFor(summary)), dashboard: { ...createGateway(restFor(summary)).dashboard, summary: () => oldSummary, members: async () => [] } }
+    const fresh = createGateway(restFor(summary))
+    const view = renderScreen(<DashboardScreen key="old" />, old)
+    expect(screen.getByTestId('page-state-loading')).not.toBeNull()
+    view.rerender(<div className="rhythm-workspace-root" data-readonly="true"><RhythmWorkspaceProvider gateway={fresh} host={host} key="new"><DashboardScreen /></RhythmWorkspaceProvider></div>)
+    await screen.findAllByText('Review brief')
+    resolveOld({ ...summary, tasks: [] })
+    await waitFor(() => expect(screen.getAllByText('Review brief').length).toBeGreaterThan(0))
+  })
+
+  it('mounts the actual TasksScreen adapter: local confirm then one bound operation, with no token or broad writes', async () => {
+    const confirmations = new Map<string, string>()
+    const token = 'confirmation-secret-never-rendered'
+    const rest = vi.fn(async (path: string, init?: { method: string, body: unknown }) => {
+      if (path === '/tasks') return { tasks: [task] }
+      if (path === '/tasks/task-1/confirmation') return { confirmation: token }
+      if (path === '/tasks/task-1/operations') {
+        expect(init).toMatchObject({ method: 'POST', body: { operation: 'complete', confirmation: token } })
+        return { ...task, status: 'done' }
+      }
+      throw new Error(`unexpected route ${path}`)
+    })
+    const gateway = createGateway(rest as never, confirmations)
+    const adapter: RhythmHostAdapter = {
+      ...host,
+      currentUser: { displayName: 'Hermes', initials: 'H', capabilities: ['tasks.complete', 'tasks.reschedule'] },
+      confirmTaskOperation: async confirmation => {
+        const receipt = await rest(`/tasks/${confirmation.taskId}/confirmation`, { method: 'POST', body: confirmation }) as { confirmation: string }
+        confirmations.set(confirmationKey(confirmation), receipt.confirmation)
+        return true
+      },
+    }
+    const view = renderScreen(<TasksScreen />, gateway, adapter)
+    await screen.findByTestId('task-complete-task-1')
+    expect((screen.getByTestId('tasks-header-add-task') as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(screen.getByTestId('task-complete-task-1'))
+    expect(rest.mock.calls.map(([path]) => path)).toEqual(['/tasks'])
+    expect(screen.getByTestId('task-operation-confirmation')).not.toBeNull()
+    fireEvent.click(screen.getByTestId('task-operation-confirm'))
+    await waitFor(() => expect(rest.mock.calls.map(([path]) => path)).toEqual(['/tasks', '/tasks/task-1/confirmation', '/tasks/task-1/operations']))
+    expect(view.container.textContent).not.toContain(token)
+    await expect(gateway.tasks.complete?.('task-1', 'changed-generation')).rejects.toMatchObject({ kind: 'unavailable' })
+    expect(confirmations.size).toBe(0)
+    view.unmount()
+  })
+
+  it('mounts Planner: the visible confirmation and operation carry one identical generation', async () => {
+    const confirmations = new Map<string, string | { receipt: string, generation: string }>()
+    const rest = vi.fn(async (path: string, init?: { method: string, body: unknown }) => {
+      if (path === '/planner/weeks/2026-08-17') return plannerWeek
+      if (path === '/workspace-operations/confirmation') return { confirmation: 'workspace-receipt-secret' }
+      if (path === '/workspace-operations') return { id: 'planner-task-1', status: 'done' }
+      throw new Error(`unexpected route ${path}`)
+    })
+    const gateway = createGateway(rest as never, confirmations)
+    const adapter: RhythmHostAdapter = {
+      ...host,
+      currentUser: { displayName: 'Hermes', initials: 'H', id: 'user-1', capabilities: ['planner.update-task'] },
+      confirmWorkspaceOperation: async confirmation => {
+        const response = await rest('/workspace-operations/confirmation', { method: 'POST', body: confirmation }) as { confirmation: string }
+        confirmations.set(workspaceKey(confirmation.operation, confirmation.entityId, confirmation.payload), { receipt: response.confirmation, generation: confirmation.generation })
+        return true
+      },
+    }
+    const view = renderScreen(<PlannerScreen />, gateway, adapter)
+    await screen.findByTestId('planner-complete-planner-task-1')
+    fireEvent.click(screen.getByTestId('planner-complete-planner-task-1'))
+    fireEvent.click(await screen.findByTestId('planner-operation-confirm'))
+    await waitFor(() => expect(rest.mock.calls.map(([path]) => path)).toEqual(['/planner/weeks/2026-08-17', '/workspace-operations/confirmation', '/workspace-operations']))
+    const confirm = rest.mock.calls[1][1]?.body as { generation: string, operation: string, entityId: string, payload: unknown }
+    const mutate = rest.mock.calls[2][1]?.body as { generation: string, confirmation: string, operation: string, entityId: string, payload: unknown }
+    expect(mutate).toMatchObject({ operation: confirm.operation, entityId: confirm.entityId, payload: confirm.payload, generation: confirm.generation, confirmation: 'workspace-receipt-secret' })
+    expect(view.container.textContent).not.toContain('workspace-receipt-secret')
+    view.unmount()
+  })
+
+  it('mounts the actual vendored artifact iframe with only the opaque-origin sandbox boundary', async () => {
+    const receive = vi.fn(async () => ({ status: 'ok' as const, payload: { value: 'current' } }))
+    const view = renderScreen(
+      <ArtifactsScreen
+        artifactsGateway={{ list: async () => [{ id: 'calendar', title: 'Worship calendar', kind: 'document' }] }}
+        artifactHostPort={{
+          open: async () => ({ artifactId: 'calendar', sessionId: 'session-1', bundleGeneration: 'bundle-1', stateGeneration: 'state-1', bodyHtml: '<main>Calendar</main>', styleText: '', scriptText: '', capabilities: ['state.get'] }),
+          receive,
+        }}
+      />,
+      createGateway(restFor(summary)),
+    )
+    await screen.findByTestId('rhythm-artifact-open-calendar')
+    fireEvent.click(screen.getByTestId('rhythm-artifact-open-calendar'))
+    const frame = await screen.findByTestId('rhythm-artifact-frame') as HTMLIFrameElement
+    expect(frame.getAttribute('sandbox')).toBe('allow-scripts')
+    expect(frame.srcdoc).toContain("default-src 'none'")
+    expect(frame.srcdoc).toContain("connect-src 'none'")
+    expect(frame.srcdoc).not.toContain('fetch(')
+    expect(receive).not.toHaveBeenCalled()
+    view.unmount()
+  })
+
+  it('mounts every approved destination in compact and expanded failure states', async () => {
+    const cases: Array<[string, () => React.ReactNode]> = [
+      ['rhythm-dashboard-screen', () => <DashboardScreen />],
+      ['rhythm-tasks-screen', () => <TasksScreen />],
+      ['rhythm-planner-screen', () => <PlannerScreen />],
+      ['rhythm-rhythms-screen', () => <RhythmsScreen />],
+      ['rhythm-projects-screen', () => <ProjectsScreen />],
+      ['rhythm-messages-screen', () => <MessagesScreen />],
+      ['rhythm-facilities-screen', () => <FacilitiesScreen />],
+      ['rhythm-automations-screen', () => <AutomationsScreen />],
+      ['rhythm-integrations-screen', () => <IntegrationsScreen />],
+      ['rhythm-artifacts-screen', () => <ArtifactsScreen artifactsGateway={{ list: async () => { throw new Error('bounded fixture failure') } }} />],
+    ]
+    for (const viewport of ['compact', 'expanded'] as const) {
+      for (const [testId, node] of cases) {
+        const view = renderScreen(node(), createGateway(restFor(new Error('bounded fixture failure'))), { ...host, viewport })
+        const root = await screen.findByTestId(testId)
+        expect(root.getAttribute('data-rhythm-viewport')).toBe(viewport)
+        await screen.findByRole('alert')
+        expect(root.textContent).not.toContain('bounded fixture failure')
+        view.unmount()
+      }
+    }
+  })
+})

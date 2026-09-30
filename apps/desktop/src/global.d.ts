@@ -15,6 +15,14 @@ export {}
 declare global {
   interface Window {
     hermesDesktop: {
+      /** Present for the Rhythm-owned renderer; app-window controls stay host-owned. */
+      embedded?: {
+        enabled: boolean
+        metadata: () => Promise<{ embedded: boolean; host?: string; schemaVersion?: number }>
+        onIntent: (
+          callback: (intent: EmbeddedHermesIntent) => void
+        ) => () => void
+      }
       // Resolve a backend connection. Omit `profile` (or pass the primary) for
       // the window's backend; pass a named profile to lazily spawn/reuse that
       // profile's backend from the pool.
@@ -459,6 +467,10 @@ declare global {
   }
 }
 
+export type EmbeddedHermesIntent =
+  | { v: 1; type: 'new-chat'; context?: string }
+  | { v: 1; type: 'navigate-session'; sessionId: string }
+
 export interface DesktopMarketplaceSearchItem {
   extensionId: string
   displayName: string
@@ -642,6 +654,8 @@ export interface DesktopPluginProfileRoute {
   mode: 'local' | 'remote'
   profile: string
   targetProfile: string
+  /** Opaque Electron-owned capability for this exact profile route. */
+  token: string
 }
 
 export interface HermesConnection {
@@ -1097,6 +1111,8 @@ export interface HermesApiRequest {
   // through the owning connection, not the local profile pool. Omit / '' to
   // keep the legacy profile-routed path; explicit 'local' forces this device.
   connectionId?: string | null
+  /** Present only for an explicit plugin route issued by Electron. */
+  pluginRoute?: DesktopPluginProfileRoute
 }
 
 export interface HermesNotification {

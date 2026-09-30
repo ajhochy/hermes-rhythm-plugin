@@ -15,7 +15,86 @@ from acp.schema import (
     ToolKind,
 )
 
+from agent.redact import redact_sensitive_text
+
 logger = logging.getLogger(__name__)
+
+# Hard cap on the serialized size of ``raw_input``/``raw_output`` sent over
+# the ACP wire. These bypass the per-branch ``content`` text truncation
+# above, so without their own bound a large or adversarial tool result
+# would ship unbounded. ``force=True`` on every redaction call below is
+# deliberate: this is a wire boundary to an external ACP client (editor,
+# IDE plugin), not the user's own terminal, so it must be a hard safety
+# floor independent of the user's ``security.redact_secrets`` preference.
+_RAW_IO_MAX_CHARS = 4000
+# Keep individual leaves comfortably below the whole-payload cap so structured
+# approval/tool metadata can survive alongside a large value.
+_RAW_VALUE_MAX_CHARS = 1000
+
+# Hard cap on any single polished ``content`` text/diff block. Per-formatter
+# truncation (see the various ``_format_*_result`` limits above, all <=8000)
+# already keeps well-behaved output compact; this is the final safety-net
+# bound for branches with no formatter-level cap (e.g. a tool-start preview
+# built directly from unbounded model/tool arguments), enforced at the same
+# choke point that force-redacts every text/diff block below.
+_CONTENT_TEXT_MAX_CHARS = 10000
+_DIFF_TEXT_MAX_CHARS = 20000
+_TITLE_MAX_CHARS = 200
+
+
+def _redact_display(text: str, *, code: bool = False) -> str:
+    """Redact secrets from text that will be echoed as ACP content/raw I/O."""
+    if not text:
+        return text
+    return redact_sensitive_text(text, force=True, code_file=code)
+
+
+def _safe_title(title: Any) -> str:
+    """Force-redact and bound every ACP tool-call title at the wire boundary."""
+    return _truncate_text(_redact_display(str(title or "")), limit=_TITLE_MAX_CHARS)
+
+
+def _redact_raw_value(value: Any, *, _depth: int = 0) -> Any:
+    """Recursively redact string leaves of a ``raw_input``/``raw_output``-bound value.
+
+    Structure-preserving (unlike whole-payload truncation) so a client that
+    renders ``rawInput`` as structured data doesn't see corrupted JSON —
+    only the leaf strings are redacted and length-capped.
+    """
+    if _depth > 6:
+        return "…"
+    if isinstance(value, str):
+        return _truncate_text(_redact_display(value), limit=_RAW_VALUE_MAX_CHARS)
+    if isinstance(value, dict):
+        return {
+            _truncate_text(_redact_display(str(key)), limit=_RAW_VALUE_MAX_CHARS):
+            _redact_raw_value(val, _depth=_depth + 1)
+            for key, val in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_raw_value(item, _depth=_depth + 1) for item in value[:50]]
+    return value
+
+
+def _bounded_raw_input(arguments: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Redact and size-bound a tool-call ``arguments`` dict for ``raw_input``."""
+    if not arguments:
+        return None
+    redacted = _redact_raw_value(arguments)
+    try:
+        if len(json.dumps(redacted, default=str)) > _RAW_IO_MAX_CHARS:
+            return {"_truncated": True}
+    except (TypeError, ValueError):
+        return {"_truncated": True}
+    return redacted
+
+
+def _bounded_raw_output(result: Optional[str]) -> Optional[str]:
+    """Redact and size-bound a tool-call string result for ``raw_output``."""
+    if result is None:
+        return None
+    return _truncate_text(_redact_display(result), limit=_RAW_IO_MAX_CHARS)
+
 
 # ---------------------------------------------------------------------------
 # Map hermes tool names -> ACP ToolKind
@@ -189,8 +268,58 @@ def build_tool_title(tool_name: str, args: Dict[str, Any]) -> str:
     return tool_name
 
 
-def _text(content: str) -> Any:
-    return acp.tool_content(acp.text_block(content))
+def _text(content: str, *, redact: bool = True) -> Any:
+    """Build a text ``ContentToolCallContent`` block.
+
+    This is the single choke point every polished/generic tool-call text
+    block passes through, so it force-redacts and hard-bounds by default —
+    a formatter that forgets to sanitize its own output (the actual gap in
+    issue #3 finding 3: read_file/process/search_files results reached this
+    function pre-redacted-only-by-accident, i.e. not at all) still can't
+    leak a secret onto the ACP wire. Pass ``redact=False`` only when the
+    caller already ran ``_redact_display`` itself with a mode this default
+    can't reproduce (e.g. ``code=True`` for source snippets) — re-running
+    redaction with different code-file semantics on top of that would risk
+    over-redacting preserved code fixtures, a double-redaction artifact.
+    Bounding always applies regardless of ``redact``.
+    """
+    text = content or ""
+    if redact:
+        text = _redact_display(text)
+    return acp.tool_content(acp.text_block(_truncate_text(text, limit=_CONTENT_TEXT_MAX_CHARS)))
+
+
+def _diff_content(
+    path: str,
+    new_text: str,
+    old_text: Optional[str] = None,
+    *,
+    redact: bool = True,
+) -> Any:
+    """Build an ACP diff content block with the same redact/bound guarantee as ``_text``.
+
+    Diff content (patch/write_file/skill_manage previews, and diffs parsed
+    from a unified-diff tool result) never passed through ``_text``, so it
+    needs its own copy of the same choke point rather than duplicating the
+    redact-then-bound logic at every call site.
+    """
+    path = _truncate_text(_redact_display(str(path or "")), limit=_TITLE_MAX_CHARS)
+    if redact:
+        new_text = _redact_display(new_text or "", code=True)
+        old_text = _redact_display(old_text, code=True) if old_text else old_text
+    new_text = _truncate_text(new_text or "", limit=_DIFF_TEXT_MAX_CHARS)
+    if old_text:
+        old_text = _truncate_text(old_text, limit=_DIFF_TEXT_MAX_CHARS)
+    return acp.tool_diff_content(path=path, old_text=old_text or None, new_text=new_text)
+
+
+# Public ACP wire-boundary helpers. Approval requests are emitted outside the
+# normal tool start/complete flow, so they must use these exact helpers rather
+# than reimplementing their own redaction or limits.
+safe_title = _safe_title
+bounded_raw_input = _bounded_raw_input
+safe_text = _text
+safe_diff_content = _diff_content
 
 
 def _json_loads_maybe(value: Optional[str]) -> Any:
@@ -964,7 +1093,7 @@ def _parse_unified_diff_content(diff_text: str) -> List[Any]:
             new_lines = []
             return
         content.append(
-            acp.tool_diff_content(
+            _diff_content(
                 path=_strip_diff_prefix(path),
                 old_text="\n".join(old_lines) if old_lines else None,
                 new_text="\n".join(new_lines),
@@ -1066,7 +1195,7 @@ def build_tool_start(
         logger.debug("ACP tool-start render failed for %r: %s", tool_name, exc)
         safe_name = tool_name if isinstance(tool_name, str) and tool_name else "tool"
         return acp.start_tool_call(
-            tool_call_id, safe_name, kind=get_tool_kind(safe_name),
+            tool_call_id, _safe_title(safe_name), kind=get_tool_kind(safe_name),
             content=None, locations=[], raw_input=None,
         )
 
@@ -1080,17 +1209,13 @@ def _build_tool_start(
 ) -> ToolCallStart:
     """Build the ToolCallStart event (unguarded; see ``build_tool_start``)."""
     kind = get_tool_kind(tool_name)
-    title = build_tool_title(tool_name, arguments)
+    title = _safe_title(build_tool_title(tool_name, arguments))
     locations = extract_locations(arguments)
 
     if tool_name == "patch":
         if edit_diff is not None:
             content = [
-                acp.tool_diff_content(
-                    path=edit_diff.path,
-                    old_text=edit_diff.old_text,
-                    new_text=edit_diff.new_text,
-                )
+                _diff_content(edit_diff.path, edit_diff.new_text or "", edit_diff.old_text)
             ]
         else:
             mode = arguments.get("mode", "replace")
@@ -1103,11 +1228,7 @@ def _build_tool_start(
     if tool_name == "write_file":
         if edit_diff is not None:
             content = [
-                acp.tool_diff_content(
-                    path=edit_diff.path,
-                    old_text=edit_diff.old_text,
-                    new_text=edit_diff.new_text,
-                )
+                _diff_content(edit_diff.path, edit_diff.new_text or "", edit_diff.old_text)
             ]
         else:
             path = arguments.get("path", "")
@@ -1118,7 +1239,7 @@ def _build_tool_start(
 
     if tool_name == "terminal":
         command = arguments.get("command", "")
-        content = [_text(f"$ {command}")]
+        content = [_text(f"$ {_redact_display(command)}")]
         return acp.start_tool_call(
             tool_call_id, title, kind=kind, content=content, locations=locations,
         )
@@ -1172,23 +1293,15 @@ def _build_tool_start(
         path = f"skills/{name}/{file_path}" if file_path else f"skills/{name}"
 
         if action == "patch":
-            old = str(arguments.get("old_string") or "")
-            new = str(arguments.get("new_string") or "")
-            content = [acp.tool_diff_content(path=path, old_text=old or None, new_text=new)]
+            content = [_diff_content(path, str(arguments.get("new_string") or ""), str(arguments.get("old_string") or ""))]
         elif action in {"edit", "create"}:
             content = [
-                acp.tool_diff_content(
-                    path=path,
-                    new_text=str(arguments.get("content") or ""),
-                )
+                _diff_content(path, str(arguments.get("content") or ""))
             ]
         elif action == "write_file":
             target = str(arguments.get("file_path") or "file")
             content = [
-                acp.tool_diff_content(
-                    path=f"skills/{name}/{target}",
-                    new_text=str(arguments.get("file_content") or ""),
-                )
+                _diff_content(f"skills/{name}/{target}", str(arguments.get("file_content") or ""))
             ]
         elif action in {"delete", "remove_file"}:
             target = str(arguments.get("file_path") or file_path or name)
@@ -1201,9 +1314,9 @@ def _build_tool_start(
         )
 
     if tool_name == "execute_code":
-        code = str(arguments.get("code") or "").strip()
+        code = _redact_display(str(arguments.get("code") or "").strip(), code=True)
         preview = code[:1200] + (f"\n... ({len(code)} chars total, truncated)" if len(code) > 1200 else "")
-        content = [_text(f"Running Python helper script:\n\n```python\n{preview}\n```" if preview else "Running Python helper script")]
+        content = [_text(f"Running Python helper script:\n\n```python\n{preview}\n```" if preview else "Running Python helper script", redact=False)]
         return acp.start_tool_call(
             tool_call_id, title, kind=kind, content=content, locations=locations,
         )
@@ -1263,7 +1376,9 @@ def _build_tool_start(
     if tool_name == "memory":
         action = str(arguments.get("action") or "manage").strip() or "manage"
         target = str(arguments.get("target") or "memory").strip() or "memory"
-        preview = str(arguments.get("content") or arguments.get("old_text") or "").strip()
+        preview = _redact_display(
+            str(arguments.get("content") or arguments.get("old_text") or "").strip()
+        )
         text = f"Memory {action} ({target})"
         if preview:
             text += "\nPreview: " + _truncate_text(preview, limit=500)
@@ -1277,7 +1392,7 @@ def _build_tool_start(
             args_text = json.dumps(arguments, indent=2, default=str)
         except (TypeError, ValueError):
             args_text = str(arguments)
-        content = [_text(_truncate_text(args_text, limit=1200))]
+        content = [_text(_truncate_text(_redact_display(args_text), limit=1200))]
         return acp.start_tool_call(
             tool_call_id, title, kind=kind, content=content, locations=locations,
         )
@@ -1287,15 +1402,17 @@ def _build_tool_start(
             tool_call_id, title, kind=kind, content=None, locations=locations, raw_input=None,
         )
 
-    # Generic fallback
+    # Generic fallback — includes every MCP-registered and plugin-provided
+    # tool, which is exactly the bucket with no per-tool review above, so
+    # both the display text and raw_input get the same redaction/bound.
     try:
         args_text = json.dumps(arguments, indent=2, default=str)
     except (TypeError, ValueError):
         args_text = str(arguments)
-    content = [acp.tool_content(acp.text_block(args_text))]
+    content = [acp.tool_content(acp.text_block(_truncate_text(_redact_display(args_text), limit=1200)))]
     return acp.start_tool_call(
         tool_call_id, title, kind=kind, content=content, locations=locations,
-        raw_input=None if tool_name in _POLISHED_TOOLS else arguments,
+        raw_input=None if tool_name in _POLISHED_TOOLS else _bounded_raw_input(arguments),
     )
 
 
@@ -1322,12 +1439,17 @@ def build_tool_complete(
             function_args=function_args,
             snapshot=snapshot,
         )
+    raw_output = (
+        None
+        if tool_name in _POLISHED_TOOLS or _is_structured_json_result(result)
+        else _bounded_raw_output(result)
+    )
     return acp.update_tool_call(
         tool_call_id,
         kind=kind,
         status="failed" if _tool_result_failed(result, tool_name) else "completed",
         content=content,
-        raw_output=None if tool_name in _POLISHED_TOOLS or _is_structured_json_result(result) else result,
+        raw_output=raw_output,
     )
 
 
