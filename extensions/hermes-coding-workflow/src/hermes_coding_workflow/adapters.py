@@ -19,7 +19,15 @@ class GitAdapter:
   return value
  def paths(self,base:str)->set[str]:
   raw=(self.call("diff","-z","--name-only",f"{base}..HEAD"),self.call("diff","-z","--name-only"),self.call("diff","--cached","-z","--name-only"),self.call("ls-files","-z","--others","--exclude-standard"))
-  return {str(safe_relative(self.repo,p)) for group in raw for p in group.split("\0") if p and not p.startswith(".hermes/workflows/") and p != ".hermes/hcw-run.json"}
+  # HCW's own control plane is not product code. `.hermes/workflows/` holds the
+  # run store, `.hermes/hcw-run.json` the attempt locator, and
+  # `.hermes/hcw-inputs/` the stage approval payloads -- whose exact path,
+  # filename and symlink-freeness the enforcement plugin already pins via
+  # `_stage_payload_write_allowed`, and which a stage has no legal alternative
+  # location for. Counting them as mutations made every RED gate fail with
+  # `red_mutation_violation` on files the design/plan stages were REQUIRED to
+  # write. Nothing else under `.hermes/` is exempt.
+  return {str(safe_relative(self.repo,p)) for group in raw for p in group.split("\0") if p and not p.startswith(".hermes/workflows/") and not p.startswith(".hermes/hcw-inputs/") and p != ".hermes/hcw-run.json"}
  def dirty(self)->bool:return bool(self.paths(self.head()))
 class KanbanAdapter:
  def __init__(self,repo:Path,board:str,runner:Runner=_run,home:Path|None=None)->None:
@@ -47,12 +55,18 @@ class KanbanAdapter:
   visible="".join(" " if unicodedata.category(char).startswith("C") else char for char in normalized)
   subject=re.sub(r"\s+"," ",visible).strip(" .")[:100] or "requested change"
   return f"{actions.get(stage,'Work on')}: {subject}"
- def graph(self,run_id:str,branch:str,workspace:Path,profiles:dict[str,str],*,attempt:int=1,scope:list[str]|None=None,goal:str="unspecified",base_sha:str="") -> dict[str,str]:
+ def graph(self,run_id:str,branch:str,workspace:Path,profiles:dict[str,str],*,attempt:int=1,scope:list[str]|None=None,goal:str="unspecified",base_sha:str="",package_id:str="",parent_run:str="") -> dict[str,str]:
   made={};previous=None;self.last_briefs={}
   for stage in STAGES:
    brief={"run_id":run_id,"stage":stage,"role":profiles[stage],"attempt":attempt,"branch":branch,"worktree":str(workspace),"scope":scope or [],"goal":goal,"depends_on":previous,"source_artifacts":[".hermes/hcw-run.json",f".hermes/workflows/{run_id}/run.json"],"public_command_skeleton":{"launcher":"<installed-hcw-launcher>","argv":["<installed-hcw-launcher>","<public-subcommand>","<repo>",run_id]},"completion_transition":"record authoritative HCW evidence"}
    body=json.dumps(brief,sort_keys=True,separators=(",",":"));self.last_briefs[stage]={"body":body,"sha256":hashlib.sha256(body.encode()).hexdigest()}
-   task=self.call("create",self._card_title(stage,goal),"--body",body,"--workspace",f"worktree:{workspace}","--branch",branch,"--assignee",profiles[stage],"--idempotency-key",f"hcw:{run_id}:attempt-{attempt}:{stage}")
+   # Structured provenance travels WITH the card so the Kanban decomposer
+   # can refuse a stage without parsing its title. Same key order as
+   # kanban_db.encode_provenance so the stored blob round-trips byte-stable.
+   provenance={"attempt":attempt,"origin":"workflow","run_id":run_id,"stage":stage}
+   if package_id:provenance["package_id"]=package_id
+   if parent_run:provenance["parent_run"]=parent_run
+   task=self.call("create",self._card_title(stage,goal),"--body",body,"--workspace",f"worktree:{workspace}","--branch",branch,"--assignee",profiles[stage],"--idempotency-key",f"hcw:{run_id}:attempt-{attempt}:{stage}","--provenance",json.dumps(provenance,sort_keys=True,separators=(",",":")))
    ident=str(task.get("id",""))
    if not ident:raise RuntimeError("kanban_missing_task_id")
    if previous:self.call("link",previous,ident,json_output=False)
@@ -73,6 +87,9 @@ class KanbanAdapter:
    if task["status"]=="done":return
   summary=f"HCW stage {stage} accepted"
   self.call("complete",task_id,"--result",summary,"--summary",summary,json_output=False)
+ def block(self,task_id:str,reason:str,kind:str="capability")->None:
+  """Block ONE card with a concise, actionable reason. Never fans out."""
+  self.call("block",task_id,reason[:500],"--kind",kind,json_output=False)
  def delete(self,task_id:str)->None:
   try:self.call("delete",task_id,json_output=False)
   except RuntimeError:pass
