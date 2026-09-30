@@ -1,0 +1,197 @@
+{
+  "schemaVersion": 1,
+  "contractId": "hermes-desktop-open-design-v1",
+  "version": 1,
+  "status": "frozen",
+  "createdAt": "2026-08-20T07:42:01.000Z",
+  "repository": {
+    "fork": "ajhochy/hermes-rhythm-plugin",
+    "baseBranch": "main",
+    "baseCommit": "ad7a14a53930f61efe0a7dc6c110ff0e2ddbe897",
+    "implementationBranch": "agent-stack/opendesign-webview"
+  },
+  "openDesign": {
+    "repository": "nexu-io/open-design",
+    "license": "Apache-2.0",
+    "tag": "open-design-v0.20.0",
+    "commit": "fa3cb4cdf3d1703e984a5655bd9654f8d44c493b",
+    "assets": {
+      "darwin-arm64": {
+        "name": "open-design-0.20.0-mac-arm64.dmg",
+        "sha256": "85d30826ba46729f45bf059c76e710e760e2b6bfc2c57218e311027cbb0cbcd5"
+      },
+      "darwin-x64": {
+        "name": "open-design-0.20.0-mac-x64.dmg",
+        "sha256": "b7217e661d14bc2c4d0d7bb7bb996a5bfcfa23ee3f09671385f56baa68263de3"
+      },
+      "win32-x64": {
+        "name": "open-design-0.20.0-win-x64-setup.exe",
+        "sha256": "9788a6a7a3ff1c6e31b41756fb1ecd631b54307acfed5937bfe5b1bd0000d9b8"
+      }
+    }
+  },
+  "scope": {
+    "requiredPlatforms": [
+      "darwin-arm64"
+    ],
+    "contractTestedPlatforms": [
+      "darwin-x64",
+      "win32-x64"
+    ],
+    "unsupportedBehavior": {
+      "linux": "The Design route remains available and reports that no bundled Open Design release exists; an explicitly discovered compatible local runtime may be used."
+    },
+    "nonGoals": [
+      "Merge Open Design's Next.js source into Hermes's Vite renderer",
+      "Copy provider API keys or credentials into Open Design configuration",
+      "Modify user-generated previews or exported artifacts with Hermes theme CSS",
+      "Silently attach a local runtime while Hermes is connected only to an incompatible remote profile",
+      "Commit Open Design installer or runtime binaries to Git"
+    ]
+  },
+  "securityInvariants": [
+    "The guest has sandbox=true, contextIsolation=true, nodeIntegration=false, and no preload script.",
+    "The guest source and in-place navigations are restricted to the exact healthy loopback runtime origin supplied by main.",
+    "Popup creation is denied; permitted external links are delegated to Hermes's existing external-link policy.",
+    "Renderer IPC accepts no executable path, runtime path, arbitrary URL, shell command, or environment object from the guest or renderer.",
+    "Only an allowlisted, sanitized child environment reaches Open Design; provider secret values are never copied or logged.",
+    "Only child processes owned by this Hermes runtime instance may be terminated by Hermes.",
+    "Official runtime assets are accepted only after SHA-256 verification and include upstream license attribution.",
+    "Open Design telemetry credentials are not injected by Hermes and known analytics endpoints are blocked for the embedded partition.",
+    "Runtime errors, logs, snapshots, tests, and PR content contain no credentials or secret values."
+  ],
+  "criteria": [
+    {
+      "id": "OD-01",
+      "title": "First-class Design route",
+      "requirement": "Hermes reserves /design as a built-in workspace route with a Design sidebar item. The Open Design document fills the workspace with no address bar, tab strip, URL, browser navigation controls, or iframe-era dashboard controls. A focus toggle may collapse and restore Hermes chrome without losing the guest.",
+      "evidence": [
+        "renderer route tests",
+        "Electron screenshot"
+      ]
+    },
+    {
+      "id": "OD-02",
+      "title": "Reproducible runtime staging",
+      "requirement": "The packaging script resolves the platform asset from this contract, caches downloads outside Git, verifies SHA-256 before extraction, stages only the required Open Design packaged resources plus license/manifest, refuses a checksum or version mismatch, and never commits staged binaries.",
+      "evidence": [
+        "stager unit tests",
+        "checksum mutation test",
+        "staged manifest inspection"
+      ]
+    },
+    {
+      "id": "OD-03",
+      "title": "Runtime discovery and ownership",
+      "requirement": "Packaged resources are preferred. Development can fall back to a compatible installed Open Design app. A healthy profile-scoped runtime is reused; otherwise Hermes launches the official Open Design packaged headless entry. The status identifies source, version, profile, ownership, and web origin without exposing paths to the renderer.",
+      "evidence": [
+        "resolver and lifecycle tests",
+        "live status snapshot"
+      ]
+    },
+    {
+      "id": "OD-04",
+      "title": "Bounded supervision",
+      "requirement": "Start is idempotent and concurrency-safe. Readiness uses Open Design's runtime identity plus an HTTP health probe with a bounded timeout. Owned process exit changes UI state, bounded retry recovers transient failure, and app shutdown gracefully terminates only owned children. Attached external runtimes are never killed.",
+      "evidence": [
+        "supervisor race/crash/shutdown tests",
+        "live crash-recovery smoke"
+      ]
+    },
+    {
+      "id": "OD-05",
+      "title": "Hermes ACP credential reuse",
+      "requirement": "The managed Open Design daemon resolves agentId hermes through HERMES_BIN and starts Hermes ACP with --accept-hooks. It discovers the active compatible local Hermes model catalog without copying provider credentials into Open Design files, IPC, logs, or renderer state.",
+      "evidence": [
+        "environment allowlist tests",
+        "daemon agent/model probe",
+        "secret scan"
+      ]
+    },
+    {
+      "id": "OD-06",
+      "title": "Secure desktop bridge",
+      "requirement": "A typed preload API exposes only getStatus, start, retry, stopOwned, setProfile, and status subscription operations. Main validates every request and sends only sanitized state. Guest permission requests fail closed except explicitly tested product capabilities.",
+      "evidence": [
+        "IPC contract tests",
+        "permission and hostile-input probes"
+      ]
+    },
+    {
+      "id": "OD-07",
+      "title": "Guest navigation isolation",
+      "requirement": "will-attach-webview overwrites unsafe preferences, enforces a profile-specific persistent partition, and rejects a non-runtime initial source. Guest navigation, redirects, popups, downloads, and permission requests are enforced in main, not trusted to renderer event handlers alone.",
+      "evidence": [
+        "Electron security tests",
+        "runtime navigation probes"
+      ]
+    },
+    {
+      "id": "OD-08",
+      "title": "Live Hermes skin bridge",
+      "requirement": "A versioned semantic token adapter maps Hermes skin/mode typography, surfaces, text, borders, accent, selection, radii, shadows, status, terminal, and editor colors into Open Design CSS variables. It updates without guest reload when the Hermes skin or mode changes, uses no compiled class hashes, and does not affect user previews.",
+      "evidence": [
+        "token adapter tests",
+        "three-skin light/dark visual snapshots",
+        "live no-reload theme switch"
+      ]
+    },
+    {
+      "id": "OD-09",
+      "title": "Polished failure and accessibility UX",
+      "requirement": "The route renders Hermes-themed starting, migrating, unavailable, crashed, retrying, and unsupported states with useful non-secret diagnostics and keyboard-accessible actions. Webview crash and load failure never leave a blank surface.",
+      "evidence": [
+        "state-machine component tests",
+        "accessibility assertions",
+        "failure screenshots"
+      ]
+    },
+    {
+      "id": "OD-10",
+      "title": "Profile and partition isolation",
+      "requirement": "Profile changes switch to a normalized profile-scoped Open Design namespace and persistent guest partition. A local compatible profile starts; an incompatible remote-only profile fails explicitly. Switching back restores the prior profile's projects and web storage.",
+      "evidence": [
+        "profile normalization tests",
+        "two-profile integration test"
+      ]
+    },
+    {
+      "id": "OD-11",
+      "title": "Real product generation",
+      "requirement": "From the embedded /design route, a real Open Design run using agentId hermes and a Hermes-credentialed model completes, creates a real project artifact, and remains readable after route leave/return and app restart.",
+      "evidence": [
+        "real ACP generation transcript summary",
+        "artifact file assertion",
+        "restart persistence assertion"
+      ]
+    },
+    {
+      "id": "OD-12",
+      "title": "Self-contained packaged application",
+      "requirement": "An unsigned mac-arm64 Hermes package includes the verified Open Design 0.20.0 runtime, launches /design successfully after the separately installed Open Design app is made unavailable, passes packaged security probes, and exits with no owned Open Design processes left behind.",
+      "evidence": [
+        "packaged resource audit",
+        "installed-app-independent smoke",
+        "post-exit process audit"
+      ]
+    },
+    {
+      "id": "OD-13",
+      "title": "Regression and quality gates",
+      "requirement": "Focused tests, desktop typecheck, lint, renderer tests, Electron tests, production build, and the relevant desktop/package smoke tests pass under Node 22.22.0 or newer Node 22. Independent spec, security, and maintainability reviews report no unresolved blocker or high-severity finding.",
+      "evidence": [
+        "verification report",
+        "independent review reports"
+      ]
+    }
+  ],
+  "requiredCommands": [
+    "PATH=/opt/homebrew/opt/node@22/bin:$PATH npm --prefix apps/desktop run test:open-design",
+    "PATH=/opt/homebrew/opt/node@22/bin:$PATH npm --prefix apps/desktop run typecheck",
+    "PATH=/opt/homebrew/opt/node@22/bin:$PATH npm --prefix apps/desktop run lint",
+    "PATH=/opt/homebrew/opt/node@22/bin:$PATH npm --prefix apps/desktop run build",
+    "PATH=/opt/homebrew/opt/node@22/bin:$PATH npm --prefix apps/desktop run test:open-design:live",
+    "PATH=/opt/homebrew/opt/node@22/bin:$PATH npm --prefix apps/desktop run test:open-design:packaged"
+  ],
+  "verificationReport": "apps/desktop/docs/open-design-integration.verification.json"
+}

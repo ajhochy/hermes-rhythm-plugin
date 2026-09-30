@@ -63,6 +63,21 @@ def test_promote_stuck_todo_succeeds(conn):
     assert kb.get_task(conn, child).status == "ready"
 
 
+def test_promote_triage_requires_explicit_allow_flag_and_keeps_parent_gate(conn):
+    triage = kb.create_task(conn, title="already specified", triage=True)
+    ok, err = kb.promote_task(conn, triage, actor="tester")
+    assert not ok and "triage" in err
+    ok, err = kb.promote_task(conn, triage, actor="tester", allow_triage=True)
+    assert ok and err is None
+    assert kb.get_task(conn, triage).status == "ready"
+
+    parent = kb.create_task(conn, title="open parent")
+    child = kb.create_task(conn, title="triage child", parents=[parent], triage=True)
+    ok, err = kb.promote_task(conn, child, actor="tester", allow_triage=True)
+    assert not ok and "unsatisfied parent dependencies" in err
+    assert kb.get_task(conn, child).status == "triage"
+
+
 
 
 
@@ -76,12 +91,13 @@ def test_promote_stuck_todo_succeeds(conn):
 
 
 def _promote_ns(task_id, *, ids=None, reason=None, force=False,
-                dry_run=False, as_json=False):
+                allow_triage=False, dry_run=False, as_json=False):
     return argparse.Namespace(
         task_id=task_id,
         reason=list(reason or []),
         ids=list(ids or []) or None,
         force=force,
+        allow_triage=allow_triage,
         dry_run=dry_run,
         json=as_json,
     )

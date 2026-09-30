@@ -1,0 +1,1386 @@
+From 5b6788e5881123e4bffbc506a7a1e0727dbeedbf Mon Sep 17 00:00:00 2001
+From: ajhochy <ajhochy@gmail.com>
+Date: Tue, 29 Sep 2026 22:49:39 -0700
+Subject: [PATCH] WIP snapshot hcw/t_84d809af/attempt-1 2026-09-29
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ plugins/github-intake/tests/conftest.py       |  90 +++++
+ .../tests/fixtures/fixed_intake.json          |   7 +
+ plugins/github-intake/tests/harness.py        | 333 ++++++++++++++++++
+ plugins/github-intake/tests/support/git       |  68 ++++
+ .../tests/support/sitecustomize.py            |  58 +++
+ .../tests/test_boundary_guards.py             | 278 +++++++++++++++
+ .../tests/test_harness_repeatability.py       | 266 ++++++++++++++
+ .../github-intake/tests/test_public_intake.py | 210 +++++++++++
+ 8 files changed, 1310 insertions(+)
+ create mode 100644 plugins/github-intake/tests/conftest.py
+ create mode 100644 plugins/github-intake/tests/fixtures/fixed_intake.json
+ create mode 100644 plugins/github-intake/tests/harness.py
+ create mode 100644 plugins/github-intake/tests/support/git
+ create mode 100644 plugins/github-intake/tests/support/sitecustomize.py
+ create mode 100644 plugins/github-intake/tests/test_boundary_guards.py
+ create mode 100644 plugins/github-intake/tests/test_harness_repeatability.py
+ create mode 100644 plugins/github-intake/tests/test_public_intake.py
+
+diff --git a/plugins/github-intake/tests/conftest.py b/plugins/github-intake/tests/conftest.py
+new file mode 100644
+index 0000000000..7e794e59c4
+--- /dev/null
++++ b/plugins/github-intake/tests/conftest.py
+@@ -0,0 +1,90 @@
++"""pytest conftest for plugins/github-intake/tests.
++
++Sets up sys.path so that `import harness` works in every test file, makes
++the support/git wrapper executable at session start, and provides shared
++fixtures for the harness test suite.
++"""
++from __future__ import annotations
++
++import os
++import shutil
++import stat
++import sys
++from pathlib import Path
++
++import pytest
++
++# Make `harness` directly importable from every test file in this directory.
++_TESTS_DIR = Path(__file__).parent
++if str(_TESTS_DIR) not in sys.path:
++    sys.path.insert(0, str(_TESTS_DIR))
++
++# Ensure the support/git wrapper is executable at import time so tests that
++# use build_isolated_env() can invoke it without a separate chmod step.
++_GIT_WRAPPER = _TESTS_DIR / "support" / "git"
++if _GIT_WRAPPER.exists():
++    _current = _GIT_WRAPPER.stat().st_mode
++    _GIT_WRAPPER.chmod(_current | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
++
++
++# ---------------------------------------------------------------------------
++# Core fixtures
++# ---------------------------------------------------------------------------
++
++from harness import (  # noqa: E402 — import after sys.path mutation
++    TempGitRepo,
++    HCWSubprocessRunner,
++    build_isolated_env,
++    load_fixed_intake,
++)
++
++
++@pytest.fixture
++def tmp_scenario(tmp_path: Path) -> Path:
++    """Isolated temporary directory for a single test scenario."""
++    return tmp_path
++
++
++@pytest.fixture
++def temp_git_repo(tmp_scenario: Path) -> TempGitRepo:
++    """
++    Deterministic temporary Git repository with one pinned commit.
++    The HEAD SHA is reproducible across runs given the same harness
++    identity constants.
++    """
++    repo_path = tmp_scenario / "repo"
++    repo = TempGitRepo(repo_path)
++    repo.init()
++    repo.add_file("README.md", b"# Hermetic intake test repository\n")
++    repo.commit("initial commit")
++    return repo
++
++
++@pytest.fixture
++def fixed_intake() -> dict:
++    """Pinned intake arguments loaded from fixtures/fixed_intake.json."""
++    return load_fixed_intake()
++
++
++@pytest.fixture
++def hcw_launcher() -> str:
++    """
++    Locate the installed HCW launcher or skip.
++
++    Reads HCW_LAUNCHER from the environment first; falls back to PATH.
++    Tests that require a real HCW binary are automatically skipped when
++    neither source provides one.
++    """
++    env_val = os.environ.get("HCW_LAUNCHER", "").strip()
++    if env_val and Path(env_val).is_file():
++        return env_val
++    found = shutil.which("hcw")
++    if found:
++        return found
++    pytest.skip("HCW_LAUNCHER env var not set and `hcw` not found in PATH — skipping")
++
++
++@pytest.fixture
++def hcw_runner(hcw_launcher: str, tmp_scenario: Path) -> HCWSubprocessRunner:
++    """Configured HCWSubprocessRunner backed by the installed launcher."""
++    return HCWSubprocessRunner(launcher=hcw_launcher, tmp_dir=tmp_scenario)
+diff --git a/plugins/github-intake/tests/fixtures/fixed_intake.json b/plugins/github-intake/tests/fixtures/fixed_intake.json
+new file mode 100644
+index 0000000000..9d9f602533
+--- /dev/null
++++ b/plugins/github-intake/tests/fixtures/fixed_intake.json
+@@ -0,0 +1,7 @@
++{
++  "run_id": "t_84d809af",
++  "package": "github-intake",
++  "scope": "test-scope",
++  "board": "test-board",
++  "goal": "Add hermetic test harness for GitHub intake"
++}
+diff --git a/plugins/github-intake/tests/harness.py b/plugins/github-intake/tests/harness.py
+new file mode 100644
+index 0000000000..18690eef27
+--- /dev/null
++++ b/plugins/github-intake/tests/harness.py
+@@ -0,0 +1,333 @@
++"""
++Reusable test-only harness for hermetic HCW GitHub-intake testing.
++
++Public surface:
++  TempGitRepo        — deterministic temporary Git repository builder
++  RunResult          — normalized subprocess result with artifact capture
++  HCWSubprocessRunner — isolated subprocess runner for the HCW launcher
++  build_isolated_env — build a minimal hermetic environment dict
++  load_fixed_intake  — load the pinned intake fixture
++"""
++from __future__ import annotations
++
++import json
++import os
++import shutil
++import stat
++import subprocess
++import tempfile
++from dataclasses import dataclass, field
++from pathlib import Path
++from typing import Any
++
++_TESTS_DIR = Path(__file__).parent
++_SUPPORT_DIR = _TESTS_DIR / "support"
++_FIXTURES_DIR = _TESTS_DIR / "fixtures"
++
++# Pinned identity for all deterministic commits.
++_GIT_AUTHOR_NAME = "Harness Test"
++_GIT_AUTHOR_EMAIL = "harness@test.invalid"
++_GIT_FIXED_DATE = "2024-01-01T00:00:00+00:00"
++_GIT_INITIAL_BRANCH = "main"
++
++
++# ---------------------------------------------------------------------------
++# RunResult
++# ---------------------------------------------------------------------------
++
++@dataclass
++class RunResult:
++    """Normalized result from a single HCW subprocess invocation."""
++
++    argv: list[str]
++    exit_code: int
++    stdout: str
++    stderr: str
++    artifacts: dict[str, bytes] = field(default_factory=dict)
++
++    def normalize(self, tmp_prefix: str = "") -> "RunResult":
++        """Return a copy with volatile temporary path prefixes replaced."""
++        def _strip(s: str) -> str:
++            if tmp_prefix:
++                s = s.replace(tmp_prefix, "<TMP>")
++            return s
++
++        return RunResult(
++            argv=self.argv,
++            exit_code=self.exit_code,
++            stdout=_strip(self.stdout),
++            stderr=_strip(self.stderr),
++            artifacts={k: v for k, v in self.artifacts.items()},
++        )
++
++    def assert_success(self) -> None:
++        if self.exit_code != 0:
++            raise AssertionError(
++                f"Command exited {self.exit_code} (expected 0)\n"
++                f"argv: {self.argv!r}\n"
++                f"stdout:\n{self.stdout}\n"
++                f"stderr:\n{self.stderr}"
++            )
++
++    def assert_failure(self) -> None:
++        if self.exit_code == 0:
++            raise AssertionError(
++                f"Expected non-zero exit but command succeeded\n"
++                f"argv: {self.argv!r}\n"
++                f"stdout:\n{self.stdout}\n"
++                f"stderr:\n{self.stderr}"
++            )
++
++    def diagnostics(self) -> str:
++        """Human-readable summary for use in assertion failure messages."""
++        return (
++            f"argv: {self.argv!r}\n"
++            f"exit_code: {self.exit_code}\n"
++            f"stdout:\n{self.stdout}\n"
++            f"stderr:\n{self.stderr}\n"
++            f"artifacts: {sorted(self.artifacts)}"
++        )
++
++
++# ---------------------------------------------------------------------------
++# TempGitRepo
++# ---------------------------------------------------------------------------
++
++class TempGitRepo:
++    """
++    Builds a deterministic temporary Git repository.
++
++    All Git environment variables are pinned so that repeated calls with
++    identical inputs produce identical commit SHAs.
++    """
++
++    def __init__(self, path: Path) -> None:
++        self.path = path
++        self._env = _deterministic_git_env(path)
++
++    # -- builder API -------------------------------------------------------
++
++    def init(self) -> "TempGitRepo":
++        self.path.mkdir(parents=True, exist_ok=True)
++        # --initial-branch requires git ≥ 2.28; fall back gracefully.
++        try:
++            self._git("init", "--initial-branch", _GIT_INITIAL_BRANCH)
++        except subprocess.CalledProcessError:
++            self._git("init")
++            self._git("symbolic-ref", "HEAD", f"refs/heads/{_GIT_INITIAL_BRANCH}")
++        self._git("config", "user.name", _GIT_AUTHOR_NAME)
++        self._git("config", "user.email", _GIT_AUTHOR_EMAIL)
++        return self
++
++    def add_file(self, name: str, content: bytes) -> "TempGitRepo":
++        dest = self.path / name
++        dest.parent.mkdir(parents=True, exist_ok=True)
++        dest.write_bytes(content)
++        return self
++
++    def commit(self, message: str = "initial") -> "TempGitRepo":
++        self._git("add", "-A")
++        self._git(
++            "commit", "--allow-empty", "-m", message,
++            extra={
++                "GIT_AUTHOR_DATE": _GIT_FIXED_DATE,
++                "GIT_COMMITTER_DATE": _GIT_FIXED_DATE,
++            },
++        )
++        return self
++
++    def head_sha(self) -> str:
++        result = subprocess.run(
++            ["git", "rev-parse", "HEAD"],
++            cwd=self.path,
++            capture_output=True,
++            text=True,
++            env=self._env,
++            check=True,
++        )
++        return result.stdout.strip()
++
++    # -- internals ---------------------------------------------------------
++
++    def _git(self, *args: str, extra: dict[str, str] | None = None) -> None:
++        env = dict(self._env)
++        if extra:
++            env.update(extra)
++        result = subprocess.run(
++            ["git", *args],
++            cwd=self.path,
++            capture_output=True,
++            text=True,
++            env=env,
++        )
++        if result.returncode != 0:
++            raise subprocess.CalledProcessError(
++                result.returncode,
++                ["git", *args],
++                output=result.stdout,
++                stderr=result.stderr,
++            )
++
++
++def _deterministic_git_env(repo_path: Path) -> dict[str, str]:
++    """Minimal, system-config-free env for deterministic git operations."""
++    config_dir = repo_path.parent / ".git-harness-config"
++    config_dir.mkdir(parents=True, exist_ok=True)
++    return {
++        "HOME": str(repo_path.parent),
++        "GIT_CONFIG_NOSYSTEM": "1",
++        "GIT_CONFIG_GLOBAL": str(config_dir / "gitconfig"),
++        "GIT_AUTHOR_NAME": _GIT_AUTHOR_NAME,
++        "GIT_AUTHOR_EMAIL": _GIT_AUTHOR_EMAIL,
++        "GIT_COMMITTER_NAME": _GIT_AUTHOR_NAME,
++        "GIT_COMMITTER_EMAIL": _GIT_AUTHOR_EMAIL,
++        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
++        "LANG": "C.UTF-8",
++        "LC_ALL": "C.UTF-8",
++        "TZ": "UTC",
++    }
++
++
++# ---------------------------------------------------------------------------
++# Isolated environment builder
++# ---------------------------------------------------------------------------
++
++def build_isolated_env(
++    tmp_dir: Path,
++    launcher: str | None = None,
++    extra_path_dirs: list[str] | None = None,
++) -> dict[str, str]:
++    """
++    Build a minimal hermetic environment dict for subprocess invocation.
++
++    Isolates: HOME, HERMES_HOME, XDG_* dirs, Git system/global config,
++    locale, timezone, prompts, credentials, and network proxies.
++    Exposes: the support/ directory (boundary wrappers), any extra_path_dirs,
++    and minimal system executables.
++    """
++    board_dir = tmp_dir / "board"
++    hermes_home = tmp_dir / "hermes_home"
++    config_home = tmp_dir / "xdg_config"
++    cache_home = tmp_dir / "xdg_cache"
++    home_dir = tmp_dir / "home"
++    for d in [board_dir, hermes_home, config_home, cache_home, home_dir]:
++        d.mkdir(parents=True, exist_ok=True)
++
++    path_parts: list[str] = [str(_SUPPORT_DIR)]
++    if extra_path_dirs:
++        path_parts.extend(extra_path_dirs)
++    path_parts.extend(["/usr/bin", "/bin"])
++
++    env: dict[str, str] = {
++        "HOME": str(home_dir),
++        "HERMES_HOME": str(hermes_home),
++        "HERMES_KANBAN_HOME": str(board_dir),
++        "XDG_CONFIG_HOME": str(config_home),
++        "XDG_CACHE_HOME": str(cache_home),
++        "GIT_CONFIG_NOSYSTEM": "1",
++        "GIT_CONFIG_GLOBAL": str(config_home / "gitconfig"),
++        "PATH": os.pathsep.join(path_parts),
++        "LANG": "C.UTF-8",
++        "LC_ALL": "C.UTF-8",
++        "TZ": "UTC",
++        "PYTHONHASHSEED": "0",
++        "PYTHONUTF8": "1",
++        # Block interactive credential prompts.
++        "GIT_TERMINAL_PROMPT": "0",
++        "GIT_ASKPASS": "true",
++        "SSH_ASKPASS": "true",
++        "GIT_SSH_COMMAND": "false",
++    }
++    if launcher:
++        env["HCW_LAUNCHER"] = launcher
++
++    # Explicitly blank all known proxy / credential variables so nothing
++    # leaks from the outer developer environment.
++    for k in [
++        "http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
++        "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy",
++        "GITHUB_TOKEN", "GH_TOKEN", "ANTHROPIC_API_KEY",
++        "OPENAI_API_KEY", "HERMES_API_KEY",
++    ]:
++        env[k] = ""
++
++    return env
++
++
++# ---------------------------------------------------------------------------
++# HCW subprocess runner
++# ---------------------------------------------------------------------------
++
++class HCWSubprocessRunner:
++    """
++    Runs ``hcw create-run`` through a subprocess with an isolated environment.
++
++    The launcher is invoked as an external process; no HCW runtime modules
++    are imported into the test process.
++    """
++
++    def __init__(self, launcher: str, tmp_dir: Path) -> None:
++        self.launcher = launcher
++        self.tmp_dir = tmp_dir
++
++    def run(
++        self,
++        *,
++        repo_path: Path,
++        run_id: str,
++        package: str,
++        scope: str,
++        board: str,
++        goal: str,
++        extra_env: dict[str, str] | None = None,
++    ) -> RunResult:
++        env = build_isolated_env(self.tmp_dir, launcher=self.launcher)
++        if extra_env:
++            env.update(extra_env)
++        argv = [
++            self.launcher,
++            "create-run",
++            "--repo", str(repo_path),
++            "--run-id", run_id,
++            "--package", package,
++            "--scope", scope,
++            "--board", board,
++            "--goal", goal,
++        ]
++        proc = subprocess.run(
++            argv,
++            capture_output=True,
++            text=True,
++            env=env,
++            cwd=str(repo_path),
++            timeout=120,
++        )
++        artifacts = _collect_artifacts(repo_path, run_id)
++        return RunResult(
++            argv=argv,
++            exit_code=proc.returncode,
++            stdout=proc.stdout,
++            stderr=proc.stderr,
++            artifacts=artifacts,
++        )
++
++
++def _collect_artifacts(repo_path: Path, run_id: str) -> dict[str, bytes]:
++    """Collect declared workflow and repository artifacts after a run."""
++    artifacts: dict[str, bytes] = {}
++    run_dir = repo_path / ".hermes" / "runs" / run_id
++    if run_dir.exists():
++        for f in sorted(run_dir.rglob("*")):
++            if f.is_file():
++                rel = str(f.relative_to(repo_path))
++                artifacts[rel] = f.read_bytes()
++    return artifacts
++
++
++# ---------------------------------------------------------------------------
++# Fixture loader
++# ---------------------------------------------------------------------------
++
++def load_fixed_intake() -> dict[str, Any]:
++    """Load and return the pinned intake fixture."""
++    return json.loads((_FIXTURES_DIR / "fixed_intake.json").read_text())
+diff --git a/plugins/github-intake/tests/support/git b/plugins/github-intake/tests/support/git
+new file mode 100644
+index 0000000000..3e00696190
+--- /dev/null
++++ b/plugins/github-intake/tests/support/git
+@@ -0,0 +1,68 @@
++#!/usr/bin/env python3
++"""
++Harness git wrapper — placed at the start of PATH inside hermetic test
++subprocesses.  Blocks any subcommand that touches a remote; forwards all
++other invocations to the real git found later in PATH.
++"""
++from __future__ import annotations
++
++import os
++import sys
++
++_BLOCKED_SUBCOMMANDS = frozenset(
++    [
++        "clone",
++        "fetch",
++        "push",
++        "pull",
++        "remote",
++        "ls-remote",
++        "submodule",
++        "archive",
++    ]
++)
++
++_SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
++
++
++def _find_real_git() -> str | None:
++    path_env = os.environ.get("PATH", "")
++    for directory in path_env.split(os.pathsep):
++        real = os.path.realpath(directory)
++        if real == _SCRIPT_DIR:
++            continue
++        candidate = os.path.join(directory, "git")
++        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
++            return candidate
++    return None
++
++
++def main() -> int:
++    args = sys.argv[1:]
++    # Find the first non-option argument as the subcommand.
++    subcommand = None
++    for arg in args:
++        if not arg.startswith("-"):
++            subcommand = arg
++            break
++
++    if subcommand in _BLOCKED_SUBCOMMANDS:
++        sys.stderr.write(
++            f"harness[git]: '{subcommand}' is a remote operation — "
++            "blocked in hermetic test environment; no live network access permitted\n"
++        )
++        sys.stderr.flush()
++        return 1
++
++    real_git = _find_real_git()
++    if real_git is None:
++        sys.stderr.write("harness[git]: real git binary not found in PATH\n")
++        sys.stderr.flush()
++        return 127
++
++    os.execv(real_git, [real_git] + args)
++    return 0  # unreachable
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/plugins/github-intake/tests/support/sitecustomize.py b/plugins/github-intake/tests/support/sitecustomize.py
+new file mode 100644
+index 0000000000..c223cc9f91
+--- /dev/null
++++ b/plugins/github-intake/tests/support/sitecustomize.py
+@@ -0,0 +1,58 @@
++"""
++Loaded automatically when this directory is in PYTHONPATH.
++Installs fail-closed boundary guards in child processes used by the
++hermetic intake test harness.
++
++Guards installed:
++  - socket.socket.connect / connect_ex: blocked unconditionally so no
++    TCP/UDP outbound connection can succeed inside a guarded subprocess.
++  - socket.create_connection: blocked unconditionally.
++"""
++from __future__ import annotations
++
++import socket as _socket
++import sys as _sys
++
++
++def _fmt(address: object) -> str:
++    try:
++        host, port = address  # type: ignore[misc]
++        return f"{host}:{port}"
++    except Exception:
++        return repr(address)
++
++
++def _blocked_connect(self: _socket.socket, address: object) -> None:
++    msg = (
++        f"harness[sitecustomize]: outbound connection BLOCKED "
++        f"— attempted connect to {_fmt(address)}; "
++        "live network access is not permitted inside hermetic tests"
++    )
++    _sys.stderr.write(msg + "\n")
++    _sys.stderr.flush()
++    raise OSError(msg)
++
++
++def _blocked_connect_ex(self: _socket.socket, address: object) -> int:
++    _blocked_connect(self, address)
++    return 111  # ECONNREFUSED — never reached, but satisfies type checkers
++
++
++def _blocked_create_connection(
++    address: object,
++    timeout: object = _socket._GLOBAL_DEFAULT_TIMEOUT,  # type: ignore[attr-defined]
++    source_address: object = None,
++) -> _socket.socket:
++    msg = (
++        f"harness[sitecustomize]: create_connection BLOCKED "
++        f"— attempted connect to {_fmt(address)}; "
++        "live network access is not permitted inside hermetic tests"
++    )
++    _sys.stderr.write(msg + "\n")
++    _sys.stderr.flush()
++    raise OSError(msg)
++
++
++_socket.socket.connect = _blocked_connect  # type: ignore[method-assign]
++_socket.socket.connect_ex = _blocked_connect_ex  # type: ignore[method-assign]
++_socket.create_connection = _blocked_create_connection  # type: ignore[assignment]
+diff --git a/plugins/github-intake/tests/test_boundary_guards.py b/plugins/github-intake/tests/test_boundary_guards.py
+new file mode 100644
+index 0000000000..f477227a10
+--- /dev/null
++++ b/plugins/github-intake/tests/test_boundary_guards.py
+@@ -0,0 +1,278 @@
++"""
++T3 / T4 — boundary guard contracts.
++
++Verifies that:
++  * support/sitecustomize.py blocks outbound socket connections inside any
++    Python subprocess that has support/ on its PYTHONPATH.
++  * support/git wrapper rejects remote-touching subcommands (clone, fetch,
++    push, pull, remote, ls-remote) and forwards local subcommands to the
++    real git.
++  * build_isolated_env() emits no credential or proxy variables.
++  * The isolated environment contains no known API-key variables.
++"""
++from __future__ import annotations
++
++import os
++import subprocess
++import sys
++from pathlib import Path
++
++import pytest
++
++from harness import build_isolated_env, RunResult
++
++_TESTS_DIR = Path(__file__).parent
++_SUPPORT_DIR = _TESTS_DIR / "support"
++
++
++# ---------------------------------------------------------------------------
++# Socket boundary guard (sitecustomize.py)
++# ---------------------------------------------------------------------------
++
++
++def _python_with_sitecustomize(tmp_path: Path) -> list[str]:
++    """Build a subprocess command that loads sitecustomize from support/."""
++    env = build_isolated_env(tmp_path)
++    env["PYTHONPATH"] = str(_SUPPORT_DIR)
++    return env
++
++
++@pytest.mark.parametrize("address", [
++    "('8.8.8.8', 80)",
++    "('api.github.com', 443)",
++])
++def test_socket_connect_blocked(tmp_path: Path, address: str) -> None:
++    """sitecustomize.py must block socket.connect() in a guarded subprocess."""
++    env = build_isolated_env(tmp_path)
++    env["PYTHONPATH"] = str(_SUPPORT_DIR)
++    env["PATH"] = os.environ.get("PATH", "/usr/bin:/bin")
++
++    code = f"import socket; s=socket.socket(); s.connect({address})"
++    result = subprocess.run(
++        [sys.executable, "-c", code],
++        capture_output=True,
++        text=True,
++        env=env,
++    )
++    assert result.returncode != 0, (
++        f"Expected socket.connect({address}) to be blocked but it succeeded.\n"
++        f"stdout: {result.stdout}\nstderr: {result.stderr}"
++    )
++    combined = result.stdout + result.stderr
++    assert "blocked" in combined.lower() or "OSError" in combined or "harness" in combined, (
++        f"Expected a harness-block message in output.\nstdout: {result.stdout}\nstderr: {result.stderr}"
++    )
++
++
++def test_create_connection_blocked(tmp_path: Path) -> None:
++    """sitecustomize.py must block socket.create_connection() as well."""
++    env = build_isolated_env(tmp_path)
++    env["PYTHONPATH"] = str(_SUPPORT_DIR)
++    env["PATH"] = os.environ.get("PATH", "/usr/bin:/bin")
++
++    code = "import socket; socket.create_connection(('example.com', 80))"
++    result = subprocess.run(
++        [sys.executable, "-c", code],
++        capture_output=True,
++        text=True,
++        env=env,
++    )
++    assert result.returncode != 0, (
++        "Expected socket.create_connection to be blocked but it succeeded.\n"
++        f"stdout: {result.stdout}\nstderr: {result.stderr}"
++    )
++
++
++def test_normal_python_code_runs_in_guarded_subprocess(tmp_path: Path) -> None:
++    """The socket guard must not break non-network Python code."""
++    env = build_isolated_env(tmp_path)
++    env["PYTHONPATH"] = str(_SUPPORT_DIR)
++    env["PATH"] = os.environ.get("PATH", "/usr/bin:/bin")
++
++    code = "import math; print(math.sqrt(4))"
++    result = subprocess.run(
++        [sys.executable, "-c", code],
++        capture_output=True,
++        text=True,
++        env=env,
++    )
++    assert result.returncode == 0, (
++        f"Non-network code must still run.\nstdout: {result.stdout}\nstderr: {result.stderr}"
++    )
++    assert "2.0" in result.stdout
++
++
++# ---------------------------------------------------------------------------
++# Git wrapper boundary guard (support/git)
++# ---------------------------------------------------------------------------
++
++
++def _git_wrapper_env(tmp_path: Path) -> dict[str, str]:
++    """Build environment that routes `git` through the harness wrapper."""
++    env = build_isolated_env(tmp_path)
++    # support/ is already first in PATH from build_isolated_env; ensure
++    # real git is also reachable after it.
++    real_git_dir = _find_real_git_dir()
++    if real_git_dir:
++        env["PATH"] = str(_SUPPORT_DIR) + os.pathsep + real_git_dir + os.pathsep + "/usr/bin:/bin"
++    else:
++        env["PATH"] = str(_SUPPORT_DIR) + os.pathsep + "/usr/bin:/bin"
++    return env
++
++
++def _find_real_git_dir() -> str | None:
++    """Return the directory containing the real git binary (not our wrapper)."""
++    import shutil
++    real = shutil.which("git")
++    if real:
++        real_path = Path(real).resolve()
++        wrapper_path = (_SUPPORT_DIR / "git").resolve()
++        if real_path != wrapper_path:
++            return str(Path(real).parent)
++    return None
++
++
++@pytest.mark.parametrize("subcommand", [
++    "clone", "fetch", "push", "pull", "remote", "ls-remote",
++])
++def test_git_remote_subcommand_blocked(tmp_path: Path, subcommand: str) -> None:
++    """support/git must reject remote-touching subcommands with exit code 1."""
++    env = _git_wrapper_env(tmp_path)
++    result = subprocess.run(
++        ["git", subcommand, "https://example.com/repo.git"],
++        capture_output=True,
++        text=True,
++        env=env,
++        cwd=str(tmp_path),
++    )
++    assert result.returncode != 0, (
++        f"Expected `git {subcommand}` to be blocked but it succeeded.\n"
++        f"stderr: {result.stderr}"
++    )
++    assert "blocked" in result.stderr.lower() or "harness" in result.stderr.lower(), (
++        f"Expected harness-block message in stderr.\nstderr: {result.stderr}"
++    )
++
++
++def test_git_local_init_allowed(tmp_path: Path) -> None:
++    """support/git must forward `git init` to the real git."""
++    env = _git_wrapper_env(tmp_path)
++    repo_path = tmp_path / "test-repo"
++    repo_path.mkdir()
++    result = subprocess.run(
++        ["git", "init", str(repo_path)],
++        capture_output=True,
++        text=True,
++        env=env,
++        cwd=str(tmp_path),
++    )
++    assert result.returncode == 0, (
++        f"`git init` must be allowed.\nstdout: {result.stdout}\nstderr: {result.stderr}"
++    )
++
++
++def test_git_local_status_allowed(tmp_path: Path) -> None:
++    """support/git must forward `git status` to the real git."""
++    env = _git_wrapper_env(tmp_path)
++    # Need a real git repo for status to work.
++    from harness import TempGitRepo
++    repo = TempGitRepo(tmp_path / "repo")
++    repo.init()
++    repo.add_file("x.txt", b"x")
++    repo.commit("init")
++
++    result = subprocess.run(
++        ["git", "status"],
++        capture_output=True,
++        text=True,
++        env=env,
++        cwd=str(tmp_path / "repo"),
++    )
++    assert result.returncode == 0, (
++        f"`git status` must be allowed.\nstdout: {result.stdout}\nstderr: {result.stderr}"
++    )
++
++
++# ---------------------------------------------------------------------------
++# Isolated environment hygiene
++# ---------------------------------------------------------------------------
++
++
++def test_isolated_env_no_credential_vars(tmp_path: Path) -> None:
++    """build_isolated_env() must blank all known credential variables."""
++    env = build_isolated_env(tmp_path)
++    credential_vars = [
++        "GITHUB_TOKEN", "GH_TOKEN", "ANTHROPIC_API_KEY",
++        "OPENAI_API_KEY", "HERMES_API_KEY",
++    ]
++    for var in credential_vars:
++        assert env.get(var, "") == "", (
++            f"Credential variable {var!r} must be blanked in isolated env"
++        )
++
++
++def test_isolated_env_no_proxy_vars(tmp_path: Path) -> None:
++    """build_isolated_env() must blank all proxy variables."""
++    env = build_isolated_env(tmp_path)
++    proxy_vars = [
++        "http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
++        "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy",
++    ]
++    for var in proxy_vars:
++        assert env.get(var, "") == "", (
++            f"Proxy variable {var!r} must be blanked in isolated env"
++        )
++
++
++def test_isolated_env_git_terminal_prompt_disabled(tmp_path: Path) -> None:
++    """build_isolated_env() must set GIT_TERMINAL_PROMPT=0."""
++    env = build_isolated_env(tmp_path)
++    assert env.get("GIT_TERMINAL_PROMPT") == "0"
++
++
++def test_isolated_env_has_hermes_home(tmp_path: Path) -> None:
++    """build_isolated_env() must provide an isolated HERMES_HOME."""
++    env = build_isolated_env(tmp_path)
++    hermes_home = Path(env["HERMES_HOME"])
++    assert hermes_home.is_dir()
++    assert str(hermes_home).startswith(str(tmp_path))
++
++
++def test_isolated_env_has_separate_xdg_dirs(tmp_path: Path) -> None:
++    """build_isolated_env() must provide isolated XDG_CONFIG_HOME and XDG_CACHE_HOME."""
++    env = build_isolated_env(tmp_path)
++    config_home = Path(env["XDG_CONFIG_HOME"])
++    cache_home = Path(env["XDG_CACHE_HOME"])
++    assert config_home.is_dir()
++    assert cache_home.is_dir()
++    assert config_home != cache_home
++
++
++def test_isolated_env_git_nosystem(tmp_path: Path) -> None:
++    """build_isolated_env() must set GIT_CONFIG_NOSYSTEM=1."""
++    env = build_isolated_env(tmp_path)
++    assert env.get("GIT_CONFIG_NOSYSTEM") == "1"
++
++
++# ---------------------------------------------------------------------------
++# RunResult diagnostics (T4 contract — shared across scenarios)
++# ---------------------------------------------------------------------------
++
++
++def test_run_result_diagnostics_in_assertion_failure() -> None:
++    """
++    A failed RunResult assertion must include argv and captured output,
++    satisfying the T4 contract that failures are self-describing.
++    """
++    rr = RunResult(
++        argv=["hcw", "create-run", "--run-id", "t_84d809af"],
++        exit_code=127,
++        stdout="",
++        stderr="hcw: command not found",
++    )
++    with pytest.raises(AssertionError) as exc_info:
++        rr.assert_success()
++    msg = str(exc_info.value)
++    assert "t_84d809af" in msg
++    assert "hcw: command not found" in msg
++    assert "127" in msg
+diff --git a/plugins/github-intake/tests/test_harness_repeatability.py b/plugins/github-intake/tests/test_harness_repeatability.py
+new file mode 100644
+index 0000000000..331ca6e96e
+--- /dev/null
++++ b/plugins/github-intake/tests/test_harness_repeatability.py
+@@ -0,0 +1,266 @@
++"""
++T2 / T4 — harness repeatability contracts.
++
++Verifies that:
++  * TempGitRepo produces the same HEAD SHA on two independent instantiations
++    with the same inputs (deterministic commits).
++  * load_fixed_intake() returns stable, schema-correct data.
++  * RunResult.normalize() strips temporary path prefixes reproducibly.
++  * Two RunResult instances with identical fields compare equal.
++  * RunResult.diagnostics() includes argv and captured output so assertion
++    failures are self-describing.
++"""
++from __future__ import annotations
++
++import tempfile
++from pathlib import Path
++
++import pytest
++
++from harness import RunResult, TempGitRepo, load_fixed_intake
++
++
++# ---------------------------------------------------------------------------
++# TempGitRepo determinism
++# ---------------------------------------------------------------------------
++
++
++def test_deterministic_head_sha(tmp_path: Path) -> None:
++    """Two repos built with identical inputs must produce the same HEAD SHA."""
++    repo_a = tmp_path / "a"
++    repo_b = tmp_path / "b"
++
++    def _build(root: Path) -> str:
++        r = TempGitRepo(root)
++        r.init()
++        r.add_file("README.md", b"# Hermetic intake test repository\n")
++        r.commit("initial commit")
++        return r.head_sha()
++
++    sha_a = _build(repo_a)
++    sha_b = _build(repo_b)
++
++    assert sha_a == sha_b, (
++        f"Expected identical SHAs but got:\n  a={sha_a}\n  b={sha_b}"
++    )
++
++
++def test_head_sha_changes_with_content(tmp_path: Path) -> None:
++    """Different file content must produce a different HEAD SHA."""
++    def _build(root: Path, content: bytes) -> str:
++        r = TempGitRepo(root)
++        r.init()
++        r.add_file("README.md", content)
++        r.commit("initial commit")
++        return r.head_sha()
++
++    sha_a = _build(tmp_path / "a", b"# version A\n")
++    sha_b = _build(tmp_path / "b", b"# version B\n")
++
++    assert sha_a != sha_b, "Different content must yield different SHAs"
++
++
++def test_repo_has_main_branch(tmp_path: Path) -> None:
++    """The initial branch must be named 'main'."""
++    import subprocess
++
++    repo_path = tmp_path / "repo"
++    r = TempGitRepo(repo_path)
++    r.init()
++    r.add_file("f.txt", b"hello\n")
++    r.commit("init")
++
++    result = subprocess.run(
++        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
++        cwd=repo_path,
++        capture_output=True,
++        text=True,
++    )
++    assert result.returncode == 0
++    assert result.stdout.strip() == "main"
++
++
++# ---------------------------------------------------------------------------
++# Fixed intake fixture
++# ---------------------------------------------------------------------------
++
++
++def test_fixed_intake_loads() -> None:
++    """load_fixed_intake() must return a dict with required keys."""
++    intake = load_fixed_intake()
++    assert isinstance(intake, dict)
++    for key in ("run_id", "package", "scope", "board", "goal"):
++        assert key in intake, f"Missing required key: {key!r}"
++
++
++def test_fixed_intake_run_id() -> None:
++    """The pinned run_id must match the task run identifier."""
++    intake = load_fixed_intake()
++    assert intake["run_id"] == "t_84d809af"
++
++
++def test_fixed_intake_values_are_strings() -> None:
++    """All intake values must be non-empty strings."""
++    intake = load_fixed_intake()
++    for key in ("run_id", "package", "scope", "board", "goal"):
++        val = intake[key]
++        assert isinstance(val, str) and val, f"{key!r} must be a non-empty string"
++
++
++# ---------------------------------------------------------------------------
++# RunResult normalization
++# ---------------------------------------------------------------------------
++
++
++def test_run_result_normalize_strips_prefix() -> None:
++    """normalize() must replace the given prefix with '<TMP>'."""
++    rr = RunResult(
++        argv=["hcw", "create-run"],
++        exit_code=0,
++        stdout="/tmp/pytest-xyz/test_foo/out.txt",
++        stderr="/tmp/pytest-xyz/test_foo/error.txt",
++    )
++    normed = rr.normalize(tmp_prefix="/tmp/pytest-xyz/test_foo")
++    assert normed.stdout == "<TMP>/out.txt"
++    assert normed.stderr == "<TMP>/error.txt"
++
++
++def test_run_result_normalize_noop_without_prefix() -> None:
++    """normalize() with no prefix must return identical string fields."""
++    rr = RunResult(
++        argv=["hcw"],
++        exit_code=0,
++        stdout="hello",
++        stderr="world",
++    )
++    normed = rr.normalize()
++    assert normed.stdout == "hello"
++    assert normed.stderr == "world"
++
++
++def test_run_result_equality() -> None:
++    """Two RunResult instances with identical fields must compare equal."""
++    a = RunResult(
++        argv=["hcw", "create-run", "--run-id", "t_84d809af"],
++        exit_code=0,
++        stdout="created run t_84d809af\n",
++        stderr="",
++        artifacts={".hermes/runs/t_84d809af/plan.md": b"# plan\n"},
++    )
++    b = RunResult(
++        argv=["hcw", "create-run", "--run-id", "t_84d809af"],
++        exit_code=0,
++        stdout="created run t_84d809af\n",
++        stderr="",
++        artifacts={".hermes/runs/t_84d809af/plan.md": b"# plan\n"},
++    )
++    assert a == b
++
++
++def test_run_result_inequality_on_exit_code() -> None:
++    """RunResult instances must not compare equal if exit codes differ."""
++    a = RunResult(argv=["hcw"], exit_code=0, stdout="", stderr="")
++    b = RunResult(argv=["hcw"], exit_code=1, stdout="", stderr="")
++    assert a != b
++
++
++def test_run_result_inequality_on_artifacts() -> None:
++    """RunResult instances must not compare equal if artifacts differ."""
++    a = RunResult(
++        argv=["hcw"], exit_code=0, stdout="", stderr="",
++        artifacts={"plan.md": b"v1"},
++    )
++    b = RunResult(
++        argv=["hcw"], exit_code=0, stdout="", stderr="",
++        artifacts={"plan.md": b"v2"},
++    )
++    assert a != b
++
++
++# ---------------------------------------------------------------------------
++# RunResult diagnostics
++# ---------------------------------------------------------------------------
++
++
++def test_diagnostics_contains_argv() -> None:
++    """diagnostics() output must include the full argv."""
++    rr = RunResult(
++        argv=["hcw", "create-run", "--run-id", "t_84d809af"],
++        exit_code=1,
++        stdout="",
++        stderr="fatal: something went wrong",
++    )
++    diag = rr.diagnostics()
++    assert "t_84d809af" in diag
++    assert "create-run" in diag
++
++
++def test_diagnostics_contains_stderr() -> None:
++    """diagnostics() output must include captured stderr."""
++    rr = RunResult(
++        argv=["hcw"],
++        exit_code=1,
++        stdout="",
++        stderr="unique-diagnostic-string-xyz",
++    )
++    assert "unique-diagnostic-string-xyz" in rr.diagnostics()
++
++
++def test_assert_success_raises_with_diagnostics() -> None:
++    """assert_success() must raise AssertionError that includes argv and output."""
++    rr = RunResult(
++        argv=["hcw", "create-run"],
++        exit_code=2,
++        stdout="partial output",
++        stderr="fatal error message",
++    )
++    with pytest.raises(AssertionError) as exc_info:
++        rr.assert_success()
++    msg = str(exc_info.value)
++    assert "create-run" in msg
++    assert "fatal error message" in msg
++
++
++def test_assert_failure_raises_when_success() -> None:
++    """assert_failure() must raise AssertionError when exit_code is 0."""
++    rr = RunResult(argv=["hcw"], exit_code=0, stdout="ok", stderr="")
++    with pytest.raises(AssertionError):
++        rr.assert_failure()
++
++
++# ---------------------------------------------------------------------------
++# Fresh-run equivalence (two normalized results from same fixture)
++# ---------------------------------------------------------------------------
++
++
++def _make_synthetic_result(tmp_prefix: str, run_id: str) -> RunResult:
++    """Helper that simulates what two identical runs would produce."""
++    return RunResult(
++        argv=["hcw", "create-run", "--run-id", run_id, "--repo", f"{tmp_prefix}/repo"],
++        exit_code=0,
++        stdout=f"created run {run_id} in {tmp_prefix}/repo\n",
++        stderr="",
++        artifacts={
++            f".hermes/runs/{run_id}/plan.md": b"# plan\n",
++            f".hermes/runs/{run_id}/brief.json": b'{"run_id":"' + run_id.encode() + b'"}',
++        },
++    )
++
++
++def test_fresh_runs_normalize_equally(tmp_path: Path) -> None:
++    """
++    Two synthetic RunResults with identical structure but different tmp paths
++    must compare equal after normalization.
++    """
++    run_id = "t_84d809af"
++    prefix_a = str(tmp_path / "run_a")
++    prefix_b = str(tmp_path / "run_b")
++
++    result_a = _make_synthetic_result(prefix_a, run_id).normalize(prefix_a)
++    result_b = _make_synthetic_result(prefix_b, run_id).normalize(prefix_b)
++
++    assert result_a == result_b, (
++        f"Normalized results should be equal.\n"
++        f"A: {result_a.diagnostics()}\n"
++        f"B: {result_b.diagnostics()}"
++    )
+diff --git a/plugins/github-intake/tests/test_public_intake.py b/plugins/github-intake/tests/test_public_intake.py
+new file mode 100644
+index 0000000000..2816d37768
+--- /dev/null
++++ b/plugins/github-intake/tests/test_public_intake.py
+@@ -0,0 +1,210 @@
++"""
++T1 / T4 — black-box contract tests for the installed HCW create-run command.
++
++All tests in this file skip automatically when the HCW launcher is not
++present (HCW_LAUNCHER env var unset and `hcw` not in PATH).
++
++Contracts verified:
++  * create-run with fixed intake arguments exits with a documented status.
++  * Declared workflow and repository artifacts are present after a run.
++  * Two fresh runs with identical inputs produce equal normalized results.
++  * No HCW runtime module is imported into the test process.
++"""
++from __future__ import annotations
++
++import json
++import os
++from pathlib import Path
++
++import pytest
++
++from harness import HCWSubprocessRunner, RunResult, TempGitRepo, load_fixed_intake
++
++_RUN_ID = "t_84d809af"
++
++
++# ---------------------------------------------------------------------------
++# Helpers
++# ---------------------------------------------------------------------------
++
++
++def _build_repo(tmp_path: Path) -> TempGitRepo:
++    repo = TempGitRepo(tmp_path / "repo")
++    repo.init()
++    repo.add_file("README.md", b"# Hermetic intake test repository\n")
++    repo.commit("initial commit")
++    return repo
++
++
++# ---------------------------------------------------------------------------
++# T1: public exit-behavior contract
++# ---------------------------------------------------------------------------
++
++
++def test_create_run_exits_cleanly(
++    hcw_runner: HCWSubprocessRunner,
++    temp_git_repo: TempGitRepo,
++    fixed_intake: dict,
++    tmp_scenario: Path,
++) -> None:
++    """
++    hcw create-run with fixed intake arguments must exit 0.
++
++    Asserts the public exit-code contract only; does not inspect internals.
++    """
++    result = hcw_runner.run(
++        repo_path=temp_git_repo.path,
++        run_id=fixed_intake["run_id"],
++        package=fixed_intake["package"],
++        scope=fixed_intake["scope"],
++        board=fixed_intake["board"],
++        goal=fixed_intake["goal"],
++    )
++    assert result.exit_code == 0, (
++        f"hcw create-run must exit 0 with fixed intake arguments.\n"
++        f"{result.diagnostics()}"
++    )
++
++
++def test_create_run_stdout_non_empty(
++    hcw_runner: HCWSubprocessRunner,
++    temp_git_repo: TempGitRepo,
++    fixed_intake: dict,
++    tmp_scenario: Path,
++) -> None:
++    """hcw create-run must produce at least some stdout output."""
++    result = hcw_runner.run(
++        repo_path=temp_git_repo.path,
++        run_id=fixed_intake["run_id"],
++        package=fixed_intake["package"],
++        scope=fixed_intake["scope"],
++        board=fixed_intake["board"],
++        goal=fixed_intake["goal"],
++    )
++    result.assert_success()
++    assert result.stdout.strip(), (
++        f"Expected non-empty stdout.\n{result.diagnostics()}"
++    )
++
++
++# ---------------------------------------------------------------------------
++# T1: declared artifact contract
++# ---------------------------------------------------------------------------
++
++
++def test_create_run_produces_run_artifacts(
++    hcw_runner: HCWSubprocessRunner,
++    temp_git_repo: TempGitRepo,
++    fixed_intake: dict,
++    tmp_scenario: Path,
++) -> None:
++    """
++    hcw create-run must produce at least one artifact under
++    .hermes/runs/<run_id>/ in the repository.
++    """
++    result = hcw_runner.run(
++        repo_path=temp_git_repo.path,
++        run_id=fixed_intake["run_id"],
++        package=fixed_intake["package"],
++        scope=fixed_intake["scope"],
++        board=fixed_intake["board"],
++        goal=fixed_intake["goal"],
++    )
++    result.assert_success()
++    assert result.artifacts, (
++        f"Expected at least one artifact under .hermes/runs/{_RUN_ID}/.\n"
++        f"{result.diagnostics()}"
++    )
++
++
++def test_create_run_artifact_paths_include_run_id(
++    hcw_runner: HCWSubprocessRunner,
++    temp_git_repo: TempGitRepo,
++    fixed_intake: dict,
++    tmp_scenario: Path,
++) -> None:
++    """All collected artifacts must live under the declared run directory."""
++    result = hcw_runner.run(
++        repo_path=temp_git_repo.path,
++        run_id=fixed_intake["run_id"],
++        package=fixed_intake["package"],
++        scope=fixed_intake["scope"],
++        board=fixed_intake["board"],
++        goal=fixed_intake["goal"],
++    )
++    result.assert_success()
++    expected_prefix = f".hermes/runs/{_RUN_ID}/"
++    for path in result.artifacts:
++        assert path.startswith(expected_prefix), (
++            f"Artifact {path!r} must be under {expected_prefix!r}.\n"
++            f"{result.diagnostics()}"
++        )
++
++
++# ---------------------------------------------------------------------------
++# T4: fresh-run equivalence contract
++# ---------------------------------------------------------------------------
++
++
++def test_create_run_fresh_runs_normalize_equally(
++    hcw_launcher: str,
++    fixed_intake: dict,
++    tmp_path: Path,
++) -> None:
++    """
++    Two independent invocations with identical inputs must produce equal
++    normalized results (idempotent, deterministic public output).
++    """
++    run_id = fixed_intake["run_id"]
++
++    tmp_a = tmp_path / "run_a"
++    tmp_b = tmp_path / "run_b"
++    tmp_a.mkdir()
++    tmp_b.mkdir()
++
++    def _run(tmp_dir: Path) -> RunResult:
++        repo = TempGitRepo(tmp_dir / "repo")
++        repo.init()
++        repo.add_file("README.md", b"# Hermetic intake test repository\n")
++        repo.commit("initial commit")
++        runner = HCWSubprocessRunner(launcher=hcw_launcher, tmp_dir=tmp_dir)
++        result = runner.run(
++            repo_path=repo.path,
++            run_id=run_id,
++            package=fixed_intake["package"],
++            scope=fixed_intake["scope"],
++            board=fixed_intake["board"],
++            goal=fixed_intake["goal"],
++        )
++        return result.normalize(tmp_prefix=str(tmp_dir))
++
++    result_a = _run(tmp_a)
++    result_b = _run(tmp_b)
++
++    assert result_a == result_b, (
++        "Two fresh runs with identical inputs must produce equal normalized results.\n"
++        f"Run A:\n{result_a.diagnostics()}\n\n"
++        f"Run B:\n{result_b.diagnostics()}"
++    )
++
++
++# ---------------------------------------------------------------------------
++# Meta: no HCW runtime module imported in the test process
++# ---------------------------------------------------------------------------
++
++
++def test_no_hcw_runtime_imported(hcw_launcher: str) -> None:
++    """
++    This test module must not import any HCW runtime module.
++    The test verifies that `hcw` is only reached through subprocess.
++    """
++    import sys
++
++    hcw_runtime_modules = [
++        mod for mod in sys.modules
++        if mod.startswith("hcw") or mod.startswith("hermes_workflow")
++    ]
++    assert not hcw_runtime_modules, (
++        f"HCW runtime modules must not be imported in the test process: "
++        f"{hcw_runtime_modules}"
++    )
+-- 
+2.50.1 (Apple Git-155)
+

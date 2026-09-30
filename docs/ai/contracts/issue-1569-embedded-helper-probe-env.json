@@ -1,0 +1,66 @@
+{
+  "issue": 1569,
+  "generated": "2026-09-24",
+  "status": "verified-local",
+  "criteria": [
+    {
+      "id": "embedded-cli-probe-clean-env",
+      "test": "apps/desktop/electron/embedded-probe-env.contract.test.ts",
+      "status": "green-synthetic",
+      "expected": "Version helper receives the explicit clean base and derived runtime path without ambient credential, proxy, or loader variables"
+    },
+    {
+      "id": "embedded-python-import-clean-env",
+      "test": "apps/desktop/electron/embedded-probe-env.contract.test.ts",
+      "status": "green-synthetic",
+      "expected": "Python import helper replaces ambient base while retaining the source-root PYTHONPATH; standalone delta behavior remains intact"
+    },
+    {
+      "id": "embedded-native-resolver-probes-clean-env",
+      "test": "apps/desktop/electron/embedded-native-probe-env.contract.test.ts",
+      "status": "green-synthetic",
+      "expected": "Actual hermes:connection resolver --version and serve --help helpers each receive one clean host environment snapshot with no ambient credential, proxy, loader, or dashboard-token variables"
+    },
+    {
+      "id": "embedded-windows-venv-clean-env",
+      "test": "apps/desktop/electron/embedded-probe-env.contract.test.ts",
+      "status": "green-synthetic",
+      "expected": "Windows venv shim verifies exact interpreter and derives import/backend path from clean base"
+    },
+    {
+      "id": "probe-timeout-retry-clean-env",
+      "test": "apps/desktop/electron/embedded-probe-env.contract.test.ts",
+      "status": "green-synthetic",
+      "expected": "Both timeout attempts receive the same clean environment"
+    },
+    {
+      "id": "embedded-bootstrap-clean-env",
+      "test": "apps/desktop/electron/embedded-runtime-lifecycle-env.contract.test.ts",
+      "status": "green-synthetic",
+      "expected": "First-run manifest, install-stage, and post-install git helpers derive PATH, PYTHONPATH, UTF-8, and HERMES_HOME from the host clean base without ambient credentials, proxies, loaders, or dashboard token"
+    },
+    {
+      "id": "embedded-update-refused",
+      "test": "apps/desktop/electron/embedded-runtime-lifecycle-env.contract.test.ts",
+      "status": "green-synthetic",
+      "expected": "Embedded mode does not register direct or multi-connection Desktop update IPC and reaches no updater subprocess; packaged Windows bootstrap recovery also remains host-owned"
+    },
+    {
+      "id": "embedded-uninstall-refused",
+      "test": "apps/desktop/electron/embedded-runtime-lifecycle-env.contract.test.ts",
+      "status": "green-synthetic",
+      "expected": "Embedded mode does not register Desktop uninstall summary/run IPC and reaches no uninstall subprocess"
+    },
+    {
+      "id": "embedded-dashboard-token-excluded",
+      "test": "apps/desktop/electron/embedded-probe-env.contract.test.ts; apps/desktop/electron/embedded-native-probe-env.contract.test.ts; apps/desktop/electron/embedded-runtime-lifecycle-env.contract.test.ts",
+      "status": "green-synthetic",
+      "expected": "The dashboard session token is absent from resolver, retry, and bootstrap helper environments"
+    }
+  ],
+  "limits": [
+    "No native Windows reg.exe or py.exe execution; Windows discovery and venv behavior are synthetic only",
+    "No real Python hermes_cli import execution; import behavior is exercised with synthetic executables",
+    "No packaged or legacy runtime qualification; packaged Windows recovery refusal is code- and contract-covered without launching a packaged app"
+  ]
+}

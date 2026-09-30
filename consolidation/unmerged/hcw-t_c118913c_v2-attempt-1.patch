@@ -1,0 +1,563 @@
+From 773503dabf42de76e15a737edcef6a619ac3f1fb Mon Sep 17 00:00:00 2001
+From: ajhochy <ajhochy@gmail.com>
+Date: Tue, 29 Sep 2026 22:49:38 -0700
+Subject: [PATCH] WIP snapshot hcw/t_c118913c_v2/attempt-1 2026-09-29
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ .../contrib/rhythm-page-connection.test.tsx   | 347 ++++++++++++++++++
+ .../contrib/rhythm-production-bundle.test.ts  | 188 ++++++++++
+ 2 files changed, 535 insertions(+)
+ create mode 100644 apps/desktop/src/contrib/rhythm-page-connection.test.tsx
+ create mode 100644 apps/desktop/src/contrib/rhythm-production-bundle.test.ts
+
+diff --git a/apps/desktop/src/contrib/rhythm-page-connection.test.tsx b/apps/desktop/src/contrib/rhythm-page-connection.test.tsx
+new file mode 100644
+index 0000000000..77c25782b1
+--- /dev/null
++++ b/apps/desktop/src/contrib/rhythm-page-connection.test.tsx
+@@ -0,0 +1,347 @@
++/**
++ * RED contract: registers the real Rhythm desktop plugin through the host
++ * contribution path and renders its real page against only the supported SDK
++ * state atoms (activeSessionId, cwd, gateway, model, profile, viewport —
++ * no connectionId).
++ *
++ * The unmodified base crashes because host.state.connectionId is absent from
++ * the supported contract and undefined reaches useValue.  The tests that
++ * specify a safe connection lifecycle (loading → disconnected → OAuth-pending
++ * → unavailable → connected) all fail RED for that reason.
++ */
++
++import React from 'react'
++import { cleanup, fireEvent, render, screen } from '@testing-library/react'
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
++
++import { contributedRoutes } from '@/app/routes'
++import { createPluginContext } from '@/contrib/plugin'
++
++// ---------------------------------------------------------------------------
++// Mock @hermes/plugin-sdk: only the six supported SDK state atoms.
++// connectionId is intentionally absent — it is not in the supported contract.
++// useValue is instrumented to throw an explicit diagnostic when undefined
++// (i.e., an absent atom) reaches it.
++// ---------------------------------------------------------------------------
++vi.mock('@hermes/plugin-sdk', async () => {
++  const { atom } = await import('nanostores')
++  const { useStore } = await import('@nanostores/react')
++
++  const hostAtoms = {
++    activeSessionId: atom<null | string>(null),
++    cwd: atom<string>(''),
++    gateway: atom<string>('idle'),
++    model: atom<string>('claude-opus-5-20251001'),
++    profile: atom<string>('default'),
++    viewport: atom<{ width: number; height: number; narrow: boolean }>({ width: 1280, height: 800, narrow: false }),
++    // connectionId is deliberately absent from the supported SDK state contract
++  }
++
++  const mockHost = {
++    state: {
++      activeSessionId: hostAtoms.activeSessionId,
++      cwd: hostAtoms.cwd,
++      gateway: hostAtoms.gateway,
++      model: hostAtoms.model,
++      profile: hostAtoms.profile,
++      viewport: hostAtoms.viewport,
++      // connectionId: absent — not in the supported SDK state contract
++    },
++    newChat: vi.fn(),
++    notify: vi.fn(),
++    notifyError: vi.fn(),
++  }
++
++  return {
++    hostAtoms,
++    host: mockHost,
++    ROUTES_AREA: 'routes',
++    SIDEBAR_NAV_AREA: 'sidebar.nav',
++    PALETTE_AREA: 'palette',
++    useValue: (store: unknown) => {
++      if (store === undefined) {
++        throw new Error(
++          'RHYTHM_CONNECTION_CONTRACT_VIOLATION: useValue received undefined — ' +
++          'host.state.connectionId is absent from the supported SDK state contract ' +
++          '(activeSessionId, cwd, gateway, model, profile, viewport)'
++        )
++      }
++      return (useStore as (s: unknown) => unknown)(store)
++    },
++  }
++})
++
++// ---------------------------------------------------------------------------
++// Real rhythm plugin imported after the mock so it binds the mocked SDK.
++// ---------------------------------------------------------------------------
++import rhythmPlugin from '../../../../plugins/rhythm/desktop/src/plugin'
++
++// ---------------------------------------------------------------------------
++// Mock @/hermes so pluginRest is controllable per-test.
++// ---------------------------------------------------------------------------
++let mockRestImpl: (path: string, init?: { method: string; body: unknown }) => Promise<unknown>
++
++vi.mock('@/hermes', async (importActual) => {
++  const actual = await importActual<typeof import('@/hermes')>()
++  return {
++    ...actual,
++    pluginRest: (_pluginId: string, path: string, opts?: unknown) =>
++      mockRestImpl(path, opts as { method: string; body: unknown } | undefined),
++    pluginSocket: () => () => undefined,
++  }
++})
++
++// ---------------------------------------------------------------------------
++// Helpers
++// ---------------------------------------------------------------------------
++
++let disposers: Array<() => void>
++
++beforeEach(() => {
++  disposers = []
++  mockRestImpl = async (path) => {
++    throw new Error(`rhythm-page-connection test: unexpected pluginRest call to ${path}`)
++  }
++  rhythmPlugin.register(createPluginContext('rhythm', (dispose) => disposers.push(dispose)))
++})
++
++afterEach(() => {
++  disposers.forEach((d) => d())
++  cleanup()
++})
++
++function getRhythmPageRender(): () => React.ReactNode {
++  const routes = contributedRoutes().filter((r) => r.path === '/rhythm')
++  if (routes.length === 0) throw new Error('No /rhythm route registered — registration failed')
++  return routes[0].render
++}
++
++// ---------------------------------------------------------------------------
++// Tests
++// ---------------------------------------------------------------------------
++
++describe('Rhythm page / connection contract (t_c118913c)', () => {
++  it('registers exactly one /rhythm contribution through createPluginContext and exposes its render function', () => {
++    const routes = contributedRoutes().filter((r) => r.path === '/rhythm')
++    expect(routes).toHaveLength(1)
++    expect(typeof routes[0].render).toBe('function')
++    expect(routes[0].title).toBe('Rhythm')
++  })
++
++  it('proves: useValue receives undefined for host.state.connectionId in the unmodified base', () => {
++    // The real plugin.tsx calls useValue(host.state.connectionId).
++    // host.state.connectionId is absent from the supported SDK state contract,
++    // so it is undefined.  useValue is instrumented to throw an explicit
++    // diagnostic when undefined reaches it.  render() rethrows.
++    const renderPage = getRhythmPageRender()
++    expect(() => render(<>{renderPage()}</>)).toThrow('RHYTHM_CONNECTION_CONTRACT_VIOLATION')
++  })
++
++  it('shows a loading indicator while the initial GET /connection response is pending', async () => {
++    // The page must fetch connection status on mount and show a loading state
++    // until the response resolves.  The current unmodified code crashes instead.
++    let resolveConnection: (v: unknown) => void = () => undefined
++    mockRestImpl = async (path) => {
++      if (path === '/connection') return new Promise((resolve) => { resolveConnection = resolve })
++      throw new Error(`unexpected: ${path}`)
++    }
++
++    const renderPage = getRhythmPageRender()
++    render(<>{renderPage()}</>)
++    expect(screen.getByTestId('rhythm-connection-loading')).not.toBeNull()
++    resolveConnection({ connected: true, workspaceId: 'ws-1' })
++  })
++
++  it('shows the disconnected state when GET /connection returns no active connection', async () => {
++    mockRestImpl = async (path) => {
++      if (path === '/connection') return { connected: false }
++      throw new Error(`unexpected: ${path}`)
++    }
++
++    const renderPage = getRhythmPageRender()
++    render(<>{renderPage()}</>)
++    const disconnected = await screen.findByTestId('rhythm-connection-disconnected')
++    expect(disconnected).not.toBeNull()
++  })
++
++  it('initiates OAuth via POST /oauth/start, shows OAuth-pending state, and opens only the HTTPS URL returned by the backend', async () => {
++    // The page must POST to /oauth/start — never construct an authorization URL
++    // itself — and expose the backend-returned HTTPS URL to the user.
++    // A non-HTTPS URL from the backend must be rejected without being rendered.
++    mockRestImpl = async (path) => {
++      if (path === '/connection') return { connected: false }
++      if (path === '/oauth/start') {
++        return { authorizationUrl: 'https://auth.rhythm.example.com/authorize?state=fixture-state-token' }
++      }
++      throw new Error(`unexpected: ${path}`)
++    }
++
++    const renderPage = getRhythmPageRender()
++    render(<>{renderPage()}</>)
++    await screen.findByTestId('rhythm-connection-disconnected')
++    fireEvent.click(screen.getByTestId('rhythm-connect-button'))
++
++    const pending = await screen.findByTestId('rhythm-oauth-pending')
++    expect(pending).not.toBeNull()
++    // The authorization URL must be HTTPS; the rendered container must not expose state tokens.
++    expect(screen.getByRole('link', { name: /authorize/i }).getAttribute('href')).toMatch(/^https:\/\//)
++    expect(pending.textContent).not.toContain('fixture-state-token')
++  })
++
++  it('rejects a non-HTTPS OAuth authorization URL returned by the backend without rendering it', async () => {
++    // backend-validated external authorization URLs: if the backend returns a
++    // non-HTTPS URL, the page must reject it and stay in an error state rather
++    // than exposing an insecure redirect to the user.
++    mockRestImpl = async (path) => {
++      if (path === '/connection') return { connected: false }
++      if (path === '/oauth/start') {
++        return { authorizationUrl: 'http://insecure.example.com/authorize' }
++      }
++      throw new Error(`unexpected: ${path}`)
++    }
++
++    const renderPage = getRhythmPageRender()
++    render(<>{renderPage()}</>)
++    await screen.findByTestId('rhythm-connection-disconnected')
++    fireEvent.click(screen.getByTestId('rhythm-connect-button'))
++
++    // Must not render the insecure URL as a clickable link.
++    const authLinks = screen.queryAllByRole('link').filter(
++      (el) => el.getAttribute('href')?.startsWith('http://')
++    )
++    expect(authLinks).toHaveLength(0)
++    expect(await screen.findByTestId('rhythm-oauth-url-rejected')).not.toBeNull()
++  })
++
++  it('fetches fresh GET /connection after OAuth completes and enters the connected state', async () => {
++    let callCount = 0
++    mockRestImpl = async (path) => {
++      if (path === '/connection') {
++        callCount++
++        return callCount === 1 ? { connected: false } : { connected: true, workspaceId: 'ws-fresh-1' }
++      }
++      if (path === '/oauth/start') {
++        return { authorizationUrl: 'https://auth.rhythm.example.com/authorize?state=state-abc' }
++      }
++      throw new Error(`unexpected: ${path}`)
++    }
++
++    const renderPage = getRhythmPageRender()
++    render(<>{renderPage()}</>)
++    await screen.findByTestId('rhythm-connection-disconnected')
++    fireEvent.click(screen.getByTestId('rhythm-connect-button'))
++    await screen.findByTestId('rhythm-oauth-pending')
++
++    // Simulate OAuth callback completion signal (e.g. deep link / storage event)
++    window.dispatchEvent(new CustomEvent('rhythm:oauth-complete', { detail: { code: 'code-xyz', state: 'state-abc' } }))
++
++    // Must issue a fresh GET /connection (not reuse the pre-OAuth result)
++    expect(callCount).toBeGreaterThanOrEqual(2)
++    const connected = await screen.findByTestId('rhythm-connection-connected')
++    expect(connected).not.toBeNull()
++  })
++
++  it('populates RhythmWorkspaceProvider from backend-sanitized connection data after connecting', async () => {
++    // The page must not pass renderer-originated workspace credentials to the
++    // provider; only backend-sanitized data returned from GET /connection is used.
++    mockRestImpl = async (path) => {
++      if (path === '/connection') {
++        return {
++          connected: true,
++          workspaceId: 'ws-sanitized-1',
++          workspaceName: 'Hermes Workspace',
++        }
++      }
++      throw new Error(`unexpected: ${path}`)
++    }
++
++    const renderPage = getRhythmPageRender()
++    render(<>{renderPage()}</>)
++    const connected = await screen.findByTestId('rhythm-connection-connected')
++    expect(connected).not.toBeNull()
++    // Workspace data surfaces from the sanitized backend response, not renderer input.
++    expect(screen.getByTestId('rhythm-workspace-root')).not.toBeNull()
++  })
++
++  it('resets profile and gateway generation synchronously when host atoms change', async () => {
++    mockRestImpl = async (path) => {
++      if (path === '/connection') return { connected: true, workspaceId: 'ws-gen-1' }
++      throw new Error(`unexpected: ${path}`)
++    }
++
++    const renderPage = getRhythmPageRender()
++    render(<>{renderPage()}</>)
++    await screen.findByTestId('rhythm-connection-connected')
++
++    // A synchronous profile change must unmount the old generation immediately.
++    const sdk = await import('@hermes/plugin-sdk') as { hostAtoms: { profile: { set: (v: string) => void }; gateway: { set: (v: string) => void } } }
++    sdk.hostAtoms.profile.set('team-profile')
++    // The workspace root must reflect the new generation key synchronously
++    // (React remounts the provider under the changed key before the next paint).
++    expect(screen.getByTestId('rhythm-connection-loading')).not.toBeNull()
++  })
++
++  it('rejects stale connection, OAuth success, and OAuth failure responses after a re-home', async () => {
++    // controlled-promise rejection: a stale async response that resolves after
++    // the user navigates away must not update the now-current UI.
++    let resolveStale: (v: unknown) => void = () => undefined
++    let callIndex = 0
++
++    mockRestImpl = async (path) => {
++      if (path === '/connection') {
++        callIndex++
++        if (callIndex === 1) return new Promise((resolve) => { resolveStale = resolve })
++        return { connected: true, workspaceId: 'ws-current' }
++      }
++      throw new Error(`unexpected: ${path}`)
++    }
++
++    const renderPage = getRhythmPageRender()
++    render(<>{renderPage()}</>)
++    expect(screen.getByTestId('rhythm-connection-loading')).not.toBeNull()
++
++    // Change profile (re-home) — triggers a new connection fetch.
++    const sdk = await import('@hermes/plugin-sdk') as { hostAtoms: { profile: { set: (v: string) => void } } }
++    sdk.hostAtoms.profile.set('next-profile')
++
++    // Now resolve the stale (first) response — must be silently discarded.
++    resolveStale({ connected: true, workspaceId: 'ws-stale' })
++
++    // Only the current connection data for 'next-profile' must appear.
++    const connected = await screen.findByTestId('rhythm-connection-connected')
++    expect(connected.textContent).not.toContain('ws-stale')
++    expect(connected.textContent).toContain('ws-current')
++  })
++
++  it('redacts tokens, OAuth codes, OAuth state, remote origins, and raw upstream errors from the whole rendered container', async () => {
++    const rawUpstreamError = 'Internal gateway error: Bearer sk-rhythm-secret-token'
++    const remoteOrigin = 'https://internal.rhythmapp.internal'
++
++    mockRestImpl = async (path) => {
++      if (path === '/connection') {
++        return {
++          connected: false,
++          // backend may include these in its response body; the renderer must not echo them
++          _rawError: rawUpstreamError,
++          _origin: remoteOrigin,
++        }
++      }
++      throw new Error(`unexpected: ${path}`)
++    }
++
++    const renderPage = getRhythmPageRender()
++    const { container } = render(<>{renderPage()}</>)
++    await screen.findByTestId('rhythm-connection-disconnected')
++
++    const html = container.innerHTML
++    // No raw upstream error text
++    expect(html).not.toContain('Bearer sk-rhythm-secret-token')
++    expect(html).not.toContain(rawUpstreamError)
++    // No remote origin / URL leak
++    expect(html).not.toContain(remoteOrigin)
++    expect(html).not.toContain('rhythmapp.internal')
++    // No OAuth state/code tokens (would appear if OAuth flow leaked its internals)
++    expect(html).not.toMatch(/state=[\w-]{8,}/)
++    expect(html).not.toMatch(/code=[\w-]{8,}/)
++  })
++})
+diff --git a/apps/desktop/src/contrib/rhythm-production-bundle.test.ts b/apps/desktop/src/contrib/rhythm-production-bundle.test.ts
+new file mode 100644
+index 0000000000..0e3db06c55
+--- /dev/null
++++ b/apps/desktop/src/contrib/rhythm-production-bundle.test.ts
+@@ -0,0 +1,188 @@
++/**
++ * Production-bundle regression: executes the actual Rhythm desktop bundle
++ * build with Bun in production mode inside an isolated temporary output
++ * directory, then inspects the emitted artifact to reject react/jsx-dev-runtime
++ * and jsxDEV and to require the production JSX runtime.
++ *
++ * This test mirrors the Python test_desktop_build_uses_production_jsx_runtime
++ * gate (tests/plugins/test_rhythm_packaging_scaffold.py) but is independently
++ * executable from the desktop UI test suite so HCW records its result
++ * separately from the intentionally failing page-connection contract.
++ */
++
++import { execFileSync, spawnSync } from 'node:child_process'
++import fs from 'node:fs'
++import os from 'node:os'
++import path from 'node:path'
++import { beforeAll, describe, expect, it } from 'vitest'
++
++// ---------------------------------------------------------------------------
++// Paths
++// ---------------------------------------------------------------------------
++
++const REPO_ROOT = path.resolve(__dirname, '../../../..')
++const RHYTHM_SOURCE = path.join(REPO_ROOT, 'plugins/rhythm')
++
++// ---------------------------------------------------------------------------
++// Bun availability probe (synchronous, no shell)
++// ---------------------------------------------------------------------------
++
++function bunAvailable(): boolean {
++  try {
++    const result = spawnSync('bun', ['--version'], { timeout: 5_000, encoding: 'utf-8' })
++    return result.status === 0
++  } catch {
++    return false
++  }
++}
++
++const HAS_BUN = bunAvailable()
++
++// ---------------------------------------------------------------------------
++// CSS collection helper (mirrors build.py _desktop_entry rglob)
++// ---------------------------------------------------------------------------
++
++function collectCssFiles(dir: string): string[] {
++  const files: string[] = []
++  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
++    const fullPath = path.join(dir, entry.name)
++    if (entry.isDirectory()) {
++      files.push(...collectCssFiles(fullPath))
++    } else if (entry.isFile() && entry.name.endsWith('.css')) {
++      files.push(fullPath)
++    }
++  }
++  return files
++}
++
++// ---------------------------------------------------------------------------
++// Shared bundle state — built once per suite in beforeAll
++// ---------------------------------------------------------------------------
++
++let bundleText = ''
++let buildCommand: string[] = []
++let bundleDir = ''
++
++beforeAll(() => {
++  if (!HAS_BUN) return
++
++  bundleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rhythm-bundle-regression-'))
++
++  // Prepare entry (mirrors plugins/rhythm/packaging/build.py _desktop_entry)
++  const vendorSrc = fs.readFileSync(
++    path.join(RHYTHM_SOURCE, 'desktop/vendor/rhythm-workspace-ui/dist/index.js'),
++    'utf-8'
++  )
++  fs.writeFileSync(path.join(bundleDir, 'vendor.mjs'), vendorSrc)
++  fs.copyFileSync(
++    path.join(RHYTHM_SOURCE, 'desktop/src/route-state.ts'),
++    path.join(bundleDir, 'route-state.ts')
++  )
++
++  let plugin = fs.readFileSync(
++    path.join(RHYTHM_SOURCE, 'desktop/src/plugin.tsx'),
++    'utf-8'
++  )
++  plugin = plugin.replace('../vendor/rhythm-workspace-ui/dist/index.js', './vendor.mjs')
++  plugin = plugin.replace("import '../vendor/rhythm-workspace-ui/dist/styles/rhythm.css'\n", '')
++
++  const stylesDir = path.join(RHYTHM_SOURCE, 'desktop/vendor/rhythm-workspace-ui/dist/styles')
++  const cssFiles = collectCssFiles(stylesDir).sort()
++  const rawCss = cssFiles.map((f) => fs.readFileSync(f, 'utf-8')).join('\n')
++  const css = rawCss.replace(/^\s*@import\s+[^;]+;\s*$/gm, '')
++
++  const style =
++    `const __rhythmCss = ${JSON.stringify(css)};\n` +
++    `if (typeof document !== 'undefined' && !document.querySelector('style[data-rhythm-feature-pack]')) {\n` +
++    `  const el = document.createElement('style'); ` +
++    `el.dataset.rhythmFeaturePack = 'true'; el.textContent = __rhythmCss; document.head.append(el);}\n`
++
++  const entry = path.join(bundleDir, 'entry.tsx')
++  const outDir = path.join(bundleDir, 'dist')
++  const outfile = path.join(outDir, 'rhythm.mjs')
++  fs.mkdirSync(outDir, { recursive: true })
++  fs.writeFileSync(entry, style + plugin)
++
++  buildCommand = [
++    'bun', 'build', entry,
++    '--outfile', outfile,
++    '--format=esm',
++    '--target=browser',
++    '--minify',
++    '--production',
++    '--external', 'react',
++    '--external', 'react-dom',
++    '--external', 'react/*',
++    '--external', '@hermes/plugin-sdk',
++  ]
++
++  execFileSync(buildCommand[0], buildCommand.slice(1), {
++    cwd: bundleDir,
++    timeout: 120_000,
++  })
++
++  bundleText = fs.readFileSync(outfile, 'utf-8')
++}, 120_000)
++
++// ---------------------------------------------------------------------------
++// Tests
++// ---------------------------------------------------------------------------
++
++describe('Rhythm desktop bundle / production regression (#14)', () => {
++  it('build command includes --production (not a dev/JSX-dev build)', () => {
++    if (!HAS_BUN) {
++      console.warn('bun not found in PATH — skipping production bundle regression')
++      return
++    }
++    // The production flag is what tells Bun to emit jsx-runtime instead of
++    // jsx-dev-runtime.  Without it, every JSX call becomes jsxDEV and the
++    // Hermes desktop renderer crashes on load because its production bundle
++    // does not expose that symbol.
++    expect(buildCommand).toContain('--production')
++  })
++
++  it('production artifact contains no react/jsx-dev-runtime import', () => {
++    if (!HAS_BUN) {
++      console.warn('bun not found in PATH — skipping production bundle regression')
++      return
++    }
++    // react/jsx-dev-runtime is the development JSX factory imported by jsxDEV.
++    // Its presence in the bundle would cause the Hermes desktop runtime to crash
++    // because it does not expose a jsx-dev-runtime shim.
++    expect(bundleText).not.toContain('react/jsx-dev-runtime')
++  })
++
++  it('production artifact contains no jsxDEV call', () => {
++    if (!HAS_BUN) {
++      console.warn('bun not found in PATH — skipping production bundle regression')
++      return
++    }
++    // jsxDEV is the development-mode React element factory.  Its presence in a
++    // production bundle means --production was absent from the Bun command and
++    // the rendered page will crash at runtime.
++    expect(bundleText).not.toContain('jsxDEV')
++  })
++
++  it('production artifact references the production JSX runtime (react/jsx-runtime)', () => {
++    if (!HAS_BUN) {
++      console.warn('bun not found in PATH — skipping production bundle regression')
++      return
++    }
++    // The production runtime import confirms Bun emitted jsx() / jsxs() rather
++    // than jsxDEV() and that React is correctly marked external rather than
++    // bundled into the artifact.
++    expect(bundleText).toContain('react/jsx-runtime')
++  })
++
++  it('production artifact does not bundle React (kept external per build command)', () => {
++    if (!HAS_BUN) {
++      console.warn('bun not found in PATH — skipping production bundle regression')
++      return
++    }
++    // React must remain an external import; bundling it would create a second
++    // React graph beside the host app's React and corrupt the hook state.
++    // A rough heuristic: no large embedded createElement factory body.
++    expect(bundleText).not.toContain('function createElement(')
++    expect(bundleText).not.toContain('"react":function(')
++  })
++})
+-- 
+2.50.1 (Apple Git-155)
+

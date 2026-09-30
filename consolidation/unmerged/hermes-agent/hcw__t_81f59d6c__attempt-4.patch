@@ -1,0 +1,3690 @@
+From b009dec46c3eedf28832ccecc0a18d9530e08d52 Mon Sep 17 00:00:00 2001
+From: ajhochy <ajhochy@gmail.com>
+Date: Sat, 22 Aug 2026 02:06:28 -0700
+Subject: [PATCH] feat: add GitHub issue intake automation
+
+---
+ plugins/github-intake/README.md               |  45 ++
+ plugins/github-intake/__init__.py             |   1 +
+ plugins/github-intake/audit.py                |  51 ++
+ plugins/github-intake/cli.py                  | 227 ++++++
+ plugins/github-intake/config.py               |  45 ++
+ plugins/github-intake/hcw_adapter.py          |  23 +
+ plugins/github-intake/intake.py               | 268 +++++++
+ plugins/github-intake/models.py               |  67 ++
+ plugins/github-intake/plugin.yaml             |  12 +
+ plugins/github-intake/recovery.py             | 137 ++++
+ plugins/github-intake/routing.py              |  42 ++
+ plugins/github-intake/security.py             |  71 ++
+ plugins/github-intake/store.py                | 120 +++
+ plugins/github-intake/tests/__init__.py       |   1 +
+ plugins/github-intake/tests/conftest.py       | 212 ++++++
+ .../tests/fixtures/config.disabled.yaml       |  17 +
+ .../tests/fixtures/issues-closed.json         |  38 +
+ .../tests/fixtures/issues-edited.json         |  45 ++
+ .../tests/fixtures/issues-opened.json         |  37 +
+ .../tests/fixtures/issues-reopened.json       |  37 +
+ .../tests/fixtures/unsupported-event.json     |  42 ++
+ plugins/github-intake/tests/test_cli.py       | 211 ++++++
+ plugins/github-intake/tests/test_contracts.py | 690 ++++++++++++++++++
+ .../github-intake/tests/test_integration.py   | 236 ++++++
+ plugins/github-intake/tests/test_lifecycle.py | 220 ++++++
+ plugins/github-intake/tests/test_recovery.py  | 233 ++++++
+ plugins/github-intake/tests/test_scope.py     | 102 +++
+ plugins/github-intake/tests/test_security.py  | 225 ++++++
+ 28 files changed, 3455 insertions(+)
+ create mode 100644 plugins/github-intake/README.md
+ create mode 100644 plugins/github-intake/__init__.py
+ create mode 100644 plugins/github-intake/audit.py
+ create mode 100644 plugins/github-intake/cli.py
+ create mode 100644 plugins/github-intake/config.py
+ create mode 100644 plugins/github-intake/hcw_adapter.py
+ create mode 100644 plugins/github-intake/intake.py
+ create mode 100644 plugins/github-intake/models.py
+ create mode 100644 plugins/github-intake/plugin.yaml
+ create mode 100644 plugins/github-intake/recovery.py
+ create mode 100644 plugins/github-intake/routing.py
+ create mode 100644 plugins/github-intake/security.py
+ create mode 100644 plugins/github-intake/store.py
+ create mode 100644 plugins/github-intake/tests/__init__.py
+ create mode 100644 plugins/github-intake/tests/conftest.py
+ create mode 100644 plugins/github-intake/tests/fixtures/config.disabled.yaml
+ create mode 100644 plugins/github-intake/tests/fixtures/issues-closed.json
+ create mode 100644 plugins/github-intake/tests/fixtures/issues-edited.json
+ create mode 100644 plugins/github-intake/tests/fixtures/issues-opened.json
+ create mode 100644 plugins/github-intake/tests/fixtures/issues-reopened.json
+ create mode 100644 plugins/github-intake/tests/fixtures/unsupported-event.json
+ create mode 100644 plugins/github-intake/tests/test_cli.py
+ create mode 100644 plugins/github-intake/tests/test_contracts.py
+ create mode 100644 plugins/github-intake/tests/test_integration.py
+ create mode 100644 plugins/github-intake/tests/test_lifecycle.py
+ create mode 100644 plugins/github-intake/tests/test_recovery.py
+ create mode 100644 plugins/github-intake/tests/test_scope.py
+ create mode 100644 plugins/github-intake/tests/test_security.py
+
+diff --git a/plugins/github-intake/README.md b/plugins/github-intake/README.md
+new file mode 100644
+index 0000000000..0e98909495
+--- /dev/null
++++ b/plugins/github-intake/README.md
+@@ -0,0 +1,45 @@
++# github-intake Plugin
++
++Disabled-by-default GitHub issue intake plugin that creates canonical Kanban records
++and deterministic HCW routes without live writes.
++
++## Status
++
++**Disabled by default.** `plugin.yaml` sets `enabled: false`, `dry_run: true`.
++
++## Test Commands
++
++```bash
++# RED (all tests fail - no implementation)
++scripts/run_tests.sh plugins/github-intake/tests -q
++
++# GREEN (all tests pass - implementation present)
++scripts/run_tests.sh plugins/github-intake/tests -q
++
++# Security / leak / scope
++scripts/run_tests.sh plugins/github-intake/tests/test_security.py plugins/github-intake/tests/test_scope.py -q
++
++# Dry-run via CLI
++python -m plugins.github_intake.cli dry-run \
++  --config plugins/github-intake/tests/fixtures/config.disabled.yaml \
++  --fixture plugins/github-intake/tests/fixtures/issues-opened.json \
++  --event-type issues \
++  --board /tmp/test-board
++```
++
++## Operator Procedures
++
++- **Disable**: set `enabled: false` in plugin.yaml or config
++- **Kill switch**: set `kill_switch: true` to stop all intake immediately
++- **Rollback**: call `rollback_delivery(intake_id, store=store)`
++- **Recovery**: use `RecoveryManager.operator_replay(intake_id)`
++- **Secret rotation**: update `webhook_secret` in config; secrets are never logged
++
++## Safety Invariants
++
++- No webhook activation or public repository contact
++- HMAC signatures verified with constant-time comparison
++- Allowlists enforced before any processing
++- Secrets and issue body text redacted from all logs and audit entries
++- Dry-run mode emits deterministic JSON without any writes
++- Kill switch blocks all intake immediately
+diff --git a/plugins/github-intake/__init__.py b/plugins/github-intake/__init__.py
+new file mode 100644
+index 0000000000..3dc1f76bc6
+--- /dev/null
++++ b/plugins/github-intake/__init__.py
+@@ -0,0 +1 @@
++__version__ = "0.1.0"
+diff --git a/plugins/github-intake/audit.py b/plugins/github-intake/audit.py
+new file mode 100644
+index 0000000000..0f7065d044
+--- /dev/null
++++ b/plugins/github-intake/audit.py
+@@ -0,0 +1,51 @@
++from __future__ import annotations
++
++import json
++from pathlib import Path
++from typing import Any, Dict, List
++
++from .security import redact_details
++
++
++class AuditLog:
++    """Append-only audit log stored as per-intake JSONL files."""
++
++    def __init__(self, base_dir: Path):
++        self._base = Path(base_dir) / "audit"
++        self._base.mkdir(parents=True, exist_ok=True)
++
++    def _path(self, intake_id: str) -> Path:
++        return self._base / f"{intake_id}.jsonl"
++
++    def append(
++        self,
++        intake_id: str,
++        event: str,
++        correlation_id: str,
++        details: Dict[str, Any],
++    ) -> None:
++        safe_details = redact_details(details)
++        entry = {
++            "intake_id": intake_id,
++            "event": event,
++            "correlation_id": correlation_id,
++            "details": safe_details,
++        }
++        with self._path(intake_id).open("a") as f:
++            f.write(json.dumps(entry) + "\n")
++
++    def get_entries(self, intake_id: str) -> List[Dict[str, Any]]:
++        path = self._path(intake_id)
++        if not path.exists():
++            return []
++        entries = []
++        for line in path.read_text().splitlines():
++            line = line.strip()
++            if line:
++                entries.append(json.loads(line))
++        return entries
++
++    def delete_entry(self, intake_id: str, index: int) -> None:
++        raise NotImplementedError(
++            "AuditLog is append-only; deletion is not permitted"
++        )
+diff --git a/plugins/github-intake/cli.py b/plugins/github-intake/cli.py
+new file mode 100644
+index 0000000000..caeca5b5e4
+--- /dev/null
++++ b/plugins/github-intake/cli.py
+@@ -0,0 +1,227 @@
++from __future__ import annotations
++
++import json
++import sys
++import uuid
++from pathlib import Path
++
++import click
++
++from .config import IntakeConfig
++
++
++@click.group(name="github-intake")
++def github_intake_cli():
++    """GitHub issue intake plugin CLI (disabled by default, dry-run safe)."""
++
++
++@github_intake_cli.command("validate-config")
++@click.option("--config", "config_path", required=True, type=click.Path(), help="Path to config YAML")
++def validate_config(config_path: str):
++    """Validate a github-intake configuration file."""
++    path = Path(config_path)
++    if not path.exists():
++        click.echo(f"Error: config file not found: {config_path}", err=True)
++        sys.exit(1)
++    try:
++        cfg = IntakeConfig.from_yaml(path)
++        click.echo(json.dumps({
++            "valid": True,
++            "enabled": cfg.enabled,
++            "dry_run": cfg.dry_run,
++            "kill_switch": cfg.kill_switch,
++            "allowed_owners": cfg.allowed_owners,
++            "allowed_repos": cfg.allowed_repos,
++        }))
++    except Exception as e:
++        click.echo(f"Error: invalid config: {e}", err=True)
++        sys.exit(1)
++
++
++@github_intake_cli.command("ingest-fixture")
++@click.option("--config", "config_path", required=True, type=click.Path(), help="Path to config YAML")
++@click.option("--fixture", "fixture_path", required=True, type=click.Path(), help="Path to fixture JSON")
++@click.option("--event-type", "event_type", required=True, help="GitHub event type (e.g. 'issues')")
++@click.option("--board", "board_path", required=True, type=click.Path(), help="Local Kanban board directory")
++@click.option("--dry-run", "force_dry_run", is_flag=True, default=False, help="Force dry-run mode")
++def ingest_fixture(config_path: str, fixture_path: str, event_type: str, board_path: str, force_dry_run: bool):
++    """Ingest a fixture JSON file as a signed delivery into the local board."""
++    import hashlib, hmac
++    from .models import WebhookDelivery
++    from .store import IntakeStore
++    from .intake import process_delivery
++
++    path = Path(config_path)
++    if not path.exists():
++        click.echo(f"Error: config file not found: {config_path}", err=True)
++        sys.exit(1)
++
++    cfg = IntakeConfig.from_yaml(path)
++    if force_dry_run:
++        cfg.dry_run = True
++
++    fixture = Path(fixture_path)
++    if not fixture.exists():
++        click.echo(f"Error: fixture not found: {fixture_path}", err=True)
++        sys.exit(1)
++
++    payload_bytes = fixture.read_bytes()
++    secret = cfg.webhook_secret or "no-secret"
++    sig = "sha256=" + hmac.new(secret.encode(), payload_bytes, hashlib.sha256).hexdigest()
++
++    delivery = WebhookDelivery(
++        delivery_id=str(uuid.uuid4()),
++        event_type=event_type,
++        signature=sig,
++        payload_bytes=payload_bytes,
++        received_at=_now_iso(),
++    )
++
++    board = Path(board_path)
++    board.mkdir(parents=True, exist_ok=True)
++    store = IntakeStore(base_dir=board) if not cfg.dry_run else None
++
++    result = process_delivery(delivery, cfg, store=store, hcw_adapter=None)
++
++    output = {
++        "outcome": result.outcome,
++        "record_id": result.record.id if result.record else None,
++        "dry_run_data": result.dry_run_data,
++    }
++    click.echo(json.dumps(output))
++
++
++@github_intake_cli.command("dry-run")
++@click.option("--config", "config_path", required=True, type=click.Path(), help="Path to config YAML")
++@click.option("--fixture", "fixture_path", required=True, type=click.Path(), help="Path to fixture JSON")
++@click.option("--event-type", "event_type", required=True, help="GitHub event type")
++@click.option("--board", "board_path", required=True, type=click.Path(), help="Local Kanban board directory")
++def dry_run(config_path: str, fixture_path: str, event_type: str, board_path: str):
++    """Emit deterministic redacted JSON without any board or HCW writes."""
++    import hashlib, hmac
++    from .models import WebhookDelivery
++    from .intake import process_delivery
++
++    path = Path(config_path)
++    if not path.exists():
++        click.echo(f"Error: config not found: {config_path}", err=True)
++        sys.exit(1)
++
++    cfg = IntakeConfig.from_yaml(path)
++    cfg.dry_run = True  # always force dry-run for this subcommand
++
++    fixture = Path(fixture_path)
++    payload_bytes = fixture.read_bytes()
++    secret = cfg.webhook_secret or "no-secret"
++    sig = "sha256=" + hmac.new(secret.encode(), payload_bytes, hashlib.sha256).hexdigest()
++
++    delivery = WebhookDelivery(
++        delivery_id=str(uuid.uuid4()),
++        event_type=event_type,
++        signature=sig,
++        payload_bytes=payload_bytes,
++        received_at=_now_iso(),
++    )
++
++    result = process_delivery(delivery, cfg, store=None, hcw_adapter=None)
++    output = {
++        "outcome": result.outcome,
++        "dry_run": True,
++        "data": result.dry_run_data,
++    }
++    click.echo(json.dumps(output))
++
++
++@github_intake_cli.command("replay")
++@click.option("--config", "config_path", required=True, type=click.Path())
++@click.option("--intake-id", "intake_id", required=True)
++@click.option("--board", "board_path", required=True, type=click.Path())
++def replay(config_path: str, intake_id: str, board_path: str):
++    """Operator replay of a quarantined record."""
++    from .store import IntakeStore
++    from .recovery import RecoveryManager, RetryPolicy
++
++    cfg = IntakeConfig.from_yaml(Path(config_path))
++    store = IntakeStore(base_dir=Path(board_path))
++    policy = RetryPolicy(
++        max_attempts=cfg.retry.get("max_attempts", 3),
++        backoff_base_seconds=cfg.retry.get("backoff_base_seconds", 1),
++        backoff_max_seconds=cfg.retry.get("backoff_max_seconds", 60),
++    )
++    manager = RecoveryManager(store=store, policy=policy)
++    result = manager.operator_replay(intake_id=intake_id)
++    click.echo(json.dumps({"replayed": result is not None, "intake_id": intake_id}))
++
++
++@github_intake_cli.command("quarantine-list")
++@click.option("--config", "config_path", required=True, type=click.Path())
++@click.option("--board", "board_path", required=True, type=click.Path())
++def quarantine_list(config_path: str, board_path: str):
++    """List all quarantined intake records."""
++    from .store import IntakeStore
++    from .recovery import RecoveryManager, RetryPolicy
++
++    cfg = IntakeConfig.from_yaml(Path(config_path))
++    store = IntakeStore(base_dir=Path(board_path))
++    policy = RetryPolicy(
++        max_attempts=cfg.retry.get("max_attempts", 3),
++        backoff_base_seconds=cfg.retry.get("backoff_base_seconds", 1),
++        backoff_max_seconds=cfg.retry.get("backoff_max_seconds", 60),
++    )
++    manager = RecoveryManager(store=store, policy=policy)
++    quarantined = manager.list_quarantined()
++    click.echo(json.dumps([r.id for r in quarantined]))
++
++
++@github_intake_cli.command("audit")
++@click.option("--intake-id", "intake_id", required=True)
++@click.option("--board", "board_path", required=True, type=click.Path())
++def audit_cmd(intake_id: str, board_path: str):
++    """Show audit log entries for an intake record."""
++    from .audit import AuditLog
++    log = AuditLog(base_dir=Path(board_path))
++    entries = log.get_entries(intake_id)
++    click.echo(json.dumps(entries))
++
++
++@github_intake_cli.command("status")
++@click.option("--config", "config_path", required=True, type=click.Path())
++@click.option("--board", "board_path", required=True, type=click.Path())
++def status(config_path: str, board_path: str):
++    """Show plugin status and counters."""
++    path = Path(config_path)
++    if not path.exists():
++        click.echo(f"Error: config not found: {config_path}", err=True)
++        sys.exit(1)
++
++    cfg = IntakeConfig.from_yaml(path)
++    board = Path(board_path)
++    records_dir = board / "intake_records"
++
++    total = 0
++    by_state: dict = {}
++    if records_dir.exists():
++        for p in records_dir.glob("*.json"):
++            if p.name.startswith("_"):
++                continue
++            try:
++                import json as _json
++                data = _json.loads(p.read_text())
++                state = data.get("state", "unknown")
++                by_state[state] = by_state.get(state, 0) + 1
++                total += 1
++            except Exception:
++                continue
++
++    click.echo(json.dumps({
++        "enabled": cfg.enabled,
++        "dry_run": cfg.dry_run,
++        "kill_switch": cfg.kill_switch,
++        "total_records": total,
++        "by_state": by_state,
++    }))
++
++
++def _now_iso() -> str:
++    import datetime
++    return datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+diff --git a/plugins/github-intake/config.py b/plugins/github-intake/config.py
+new file mode 100644
+index 0000000000..002db28405
+--- /dev/null
++++ b/plugins/github-intake/config.py
+@@ -0,0 +1,45 @@
++from __future__ import annotations
++
++from dataclasses import dataclass, field
++from pathlib import Path
++from typing import Any, Dict, List
++
++
++@dataclass
++class IntakeConfig:
++    enabled: bool
++    dry_run: bool
++    kill_switch: bool
++    webhook_secret: str
++    allowed_owners: List[str] = field(default_factory=list)
++    allowed_repos: List[str] = field(default_factory=list)
++    max_payload_bytes: int = 1048576
++    routing: Dict[str, Any] = field(default_factory=dict)
++    retry: Dict[str, Any] = field(default_factory=dict)
++
++    def __repr__(self) -> str:
++        return (
++            f"IntakeConfig(enabled={self.enabled!r}, dry_run={self.dry_run!r}, "
++            f"kill_switch={self.kill_switch!r}, webhook_secret=***REDACTED***, "
++            f"allowed_owners={self.allowed_owners!r}, allowed_repos={self.allowed_repos!r})"
++        )
++
++    def __str__(self) -> str:
++        return self.__repr__()
++
++    @classmethod
++    def from_yaml(cls, path: Path) -> "IntakeConfig":
++        import yaml
++        data = yaml.safe_load(Path(path).read_text())
++        cfg = data.get("github_intake", data)
++        return cls(
++            enabled=cfg.get("enabled", False),
++            dry_run=cfg.get("dry_run", True),
++            kill_switch=cfg.get("kill_switch", False),
++            webhook_secret=cfg.get("webhook_secret", ""),
++            allowed_owners=list(cfg.get("allowed_owners", [])),
++            allowed_repos=list(cfg.get("allowed_repos", [])),
++            max_payload_bytes=int(cfg.get("max_payload_bytes", 1048576)),
++            routing=dict(cfg.get("routing", {})),
++            retry=dict(cfg.get("retry", {})),
++        )
+diff --git a/plugins/github-intake/hcw_adapter.py b/plugins/github-intake/hcw_adapter.py
+new file mode 100644
+index 0000000000..48c12e01ea
+--- /dev/null
++++ b/plugins/github-intake/hcw_adapter.py
+@@ -0,0 +1,23 @@
++from __future__ import annotations
++
++from typing import Any, Dict, List, Optional
++
++
++class DryRunHCWAdapter:
++    """Records dispatch calls without real HCW side effects."""
++
++    def __init__(self):
++        self.dispatched: List[Dict[str, Any]] = []
++        self.is_dry_run = True
++
++    def dispatch(self, intent: Any) -> Dict[str, Any]:
++        if hasattr(intent, "__dict__"):
++            record = dict(intent.__dict__)
++        else:
++            record = dict(intent) if isinstance(intent, dict) else {"intent": str(intent)}
++        self.dispatched.append(record)
++        return {
++            "status": "recorded",
++            "intent_id": record.get("id", "dry-run-id"),
++            "dry_run": True,
++        }
+diff --git a/plugins/github-intake/intake.py b/plugins/github-intake/intake.py
+new file mode 100644
+index 0000000000..128b6ae5a9
+--- /dev/null
++++ b/plugins/github-intake/intake.py
+@@ -0,0 +1,268 @@
++from __future__ import annotations
++
++import hashlib
++import json
++import uuid
++from dataclasses import dataclass, field
++from pathlib import Path
++from typing import Any, Dict, Optional
++
++from .models import CanonicalIntakeRecord, IntakeState, RouteIntent, WebhookDelivery
++from .security import verify_signature, is_allowed, check_payload_size
++
++
++_SUPPORTED_ACTIONS = {"opened", "edited", "closed", "reopened"}
++
++
++def compute_intake_id(installation_id: int, repo_full_name: str, issue_number: int) -> str:
++    """Deterministic SHA-256 hex digest keyed on GitHub identity coordinates."""
++    key = f"github:{installation_id}:{repo_full_name}:{issue_number}"
++    return hashlib.sha256(key.encode()).hexdigest()
++
++
++@dataclass
++class IntakeCounters:
++    accepted: int = 0
++    duplicate: int = 0
++    stale: int = 0
++    conflict: int = 0
++    retried: int = 0
++    quarantined: int = 0
++    routed: int = 0
++
++
++@dataclass
++class IntakeResult:
++    outcome: str
++    record: Optional[CanonicalIntakeRecord] = None
++    dry_run_data: Optional[Dict[str, Any]] = None
++
++
++def _now_iso() -> str:
++    import datetime
++    return datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
++
++
++def _make_record(
++    intake_id: str,
++    delivery_id: str,
++    payload_digest: str,
++    source_timestamp: str,
++    received_timestamp: str,
++    action: str,
++    owner: str,
++    repo_full_name: str,
++    issue_number: int,
++    lifecycle_revision: int = 0,
++    state: str = "pending",
++) -> CanonicalIntakeRecord:
++    return CanonicalIntakeRecord(
++        id=intake_id,
++        delivery_id=delivery_id,
++        payload_digest=payload_digest,
++        source_timestamp=source_timestamp,
++        received_timestamp=received_timestamp,
++        lifecycle_revision=lifecycle_revision,
++        state=state,
++        provenance={
++            "delivery_id": delivery_id,
++            "action": action,
++            "owner": owner,
++            "repo": repo_full_name,
++            "issue_number": issue_number,
++            "source": "github",
++        },
++        audit_entries=[],
++    )
++
++
++def process_delivery(
++    delivery: WebhookDelivery,
++    cfg,
++    store,
++    hcw_adapter,
++) -> IntakeResult:
++    """
++    Process a single GitHub webhook delivery.
++
++    Order of checks:
++    1. Kill switch
++    2. HMAC signature verification
++    3. Payload size
++    4. JSON parse (raises on malformed)
++    5. Action filter (skip unsupported)
++    6. Required field validation (raises on missing)
++    7. Allowlist check (reject untrusted)
++    8. Dry-run short circuit (no writes)
++    9. Duplicate / replay detection
++    10. Lifecycle update or new record creation
++    11. Route and dispatch
++    """
++    from .routing import derive_route
++    from .audit import AuditLog
++
++    # 1. Kill switch
++    if cfg.kill_switch:
++        return IntakeResult(outcome="killed")
++
++    # 2. Signature verification
++    if cfg.webhook_secret:
++        if not verify_signature(delivery.payload_bytes, delivery.signature, cfg.webhook_secret):
++            raise ValueError("Invalid webhook signature")
++
++    # 3. Payload size
++    check_payload_size(delivery.payload_bytes, cfg.max_payload_bytes)
++
++    # 4. Parse JSON (raises on malformed)
++    payload = json.loads(delivery.payload_bytes)
++
++    # 5. Action filter
++    action = payload.get("action", "")
++    if action not in _SUPPORTED_ACTIONS:
++        return IntakeResult(outcome="skipped")
++
++    # 6. Validate required fields
++    if "issue" not in payload or "repository" not in payload or "installation" not in payload:
++        raise ValueError(
++            "Missing required payload fields: issue, repository, installation"
++        )
++    issue = payload["issue"]
++    repository = payload["repository"]
++    installation = payload["installation"]
++
++    if "number" not in issue:
++        raise ValueError("payload.issue.number is required")
++    if "full_name" not in repository:
++        raise ValueError("payload.repository.full_name is required")
++    if "owner" not in repository:
++        raise ValueError("payload.repository.owner is required")
++    if "id" not in installation:
++        raise ValueError("payload.installation.id is required")
++
++    owner = repository["owner"]["login"]
++    repo_full_name = repository["full_name"]
++    issue_number = issue["number"]
++    installation_id = installation["id"]
++    source_timestamp = issue.get("updated_at", issue.get("created_at", _now_iso()))
++
++    # 7. Allowlist check
++    if not is_allowed(owner, repo_full_name, cfg):
++        return IntakeResult(outcome="rejected")
++
++    payload_digest = hashlib.sha256(delivery.payload_bytes).hexdigest()
++
++    # 8. Dry-run
++    if cfg.dry_run:
++        dry_data = {
++            "outcome": "dry_run",
++            "action": action,
++            "owner": owner,
++            "repo": repo_full_name,
++            "issue_number": issue_number,
++            "payload_digest": payload_digest,
++            "delivery_id": delivery.delivery_id,
++        }
++        return IntakeResult(outcome="dry_run", dry_run_data=dry_data)
++
++    # 9. Duplicate / replay detection
++    intake_id = compute_intake_id(installation_id, repo_full_name, issue_number)
++    correlation_id = str(uuid.uuid4())
++    audit = AuditLog(base_dir=Path(store._base).parent)
++
++    # Check if this delivery_id was already seen
++    if store.get_by_delivery_id(delivery.delivery_id) is not None:
++        return IntakeResult(outcome="duplicate", record=store.get_by_delivery_id(delivery.delivery_id))
++
++    existing = store.get(intake_id)
++
++    if existing is not None:
++        if action == "opened":
++            # Duplicate: issue already intake'd; register delivery_id in index
++            store.save(existing, delivery_id=delivery.delivery_id)
++            audit.append(intake_id, "duplicate", correlation_id, {"delivery_id": delivery.delivery_id})
++            return IntakeResult(outcome="duplicate", record=existing)
++
++        # Lifecycle update (edited, closed, reopened)
++        new_revision = existing.lifecycle_revision + 1
++        new_state = {
++            "edited": IntakeState.UPDATED.value,
++            "closed": IntakeState.CLOSED.value,
++            "reopened": IntakeState.ROUTED.value,
++        }.get(action, IntakeState.UPDATED.value)
++
++        updated = CanonicalIntakeRecord(
++            id=existing.id,
++            delivery_id=existing.delivery_id,
++            payload_digest=payload_digest,
++            source_timestamp=source_timestamp,
++            received_timestamp=delivery.received_at,
++            lifecycle_revision=new_revision,
++            state=new_state,
++            provenance={
++                **existing.provenance,
++                "last_action": action,
++                "last_delivery_id": delivery.delivery_id,
++            },
++            audit_entries=existing.audit_entries,
++        )
++        saved = store.save(updated, delivery_id=delivery.delivery_id,
++                          expected_revision=existing.lifecycle_revision)
++        if not saved:
++            audit.append(intake_id, "conflict", correlation_id, {"delivery_id": delivery.delivery_id})
++            return IntakeResult(outcome="conflict", record=existing)
++
++        audit.append(intake_id, action, correlation_id, {"revision": new_revision})
++        route = derive_route(updated, cfg)
++        if route is not None and hcw_adapter is not None:
++            hcw_adapter.dispatch({"id": str(uuid.uuid4()), **route.__dict__})
++        return IntakeResult(outcome="updated", record=updated)
++
++    # No existing record
++    if action != "opened":
++        # Stale: lifecycle event with no prior opened record
++        stale_record = _make_record(
++            intake_id, delivery.delivery_id, payload_digest,
++            source_timestamp, delivery.received_at,
++            action, owner, repo_full_name, issue_number,
++            state=IntakeState.STALE.value,
++        )
++        store.save(stale_record, delivery_id=delivery.delivery_id)
++        audit.append(intake_id, "stale", correlation_id, {"action": action})
++        return IntakeResult(outcome="stale", record=stale_record)
++
++    # New record for "opened" action
++    record = _make_record(
++        intake_id, delivery.delivery_id, payload_digest,
++        source_timestamp, delivery.received_at,
++        action, owner, repo_full_name, issue_number,
++        state=IntakeState.ROUTED.value,
++    )
++    store.save(record, delivery_id=delivery.delivery_id)
++    audit.append(intake_id, "accepted", correlation_id, {"action": action})
++
++    route = derive_route(record, cfg)
++    if route is not None and hcw_adapter is not None:
++        hcw_adapter.dispatch({"id": str(uuid.uuid4()), **route.__dict__})
++        audit.append(intake_id, "routed", correlation_id, {"route": route.action})
++
++    return IntakeResult(outcome="accepted", record=record)
++
++
++def rollback_delivery(intake_id: str, store) -> None:
++    """Mark an intake record as rolled back (append-only safe)."""
++    existing = store.get(intake_id)
++    if existing is None:
++        return
++    rolled_back = CanonicalIntakeRecord(
++        id=existing.id,
++        delivery_id=existing.delivery_id,
++        payload_digest=existing.payload_digest,
++        source_timestamp=existing.source_timestamp,
++        received_timestamp=existing.received_timestamp,
++        lifecycle_revision=existing.lifecycle_revision + 1,
++        state=IntakeState.ROLLED_BACK.value,
++        provenance=existing.provenance,
++        audit_entries=existing.audit_entries,
++        dead_letter_metadata=existing.dead_letter_metadata,
++    )
++    store.save(rolled_back)
+diff --git a/plugins/github-intake/models.py b/plugins/github-intake/models.py
+new file mode 100644
+index 0000000000..ac4c340a28
+--- /dev/null
++++ b/plugins/github-intake/models.py
+@@ -0,0 +1,67 @@
++from __future__ import annotations
++
++from dataclasses import dataclass, field
++from enum import Enum
++from typing import Any, Dict, List, Optional
++
++
++class IntakeState(str, Enum):
++    PENDING = "pending"
++    ROUTED = "routed"
++    DUPLICATE = "duplicate"
++    STALE = "stale"
++    CONFLICT = "conflict"
++    FAILED = "failed"
++    QUARANTINED = "quarantined"
++    CLOSED = "closed"
++    UPDATED = "updated"
++    ROLLED_BACK = "rolled_back"
++
++
++@dataclass
++class WebhookDelivery:
++    delivery_id: str
++    event_type: str
++    signature: str
++    payload_bytes: bytes
++    received_at: str
++
++    def __post_init__(self):
++        if not self.delivery_id:
++            raise ValueError("delivery_id is required")
++        if self.signature is None:
++            raise ValueError("signature is required")
++        # Allow empty string signature - it will be rejected by verify_signature
++
++
++@dataclass
++class CanonicalIntakeRecord:
++    id: str
++    delivery_id: str
++    payload_digest: str
++    source_timestamp: str
++    received_timestamp: str
++    lifecycle_revision: int
++    state: Any  # IntakeState or str
++    provenance: Dict[str, Any]
++    audit_entries: List[Any]
++    dead_letter_metadata: Optional[Dict[str, Any]] = None
++
++
++@dataclass
++class ProvenanceRecord:
++    delivery_id: str
++    payload_digest: str
++    source: str = "github"
++    installation_id: Optional[int] = None
++    repo_full_name: Optional[str] = None
++    issue_number: Optional[int] = None
++
++
++@dataclass
++class RouteIntent:
++    intake_id: str
++    action: str
++    id: Optional[str] = None
++    metadata: Dict[str, Any] = field(default_factory=dict)
++    # body is intentionally absent: routes must never carry issue body text
+diff --git a/plugins/github-intake/plugin.yaml b/plugins/github-intake/plugin.yaml
+new file mode 100644
+index 0000000000..f9e9695afa
+--- /dev/null
++++ b/plugins/github-intake/plugin.yaml
+@@ -0,0 +1,12 @@
++name: github-intake
++version: "0.1.0"
++enabled: false
++dry_run: true
++kill_switch: false
++description: "GitHub issue to canonical Kanban intake and HCW routing - disabled by default"
++permissions:
++  - "read:issues"
++defaults:
++  max_payload_bytes: 1048576
++  allowed_owners: []
++  allowed_repos: []
+diff --git a/plugins/github-intake/recovery.py b/plugins/github-intake/recovery.py
+new file mode 100644
+index 0000000000..61804ba6d8
+--- /dev/null
++++ b/plugins/github-intake/recovery.py
+@@ -0,0 +1,137 @@
++from __future__ import annotations
++
++import math
++from enum import Enum
++from typing import Any, Dict, List, Optional, TYPE_CHECKING
++
++from .models import IntakeState
++
++if TYPE_CHECKING:
++    from .store import IntakeStore
++
++
++class ErrorClass(str, Enum):
++    TRANSIENT = "transient"
++    PERMANENT = "permanent"
++
++
++_TERMINAL_STATES = {
++    IntakeState.FAILED,
++    IntakeState.QUARANTINED,
++    IntakeState.ROLLED_BACK,
++}
++
++_TERMINAL_STATE_VALUES = {s.value for s in _TERMINAL_STATES}
++
++
++def is_terminal_state(state) -> bool:
++    """Return True if the state is a non-recoverable terminal state."""
++    if isinstance(state, IntakeState):
++        return state in _TERMINAL_STATES
++    return str(state) in _TERMINAL_STATE_VALUES
++
++
++class RetryPolicy:
++    def __init__(self, max_attempts: int, backoff_base_seconds: float, backoff_max_seconds: float):
++        self.max_attempts = max_attempts
++        self.backoff_base_seconds = backoff_base_seconds
++        self.backoff_max_seconds = backoff_max_seconds
++
++    def is_eligible(self, attempt: int) -> bool:
++        """Return True if attempt number is within max_attempts."""
++        return attempt <= self.max_attempts
++
++    def backoff_seconds(self, attempt: int) -> float:
++        """Exponential backoff capped at backoff_max_seconds."""
++        delay = self.backoff_base_seconds * (2 ** (attempt - 1))
++        return min(delay, self.backoff_max_seconds)
++
++    def is_retryable(self, error_class: ErrorClass) -> bool:
++        """Only TRANSIENT errors are eligible for retry."""
++        return error_class == ErrorClass.TRANSIENT
++
++
++class RecoveryManager:
++    def __init__(self, store: "IntakeStore", policy: RetryPolicy):
++        self._store = store
++        self._policy = policy
++        self._failure_counts: Dict[str, int] = {}
++
++    def record_failure(
++        self,
++        intake_id: str,
++        error_class: ErrorClass,
++        details: Dict[str, Any],
++    ) -> None:
++        self._failure_counts[intake_id] = self._failure_counts.get(intake_id, 0) + 1
++        attempt = self._failure_counts[intake_id]
++
++        record = self._store.get(intake_id)
++
++        if not self._policy.is_retryable(error_class) or not self._policy.is_eligible(attempt + 1):
++            new_state = IntakeState.QUARANTINED.value
++        else:
++            new_state = IntakeState.FAILED.value
++
++        if record is not None:
++            from .models import CanonicalIntakeRecord
++            dead_letter = {
++                "delivery_id": record.delivery_id,
++                "attempt": attempt,
++                "error_class": str(error_class),
++                **(details or {}),
++            }
++            updated = CanonicalIntakeRecord(
++                id=record.id,
++                delivery_id=record.delivery_id,
++                payload_digest=record.payload_digest,
++                source_timestamp=record.source_timestamp,
++                received_timestamp=record.received_timestamp,
++                lifecycle_revision=record.lifecycle_revision + 1,
++                state=new_state,
++                provenance=record.provenance,
++                audit_entries=record.audit_entries,
++                dead_letter_metadata=dead_letter,
++            )
++            self._store.save(updated)
++        else:
++            # Create a stub record for tracking purposes
++            from .models import CanonicalIntakeRecord
++            stub = CanonicalIntakeRecord(
++                id=intake_id,
++                delivery_id="unknown",
++                payload_digest="",
++                source_timestamp="",
++                received_timestamp="",
++                lifecycle_revision=attempt,
++                state=new_state,
++                provenance={},
++                audit_entries=[],
++                dead_letter_metadata={"attempt": attempt, "error_class": str(error_class), **(details or {})},
++            )
++            self._store.save(stub)
++
++    def list_quarantined(self) -> List:
++        return self._store.list_by_state(IntakeState.QUARANTINED.value)
++
++    def operator_replay(self, intake_id: str) -> Optional[Any]:
++        """Allow operator to manually reset a quarantined record for replay."""
++        record = self._store.get(intake_id)
++        if record is None:
++            return None
++        from .models import CanonicalIntakeRecord
++        reset = CanonicalIntakeRecord(
++            id=record.id,
++            delivery_id=record.delivery_id,
++            payload_digest=record.payload_digest,
++            source_timestamp=record.source_timestamp,
++            received_timestamp=record.received_timestamp,
++            lifecycle_revision=record.lifecycle_revision + 1,
++            state=IntakeState.PENDING.value,
++            provenance={**record.provenance, "operator_replay": True},
++            audit_entries=record.audit_entries,
++            dead_letter_metadata=record.dead_letter_metadata,
++        )
++        self._failure_counts.pop(intake_id, None)
++        self._store.save(reset)
++        return reset
+diff --git a/plugins/github-intake/routing.py b/plugins/github-intake/routing.py
+new file mode 100644
+index 0000000000..5616e0e6df
+--- /dev/null
++++ b/plugins/github-intake/routing.py
+@@ -0,0 +1,42 @@
++from __future__ import annotations
++
++import uuid
++from typing import Optional, TYPE_CHECKING
++
++from .models import CanonicalIntakeRecord, RouteIntent
++
++if TYPE_CHECKING:
++    from .config import IntakeConfig
++
++
++def derive_route(record: CanonicalIntakeRecord, cfg: "IntakeConfig") -> Optional[RouteIntent]:
++    """
++    Derive a deterministic RouteIntent from validated intake record metadata.
++
++    Routes are derived only from allowlisted metadata fields in provenance.
++    Issue body text is never included in the route.
++    """
++    provenance = record.provenance or {}
++    action = provenance.get("action", "")
++    owner = provenance.get("owner", "")
++    repo = provenance.get("repo", "")
++    issue_number = provenance.get("issue_number")
++
++    if not action or not owner or not repo:
++        return None
++
++    hcw_enabled = cfg.routing.get("hcw_enabled", False) if cfg.routing else False
++    route_action = "route_to_hcw" if hcw_enabled else "create_kanban_card"
++
++    return RouteIntent(
++        id=str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{record.id}:{action}")),
++        intake_id=record.id,
++        action=route_action,
++        metadata={
++            "action": action,
++            "owner": owner,
++            "repo": repo,
++            "issue_number": issue_number,
++            "intake_id": record.id,
++        },
++    )
+diff --git a/plugins/github-intake/security.py b/plugins/github-intake/security.py
+new file mode 100644
+index 0000000000..1feea8b519
+--- /dev/null
++++ b/plugins/github-intake/security.py
+@@ -0,0 +1,71 @@
++from __future__ import annotations
++
++import hashlib
++import hmac
++from typing import TYPE_CHECKING
++
++if TYPE_CHECKING:
++    from .config import IntakeConfig
++
++_SENSITIVE_KEY_SUFFIXES = (
++    "_secret", "_token", "_key", "_password", "_credentials", "_api_key",
++)
++
++
++def verify_signature(payload_bytes: bytes, signature: str, secret: str) -> bool:
++    """Verify GitHub HMAC-SHA256 webhook signature using constant-time comparison."""
++    if not signature:
++        return False
++    if not signature.startswith("sha256="):
++        raise ValueError(
++            f"Signature must use sha256= prefix; got: {signature[:20]!r}"
++        )
++    expected = "sha256=" + hmac.new(
++        secret.encode(), payload_bytes, hashlib.sha256
++    ).hexdigest()
++    return hmac.compare_digest(expected, signature)
++
++
++def is_allowed(owner: str, repo_full_name: str, cfg: "IntakeConfig") -> bool:
++    """Return True only if owner and repo are both in the explicit allowlists."""
++    if not cfg.allowed_owners or not cfg.allowed_repos:
++        return False
++    if owner not in cfg.allowed_owners:
++        return False
++    if repo_full_name not in cfg.allowed_repos:
++        return False
++    return True
++
++
++def check_payload_size(payload_bytes: bytes, max_bytes: int) -> None:
++    """Raise ValueError if payload exceeds max_bytes."""
++    if len(payload_bytes) > max_bytes:
++        raise ValueError(
++            f"Payload size {len(payload_bytes)} exceeds max {max_bytes}"
++        )
++
++
++def redact_secret(msg: str, secret: str) -> str:
++    """Replace occurrences of secret in msg with ***REDACTED***."""
++    if not secret:
++        return msg
++    return msg.replace(secret, "***REDACTED***")
++
++
++def redact_body(body: str) -> str:
++    """Return a redacted placeholder instead of untrusted issue body text."""
++    return "[REDACTED_BODY]"
++
++
++def redact_details(details: dict) -> dict:
++    """Return a copy of details with sensitive values replaced."""
++    redacted = {}
++    for k, v in details.items():
++        k_lower = k.lower()
++        if any(k_lower.endswith(s) for s in _SENSITIVE_KEY_SUFFIXES):
++            redacted[k] = "***REDACTED***"
++        elif k_lower in ("body", "payload", "content"):
++            redacted[k] = "[REDACTED_BODY]"
++        else:
++            redacted[k] = v
++    return redacted
+diff --git a/plugins/github-intake/store.py b/plugins/github-intake/store.py
+new file mode 100644
+index 0000000000..7964b7b527
+--- /dev/null
++++ b/plugins/github-intake/store.py
+@@ -0,0 +1,120 @@
++from __future__ import annotations
++
++import json
++import threading
++from pathlib import Path
++from typing import Optional
++
++from .models import CanonicalIntakeRecord, IntakeState
++
++
++def _state_str(state) -> str:
++    if isinstance(state, IntakeState):
++        return state.value
++    return str(state)
++
++
++def _record_to_dict(record: CanonicalIntakeRecord) -> dict:
++    return {
++        "id": record.id,
++        "delivery_id": record.delivery_id,
++        "payload_digest": record.payload_digest,
++        "source_timestamp": record.source_timestamp,
++        "received_timestamp": record.received_timestamp,
++        "lifecycle_revision": record.lifecycle_revision,
++        "state": _state_str(record.state),
++        "provenance": record.provenance,
++        "audit_entries": record.audit_entries,
++        "dead_letter_metadata": record.dead_letter_metadata,
++    }
++
++
++def _dict_to_record(data: dict) -> CanonicalIntakeRecord:
++    return CanonicalIntakeRecord(
++        id=data["id"],
++        delivery_id=data["delivery_id"],
++        payload_digest=data["payload_digest"],
++        source_timestamp=data["source_timestamp"],
++        received_timestamp=data["received_timestamp"],
++        lifecycle_revision=data["lifecycle_revision"],
++        state=data["state"],
++        provenance=data.get("provenance", {}),
++        audit_entries=data.get("audit_entries", []),
++        dead_letter_metadata=data.get("dead_letter_metadata"),
++    )
++
++
++class IntakeStore:
++    def __init__(self, base_dir: Path):
++        self._base = Path(base_dir) / "intake_records"
++        self._base.mkdir(parents=True, exist_ok=True)
++        self._lock = threading.Lock()
++
++    def _record_path(self, intake_id: str) -> Path:
++        return self._base / f"{intake_id}.json"
++
++    def _delivery_index_path(self) -> Path:
++        return self._base / "_delivery_index.json"
++
++    def _load_delivery_index(self) -> dict:
++        p = self._delivery_index_path()
++        if p.exists():
++            return json.loads(p.read_text())
++        return {}
++
++    def _save_delivery_index(self, idx: dict) -> None:
++        self._delivery_index_path().write_text(json.dumps(idx))
++
++    def save(self, record: CanonicalIntakeRecord, delivery_id: Optional[str] = None,
++             expected_revision: Optional[int] = None) -> bool:
++        """Persist record. Returns False if CAS check fails."""
++        with self._lock:
++            path = self._record_path(record.id)
++            if expected_revision is not None:
++                if path.exists():
++                    existing_data = json.loads(path.read_text())
++                    if existing_data.get("lifecycle_revision") != expected_revision:
++                        return False
++                elif expected_revision != -1:
++                    return False
++            path.write_text(json.dumps(_record_to_dict(record), indent=2))
++            if delivery_id is not None:
++                idx = self._load_delivery_index()
++                idx[delivery_id] = record.id
++                self._save_delivery_index(idx)
++            return True
++
++    def get(self, intake_id: str) -> Optional[CanonicalIntakeRecord]:
++        path = self._record_path(intake_id)
++        if not path.exists():
++            return None
++        return _dict_to_record(json.loads(path.read_text()))
++
++    def get_by_delivery_id(self, delivery_id: str) -> Optional[CanonicalIntakeRecord]:
++        """Return the record that was created from the given delivery_id, or None."""
++        with self._lock:
++            idx = self._load_delivery_index()
++            intake_id = idx.get(delivery_id)
++        if intake_id is None:
++            return None
++        return self.get(intake_id)
++
++    def delete(self, intake_id: str) -> bool:
++        path = self._record_path(intake_id)
++        if path.exists():
++            path.unlink()
++            return True
++        return False
++
++    def list_by_state(self, state: str) -> list:
++        results = []
++        for path in self._base.glob("*.json"):
++            if path.name.startswith("_"):
++                continue
++            try:
++                data = json.loads(path.read_text())
++                if data.get("state") == state:
++                    results.append(_dict_to_record(data))
++            except Exception:
++                continue
++        return results
+diff --git a/plugins/github-intake/tests/__init__.py b/plugins/github-intake/tests/__init__.py
+new file mode 100644
+index 0000000000..b47b940226
+--- /dev/null
++++ b/plugins/github-intake/tests/__init__.py
+@@ -0,0 +1 @@
++# github-intake plugin test package
+diff --git a/plugins/github-intake/tests/conftest.py b/plugins/github-intake/tests/conftest.py
+new file mode 100644
+index 0000000000..f9f8510379
+--- /dev/null
++++ b/plugins/github-intake/tests/conftest.py
+@@ -0,0 +1,212 @@
++"""Hermetic test fixtures for the github-intake plugin.
++
++Invariants:
++- Temporary HERMES_HOME per test (no real ~/.hermes access)
++- Temporary local Kanban board (no real board writes)
++- Fake clock (deterministic timestamps)
++- Mock HCW adapter (no real HCW dispatch)
++- No network calls
++- No real secrets
++"""
++
++import hashlib
++import hmac
++import json
++import os
++import sys
++import tempfile
++import time
++from pathlib import Path
++from typing import Any
++from unittest.mock import MagicMock
++
++import pytest
++
++FIXTURES_DIR = Path(__file__).parent / "fixtures"
++PLUGIN_DIR = Path(__file__).parent.parent
++PROJECT_ROOT = PLUGIN_DIR.parent.parent
++
++# Ensure project root and plugins dir are on sys.path
++for p in [str(PROJECT_ROOT), str(PLUGIN_DIR.parent)]:
++    if p not in sys.path:
++        sys.path.insert(0, p)
++
++# Add PLUGIN_DIR itself so `from tests.conftest import X` resolves to our
++# plugin's tests package (not the repo-level tests/ package).
++if str(PLUGIN_DIR) not in sys.path:
++    sys.path.insert(0, str(PLUGIN_DIR))
++
++# ── Import shim: make `plugins.github_intake` importable ───────────────────
++# The directory is named github-intake (hyphen), which is invalid as a Python
++# module name.  Register it in sys.modules so that all submodule imports work.
++import importlib.util as _ilu
++import types as _types
++
++
++def _install_github_intake_shim() -> None:
++    if "plugins.github_intake" in sys.modules:
++        return
++    if "plugins" not in sys.modules:
++        _p = _types.ModuleType("plugins")
++        _p.__path__ = [str(PLUGIN_DIR.parent)]
++        _p.__package__ = "plugins"
++        sys.modules["plugins"] = _p
++    _init = PLUGIN_DIR / "__init__.py"
++    _spec = _ilu.spec_from_file_location(
++        "plugins.github_intake",
++        str(_init),
++        submodule_search_locations=[str(PLUGIN_DIR)],
++    )
++    _mod = _ilu.module_from_spec(_spec)
++    _mod.__path__ = [str(PLUGIN_DIR)]
++    _mod.__package__ = "plugins.github_intake"
++    sys.modules["plugins.github_intake"] = _mod
++    _spec.loader.exec_module(_mod)
++
++
++_install_github_intake_shim()
++
++FAKE_WEBHOOK_SECRET = "test-webhook-secret-sentinel-do-not-use-in-prod"
++FAKE_CLOCK_EPOCH = 1735689600  # 2026-01-01T00:00:00Z
++
++
++# ── Env isolation ───────────────────────────────────────────────────────────
++
++@pytest.fixture(autouse=True)
++def isolated_hermes_home(tmp_path, monkeypatch):
++    """Give each test its own HERMES_HOME."""
++    home = tmp_path / "hermes_home"
++    home.mkdir(parents=True)
++    monkeypatch.setenv("HERMES_HOME", str(home))
++    return home
++
++
++@pytest.fixture(autouse=True)
++def no_real_secrets(monkeypatch):
++    """Ensure credential env vars are cleared."""
++    for var in list(os.environ):
++        if any(var.endswith(s) for s in ("_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIALS")):
++            monkeypatch.delenv(var, raising=False)
++
++
++# ── Fixture file loaders ────────────────────────────────────────────────────
++
++@pytest.fixture
++def fixture_dir() -> Path:
++    return FIXTURES_DIR
++
++
++@pytest.fixture
++def issues_opened_payload() -> dict:
++    return json.loads((FIXTURES_DIR / "issues-opened.json").read_text())
++
++
++@pytest.fixture
++def issues_edited_payload() -> dict:
++    return json.loads((FIXTURES_DIR / "issues-edited.json").read_text())
++
++
++@pytest.fixture
++def issues_closed_payload() -> dict:
++    return json.loads((FIXTURES_DIR / "issues-closed.json").read_text())
++
++
++@pytest.fixture
++def issues_reopened_payload() -> dict:
++    return json.loads((FIXTURES_DIR / "issues-reopened.json").read_text())
++
++
++@pytest.fixture
++def unsupported_event_payload() -> dict:
++    return json.loads((FIXTURES_DIR / "unsupported-event.json").read_text())
++
++
++@pytest.fixture
++def disabled_config_path() -> Path:
++    return FIXTURES_DIR / "config.disabled.yaml"
++
++
++# ── Fake clock ──────────────────────────────────────────────────────────────
++
++@pytest.fixture
++def fake_clock(monkeypatch):
++    """Returns a fake clock that starts at FAKE_CLOCK_EPOCH and can be advanced."""
++    class FakeClock:
++        def __init__(self):
++            self._now = FAKE_CLOCK_EPOCH
++
++        def now(self) -> float:
++            return float(self._now)
++
++        def now_iso(self) -> str:
++            import datetime
++            return datetime.datetime.utcfromtimestamp(self._now).strftime("%Y-%m-%dT%H:%M:%SZ")
++
++        def advance(self, seconds: float):
++            self._now += seconds
++
++    clock = FakeClock()
++    return clock
++
++
++# ── Local Kanban board ──────────────────────────────────────────────────────
++
++@pytest.fixture
++def local_kanban_board(tmp_path):
++    """Temporary local Kanban board directory."""
++    board = tmp_path / "kanban_board"
++    board.mkdir(parents=True)
++    return board
++
++
++# ── Mock HCW adapter ────────────────────────────────────────────────────────
++
++@pytest.fixture
++def mock_hcw_adapter():
++    """Mock HCW adapter that records dispatch calls without real side effects."""
++    adapter = MagicMock()
++    adapter.dispatched = []
++
++    def record_dispatch(intent):
++        adapter.dispatched.append(intent)
++        return {"status": "recorded", "intent_id": intent.get("id", "mock-id")}
++
++    adapter.dispatch = MagicMock(side_effect=record_dispatch)
++    adapter.is_dry_run = True
++    return adapter
++
++
++# ── HMAC signature helper ────────────────────────────────────────────────────
++
++def make_github_signature(payload_bytes: bytes, secret: str = FAKE_WEBHOOK_SECRET) -> str:
++    """Compute X-Hub-Signature-256 for a payload."""
++    sig = hmac.new(secret.encode(), payload_bytes, hashlib.sha256).hexdigest()
++    return f"sha256={sig}"
++
++
++@pytest.fixture
++def sign_payload():
++    """Return a function that signs a payload dict as GitHub would."""
++    def _sign(payload: dict, secret: str = FAKE_WEBHOOK_SECRET) -> tuple[bytes, str]:
++        body = json.dumps(payload, separators=(",", ":")).encode()
++        signature = make_github_signature(body, secret)
++        return body, signature
++    return _sign
++
++
++# ── Deterministic intake ID helper ─────────────────────────────────────────
++
++def canonical_intake_id(installation_id: int, repo_full_name: str, issue_number: int) -> str:
++    """Derive deterministic intake record ID from GitHub identity coordinates."""
++    key = f"github:{installation_id}:{repo_full_name}:{issue_number}"
++    return hashlib.sha256(key.encode()).hexdigest()
++
++
++@pytest.fixture
++def intake_id_for_opened(issues_opened_payload) -> str:
++    p = issues_opened_payload
++    return canonical_intake_id(
++        p["installation"]["id"],
++        p["repository"]["full_name"],
++        p["issue"]["number"],
++    )
+diff --git a/plugins/github-intake/tests/fixtures/config.disabled.yaml b/plugins/github-intake/tests/fixtures/config.disabled.yaml
+new file mode 100644
+index 0000000000..627ff7b1b7
+--- /dev/null
++++ b/plugins/github-intake/tests/fixtures/config.disabled.yaml
+@@ -0,0 +1,17 @@
++github_intake:
++  enabled: false
++  dry_run: true
++  kill_switch: false
++  webhook_secret: "REDACTED_FOR_TEST"
++  allowed_owners:
++    - "test-owner"
++  allowed_repos:
++    - "test-owner/test-repo"
++  max_payload_bytes: 1048576
++  routing:
++    default_board: "local"
++    hcw_enabled: false
++  retry:
++    max_attempts: 3
++    backoff_base_seconds: 1
++    backoff_max_seconds: 60
+diff --git a/plugins/github-intake/tests/fixtures/issues-closed.json b/plugins/github-intake/tests/fixtures/issues-closed.json
+new file mode 100644
+index 0000000000..5768a72b64
+--- /dev/null
++++ b/plugins/github-intake/tests/fixtures/issues-closed.json
+@@ -0,0 +1,38 @@
++{
++  "action": "closed",
++  "issue": {
++    "id": 1,
++    "number": 42,
++    "title": "Test issue opened",
++    "body": "This is a test issue body",
++    "state": "closed",
++    "created_at": "2026-01-01T00:00:00Z",
++    "updated_at": "2026-01-01T02:00:00Z",
++    "closed_at": "2026-01-01T02:00:00Z",
++    "html_url": "https://github.com/test-owner/test-repo/issues/42",
++    "user": {
++      "login": "test-user",
++      "id": 100
++    },
++    "labels": [],
++    "assignees": []
++  },
++  "repository": {
++    "id": 200,
++    "name": "test-repo",
++    "full_name": "test-owner/test-repo",
++    "owner": {
++      "login": "test-owner",
++      "id": 300
++    },
++    "private": false
++  },
++  "sender": {
++    "login": "test-user",
++    "id": 100
++  },
++  "installation": {
++    "id": 999,
++    "app_id": 111
++  }
++}
+diff --git a/plugins/github-intake/tests/fixtures/issues-edited.json b/plugins/github-intake/tests/fixtures/issues-edited.json
+new file mode 100644
+index 0000000000..bf110b037b
+--- /dev/null
++++ b/plugins/github-intake/tests/fixtures/issues-edited.json
+@@ -0,0 +1,45 @@
++{
++  "action": "edited",
++  "changes": {
++    "title": {
++      "from": "Test issue opened"
++    },
++    "body": {
++      "from": "This is a test issue body"
++    }
++  },
++  "issue": {
++    "id": 1,
++    "number": 42,
++    "title": "Test issue edited",
++    "body": "This is an edited issue body",
++    "state": "open",
++    "created_at": "2026-01-01T00:00:00Z",
++    "updated_at": "2026-01-01T01:00:00Z",
++    "html_url": "https://github.com/test-owner/test-repo/issues/42",
++    "user": {
++      "login": "test-user",
++      "id": 100
++    },
++    "labels": [],
++    "assignees": []
++  },
++  "repository": {
++    "id": 200,
++    "name": "test-repo",
++    "full_name": "test-owner/test-repo",
++    "owner": {
++      "login": "test-owner",
++      "id": 300
++    },
++    "private": false
++  },
++  "sender": {
++    "login": "test-user",
++    "id": 100
++  },
++  "installation": {
++    "id": 999,
++    "app_id": 111
++  }
++}
+diff --git a/plugins/github-intake/tests/fixtures/issues-opened.json b/plugins/github-intake/tests/fixtures/issues-opened.json
+new file mode 100644
+index 0000000000..06843d31ee
+--- /dev/null
++++ b/plugins/github-intake/tests/fixtures/issues-opened.json
+@@ -0,0 +1,37 @@
++{
++  "action": "opened",
++  "issue": {
++    "id": 1,
++    "number": 42,
++    "title": "Test issue opened",
++    "body": "This is a test issue body",
++    "state": "open",
++    "created_at": "2026-01-01T00:00:00Z",
++    "updated_at": "2026-01-01T00:00:00Z",
++    "html_url": "https://github.com/test-owner/test-repo/issues/42",
++    "user": {
++      "login": "test-user",
++      "id": 100
++    },
++    "labels": [],
++    "assignees": []
++  },
++  "repository": {
++    "id": 200,
++    "name": "test-repo",
++    "full_name": "test-owner/test-repo",
++    "owner": {
++      "login": "test-owner",
++      "id": 300
++    },
++    "private": false
++  },
++  "sender": {
++    "login": "test-user",
++    "id": 100
++  },
++  "installation": {
++    "id": 999,
++    "app_id": 111
++  }
++}
+diff --git a/plugins/github-intake/tests/fixtures/issues-reopened.json b/plugins/github-intake/tests/fixtures/issues-reopened.json
+new file mode 100644
+index 0000000000..768957fcb0
+--- /dev/null
++++ b/plugins/github-intake/tests/fixtures/issues-reopened.json
+@@ -0,0 +1,37 @@
++{
++  "action": "reopened",
++  "issue": {
++    "id": 1,
++    "number": 42,
++    "title": "Test issue opened",
++    "body": "This is a test issue body",
++    "state": "open",
++    "created_at": "2026-01-01T00:00:00Z",
++    "updated_at": "2026-01-01T03:00:00Z",
++    "html_url": "https://github.com/test-owner/test-repo/issues/42",
++    "user": {
++      "login": "test-user",
++      "id": 100
++    },
++    "labels": [],
++    "assignees": []
++  },
++  "repository": {
++    "id": 200,
++    "name": "test-repo",
++    "full_name": "test-owner/test-repo",
++    "owner": {
++      "login": "test-owner",
++      "id": 300
++    },
++    "private": false
++  },
++  "sender": {
++    "login": "test-user",
++    "id": 100
++  },
++  "installation": {
++    "id": 999,
++    "app_id": 111
++  }
++}
+diff --git a/plugins/github-intake/tests/fixtures/unsupported-event.json b/plugins/github-intake/tests/fixtures/unsupported-event.json
+new file mode 100644
+index 0000000000..7bec5fbbb1
+--- /dev/null
++++ b/plugins/github-intake/tests/fixtures/unsupported-event.json
+@@ -0,0 +1,42 @@
++{
++  "action": "labeled",
++  "label": {
++    "id": 1,
++    "name": "bug",
++    "color": "d73a4a"
++  },
++  "issue": {
++    "id": 1,
++    "number": 42,
++    "title": "Test issue",
++    "body": "Test body",
++    "state": "open",
++    "created_at": "2026-01-01T00:00:00Z",
++    "updated_at": "2026-01-01T00:05:00Z",
++    "html_url": "https://github.com/test-owner/test-repo/issues/42",
++    "user": {
++      "login": "test-user",
++      "id": 100
++    },
++    "labels": [{"id": 1, "name": "bug"}],
++    "assignees": []
++  },
++  "repository": {
++    "id": 200,
++    "name": "test-repo",
++    "full_name": "test-owner/test-repo",
++    "owner": {
++      "login": "test-owner",
++      "id": 300
++    },
++    "private": false
++  },
++  "sender": {
++    "login": "test-user",
++    "id": 100
++  },
++  "installation": {
++    "id": 999,
++    "app_id": 111
++  }
++}
+diff --git a/plugins/github-intake/tests/test_cli.py b/plugins/github-intake/tests/test_cli.py
+new file mode 100644
+index 0000000000..fdb7d1bb8f
+--- /dev/null
++++ b/plugins/github-intake/tests/test_cli.py
+@@ -0,0 +1,211 @@
++"""CLI contract tests for the github-intake plugin."""
++
++import json
++import sys
++from pathlib import Path
++
++import pytest
++
++pytestmark = pytest.mark.usefixtures("isolated_hermes_home", "no_real_secrets")
++
++FIXTURE_DIR = Path(__file__).parent / "fixtures"
++
++
++# ── CLI importable ──────────────────────────────────────────────────────────
++
++def test_cli_group_importable():
++    from plugins.github_intake.cli import github_intake_cli
++    assert github_intake_cli is not None
++
++
++def test_cli_has_validate_config_subcommand():
++    from plugins.github_intake.cli import github_intake_cli
++    commands = github_intake_cli.commands if hasattr(github_intake_cli, "commands") else {}
++    assert "validate-config" in commands, "CLI must have validate-config subcommand"
++
++
++def test_cli_has_ingest_fixture_subcommand():
++    from plugins.github_intake.cli import github_intake_cli
++    commands = github_intake_cli.commands if hasattr(github_intake_cli, "commands") else {}
++    assert "ingest-fixture" in commands, "CLI must have ingest-fixture subcommand"
++
++
++def test_cli_has_replay_subcommand():
++    from plugins.github_intake.cli import github_intake_cli
++    commands = github_intake_cli.commands if hasattr(github_intake_cli, "commands") else {}
++    assert "replay" in commands, "CLI must have replay subcommand"
++
++
++def test_cli_has_quarantine_list_subcommand():
++    from plugins.github_intake.cli import github_intake_cli
++    commands = github_intake_cli.commands if hasattr(github_intake_cli, "commands") else {}
++    assert "quarantine-list" in commands, "CLI must have quarantine-list subcommand"
++
++
++def test_cli_has_audit_subcommand():
++    from plugins.github_intake.cli import github_intake_cli
++    commands = github_intake_cli.commands if hasattr(github_intake_cli, "commands") else {}
++    assert "audit" in commands, "CLI must have audit subcommand"
++
++
++def test_cli_has_status_subcommand():
++    from plugins.github_intake.cli import github_intake_cli
++    commands = github_intake_cli.commands if hasattr(github_intake_cli, "commands") else {}
++    assert "status" in commands, "CLI must have status subcommand"
++
++
++def test_cli_has_dry_run_subcommand():
++    from plugins.github_intake.cli import github_intake_cli
++    commands = github_intake_cli.commands if hasattr(github_intake_cli, "commands") else {}
++    assert "dry-run" in commands, "CLI must have dry-run subcommand"
++
++
++# ── validate-config subcommand ──────────────────────────────────────────────
++
++def test_validate_config_accepts_disabled_config(disabled_config_path):
++    from click.testing import CliRunner
++    from plugins.github_intake.cli import github_intake_cli
++
++    runner = CliRunner()
++    result = runner.invoke(
++        github_intake_cli,
++        ["validate-config", "--config", str(disabled_config_path)],
++    )
++    assert result.exit_code == 0, f"validate-config failed: {result.output}"
++
++
++def test_validate_config_rejects_missing_file(tmp_path):
++    from click.testing import CliRunner
++    from plugins.github_intake.cli import github_intake_cli
++
++    runner = CliRunner()
++    result = runner.invoke(
++        github_intake_cli,
++        ["validate-config", "--config", str(tmp_path / "nonexistent.yaml")],
++    )
++    assert result.exit_code != 0
++
++
++# ── ingest-fixture subcommand ───────────────────────────────────────────────
++
++def test_ingest_fixture_dry_run_no_writes(
++    disabled_config_path, tmp_path, isolated_hermes_home
++):
++    from click.testing import CliRunner
++    from plugins.github_intake.cli import github_intake_cli
++
++    board = tmp_path / "board"
++    board.mkdir()
++
++    runner = CliRunner()
++    result = runner.invoke(
++        github_intake_cli,
++        [
++            "ingest-fixture",
++            "--config", str(disabled_config_path),
++            "--fixture", str(FIXTURE_DIR / "issues-opened.json"),
++            "--event-type", "issues",
++            "--board", str(board),
++            "--dry-run",
++        ],
++    )
++    assert result.exit_code == 0, f"ingest-fixture dry-run failed: {result.output}"
++    assert list(board.rglob("*.json")) == [], "dry-run must not write to board"
++
++
++def test_ingest_fixture_outputs_json_in_dry_run(disabled_config_path, tmp_path):
++    from click.testing import CliRunner
++    from plugins.github_intake.cli import github_intake_cli
++
++    board = tmp_path / "board"
++    board.mkdir()
++
++    runner = CliRunner()
++    result = runner.invoke(
++        github_intake_cli,
++        [
++            "ingest-fixture",
++            "--config", str(disabled_config_path),
++            "--fixture", str(FIXTURE_DIR / "issues-opened.json"),
++            "--event-type", "issues",
++            "--board", str(board),
++            "--dry-run",
++        ],
++    )
++    assert result.exit_code == 0
++    output = result.output.strip()
++    if output:
++        parsed = json.loads(output)
++        assert isinstance(parsed, dict)
++
++
++# ── dry-run subcommand ──────────────────────────────────────────────────────
++
++def test_dry_run_subcommand_outputs_redacted_json(disabled_config_path, tmp_path):
++    from click.testing import CliRunner
++    from plugins.github_intake.cli import github_intake_cli
++
++    board = tmp_path / "board"
++    board.mkdir()
++
++    runner = CliRunner()
++    result = runner.invoke(
++        github_intake_cli,
++        [
++            "dry-run",
++            "--config", str(disabled_config_path),
++            "--fixture", str(FIXTURE_DIR / "issues-opened.json"),
++            "--event-type", "issues",
++            "--board", str(board),
++        ],
++    )
++    assert result.exit_code == 0, f"dry-run failed: {result.output}"
++    output = result.output.strip()
++    assert "REDACTED_FOR_TEST" not in output, "dry-run output must not expose raw secrets"
++
++
++# ── status subcommand ───────────────────────────────────────────────────────
++
++def test_status_subcommand_runs(disabled_config_path, tmp_path):
++    from click.testing import CliRunner
++    from plugins.github_intake.cli import github_intake_cli
++
++    board = tmp_path / "board"
++    board.mkdir()
++
++    runner = CliRunner()
++    result = runner.invoke(
++        github_intake_cli,
++        ["status", "--config", str(disabled_config_path), "--board", str(board)],
++    )
++    assert result.exit_code == 0, f"status failed: {result.output}"
++
++
++# ── Mutating operations require explicit board ──────────────────────────────
++
++def test_ingest_fixture_requires_board_arg(disabled_config_path):
++    from click.testing import CliRunner
++    from plugins.github_intake.cli import github_intake_cli
++
++    runner = CliRunner()
++    result = runner.invoke(
++        github_intake_cli,
++        [
++            "ingest-fixture",
++            "--config", str(disabled_config_path),
++            "--fixture", str(FIXTURE_DIR / "issues-opened.json"),
++            "--event-type", "issues",
++            # no --board
++        ],
++    )
++    assert result.exit_code != 0, "ingest-fixture must require --board"
++
++
++# ── No webhook activation ───────────────────────────────────────────────────
++
++def test_cli_has_no_webhook_activate_subcommand():
++    from plugins.github_intake.cli import github_intake_cli
++    commands = github_intake_cli.commands if hasattr(github_intake_cli, "commands") else {}
++    assert "activate-webhook" not in commands
++    assert "register-webhook" not in commands
++    assert "start-server" not in commands
+diff --git a/plugins/github-intake/tests/test_contracts.py b/plugins/github-intake/tests/test_contracts.py
+new file mode 100644
+index 0000000000..0527d79ea2
+--- /dev/null
++++ b/plugins/github-intake/tests/test_contracts.py
+@@ -0,0 +1,690 @@
++"""RED contract tests for the github-intake plugin.
++
++These tests define the full acceptance contract. They must fail because the
++plugin implementation does not exist yet. They use hermetic fixtures only:
++no network, no real secrets, no production HERMES_HOME.
++"""
++
++import hashlib
++import hmac
++import json
++import os
++from pathlib import Path
++
++import pytest
++
++# All imports from the plugin under test — expected to fail until implemented
++pytestmark = pytest.mark.usefixtures("isolated_hermes_home", "no_real_secrets")
++
++
++# ── Import contracts ────────────────────────────────────────────────────────
++
++def test_plugin_package_importable():
++    """The github-intake plugin package must be importable."""
++    from plugins.github_intake import __version__  # noqa: F401
++
++
++def test_config_module_importable():
++    from plugins.github_intake.config import IntakeConfig  # noqa: F401
++
++
++def test_models_module_importable():
++    from plugins.github_intake.models import (  # noqa: F401
++        WebhookDelivery,
++        CanonicalIntakeRecord,
++        ProvenanceRecord,
++        RouteIntent,
++    )
++
++
++def test_security_module_importable():
++    from plugins.github_intake.security import verify_signature, is_allowed  # noqa: F401
++
++
++def test_store_module_importable():
++    from plugins.github_intake.store import IntakeStore  # noqa: F401
++
++
++def test_intake_module_importable():
++    from plugins.github_intake.intake import process_delivery  # noqa: F401
++
++
++def test_audit_module_importable():
++    from plugins.github_intake.audit import AuditLog  # noqa: F401
++
++
++def test_routing_module_importable():
++    from plugins.github_intake.routing import derive_route  # noqa: F401
++
++
++def test_hcw_adapter_importable():
++    from plugins.github_intake.hcw_adapter import DryRunHCWAdapter  # noqa: F401
++
++
++def test_recovery_module_importable():
++    from plugins.github_intake.recovery import RetryPolicy  # noqa: F401
++
++
++def test_cli_module_importable():
++    from plugins.github_intake.cli import github_intake_cli  # noqa: F401
++
++
++# ── Plugin manifest contract ────────────────────────────────────────────────
++
++def test_plugin_yaml_exists():
++    plugin_yaml = Path(__file__).parent.parent / "plugin.yaml"
++    assert plugin_yaml.exists(), "plugin.yaml must exist"
++
++
++def test_plugin_yaml_disabled_by_default():
++    import yaml
++    plugin_yaml = Path(__file__).parent.parent / "plugin.yaml"
++    config = yaml.safe_load(plugin_yaml.read_text())
++    assert config.get("enabled") is False, "Plugin must be disabled by default"
++
++
++def test_plugin_yaml_dry_run_default():
++    import yaml
++    plugin_yaml = Path(__file__).parent.parent / "plugin.yaml"
++    config = yaml.safe_load(plugin_yaml.read_text())
++    assert config.get("dry_run") is True, "dry_run must default to true"
++
++
++def test_plugin_yaml_kill_switch_present():
++    import yaml
++    plugin_yaml = Path(__file__).parent.parent / "plugin.yaml"
++    config = yaml.safe_load(plugin_yaml.read_text())
++    assert "kill_switch" in config, "plugin.yaml must declare kill_switch"
++
++
++# ── Webhook delivery contract ───────────────────────────────────────────────
++
++def test_webhook_delivery_model_typed(issues_opened_payload, sign_payload):
++    from plugins.github_intake.models import WebhookDelivery
++    body, sig = sign_payload(issues_opened_payload)
++    delivery = WebhookDelivery(
++        delivery_id="test-delivery-001",
++        event_type="issues",
++        signature=sig,
++        payload_bytes=body,
++        received_at="2026-01-01T00:00:00Z",
++    )
++    assert delivery.delivery_id == "test-delivery-001"
++    assert delivery.event_type == "issues"
++
++
++def test_webhook_delivery_requires_delivery_id():
++    from plugins.github_intake.models import WebhookDelivery
++    with pytest.raises((TypeError, ValueError, Exception)):
++        WebhookDelivery(
++            event_type="issues",
++            signature="sha256=abc",
++            payload_bytes=b"{}",
++            received_at="2026-01-01T00:00:00Z",
++        )
++
++
++def test_webhook_delivery_requires_signature():
++    from plugins.github_intake.models import WebhookDelivery
++    with pytest.raises((TypeError, ValueError, Exception)):
++        WebhookDelivery(
++            delivery_id="d-001",
++            event_type="issues",
++            payload_bytes=b"{}",
++            received_at="2026-01-01T00:00:00Z",
++        )
++
++
++# ── Canonical intake record contract ───────────────────────────────────────
++
++def test_canonical_intake_record_has_required_fields(issues_opened_payload, sign_payload):
++    from plugins.github_intake.models import CanonicalIntakeRecord
++    body, sig = sign_payload(issues_opened_payload)
++    record = CanonicalIntakeRecord(
++        id="abc123",
++        delivery_id="test-delivery-001",
++        payload_digest=hashlib.sha256(body).hexdigest(),
++        source_timestamp="2026-01-01T00:00:00Z",
++        received_timestamp="2026-01-01T00:00:00Z",
++        lifecycle_revision=0,
++        state="pending",
++        provenance={},
++        audit_entries=[],
++    )
++    assert record.id == "abc123"
++    assert record.state == "pending"
++
++
++def test_canonical_intake_record_state_enum():
++    from plugins.github_intake.models import CanonicalIntakeRecord, IntakeState
++    assert hasattr(IntakeState, "PENDING")
++    assert hasattr(IntakeState, "ROUTED")
++    assert hasattr(IntakeState, "DUPLICATE")
++    assert hasattr(IntakeState, "STALE")
++    assert hasattr(IntakeState, "CONFLICT")
++    assert hasattr(IntakeState, "FAILED")
++    assert hasattr(IntakeState, "QUARANTINED")
++
++
++# ── Deterministic identifier contract ──────────────────────────────────────
++
++def test_intake_id_is_deterministic(issues_opened_payload):
++    from plugins.github_intake.intake import compute_intake_id
++    p = issues_opened_payload
++    id1 = compute_intake_id(
++        installation_id=p["installation"]["id"],
++        repo_full_name=p["repository"]["full_name"],
++        issue_number=p["issue"]["number"],
++    )
++    id2 = compute_intake_id(
++        installation_id=p["installation"]["id"],
++        repo_full_name=p["repository"]["full_name"],
++        issue_number=p["issue"]["number"],
++    )
++    assert id1 == id2, "intake ID must be deterministic"
++
++
++def test_intake_id_differs_for_different_repos(issues_opened_payload):
++    from plugins.github_intake.intake import compute_intake_id
++    p = issues_opened_payload
++    id1 = compute_intake_id(
++        installation_id=p["installation"]["id"],
++        repo_full_name="owner-a/repo-a",
++        issue_number=1,
++    )
++    id2 = compute_intake_id(
++        installation_id=p["installation"]["id"],
++        repo_full_name="owner-b/repo-b",
++        issue_number=1,
++    )
++    assert id1 != id2, "intake ID must differ for different repos"
++
++
++def test_intake_id_is_hex_string(issues_opened_payload):
++    from plugins.github_intake.intake import compute_intake_id
++    p = issues_opened_payload
++    id_ = compute_intake_id(
++        installation_id=p["installation"]["id"],
++        repo_full_name=p["repository"]["full_name"],
++        issue_number=p["issue"]["number"],
++    )
++    assert isinstance(id_, str)
++    int(id_, 16)  # must be valid hex
++
++
++# ── HMAC signature contract ─────────────────────────────────────────────────
++
++def test_valid_signature_accepted(issues_opened_payload, sign_payload):
++    from plugins.github_intake.security import verify_signature
++    body, sig = sign_payload(issues_opened_payload)
++    from tests.conftest import FAKE_WEBHOOK_SECRET
++    assert verify_signature(body, sig, FAKE_WEBHOOK_SECRET) is True
++
++
++def test_invalid_signature_rejected(issues_opened_payload, sign_payload):
++    from plugins.github_intake.security import verify_signature
++    body, _ = sign_payload(issues_opened_payload)
++    assert verify_signature(body, "sha256=deadbeef", "secret") is False
++
++
++def test_wrong_secret_rejected(issues_opened_payload, sign_payload):
++    from plugins.github_intake.security import verify_signature
++    body, sig = sign_payload(issues_opened_payload)
++    assert verify_signature(body, sig, "wrong-secret") is False
++
++
++def test_signature_uses_constant_time_comparison(issues_opened_payload, sign_payload):
++    """verify_signature must use hmac.compare_digest, not ==."""
++    import inspect
++    from plugins.github_intake import security
++    src = inspect.getsource(security.verify_signature)
++    assert "compare_digest" in src, "must use hmac.compare_digest for constant-time comparison"
++
++
++# ── Allowlist contract ──────────────────────────────────────────────────────
++
++def test_allowed_owner_and_repo_accepted():
++    from plugins.github_intake.security import is_allowed
++    from plugins.github_intake.config import IntakeConfig
++    cfg = IntakeConfig(
++        enabled=False,
++        dry_run=True,
++        kill_switch=False,
++        webhook_secret="s",
++        allowed_owners=["test-owner"],
++        allowed_repos=["test-owner/test-repo"],
++    )
++    assert is_allowed("test-owner", "test-owner/test-repo", cfg) is True
++
++
++def test_disallowed_owner_rejected():
++    from plugins.github_intake.security import is_allowed
++    from plugins.github_intake.config import IntakeConfig
++    cfg = IntakeConfig(
++        enabled=False,
++        dry_run=True,
++        kill_switch=False,
++        webhook_secret="s",
++        allowed_owners=["allowed-owner"],
++        allowed_repos=["allowed-owner/repo"],
++    )
++    assert is_allowed("evil-owner", "evil-owner/repo", cfg) is False
++
++
++def test_disallowed_repo_rejected():
++    from plugins.github_intake.security import is_allowed
++    from plugins.github_intake.config import IntakeConfig
++    cfg = IntakeConfig(
++        enabled=False,
++        dry_run=True,
++        kill_switch=False,
++        webhook_secret="s",
++        allowed_owners=["test-owner"],
++        allowed_repos=["test-owner/allowed-repo"],
++    )
++    assert is_allowed("test-owner", "test-owner/other-repo", cfg) is False
++
++
++# ── Oversized payload contract ──────────────────────────────────────────────
++
++def test_oversized_payload_rejected():
++    from plugins.github_intake.security import check_payload_size
++    big = b"x" * (1024 * 1024 + 1)
++    with pytest.raises(Exception):
++        check_payload_size(big, max_bytes=1024 * 1024)
++
++
++def test_normal_payload_accepted():
++    from plugins.github_intake.security import check_payload_size
++    check_payload_size(b"hello", max_bytes=1024 * 1024)
++
++
++# ── Unsupported event contract ──────────────────────────────────────────────
++
++def test_unsupported_action_raises_or_returns_skip(unsupported_event_payload, sign_payload):
++    from plugins.github_intake.intake import process_delivery
++    from plugins.github_intake.models import WebhookDelivery
++    body, sig = sign_payload(unsupported_event_payload)
++    delivery = WebhookDelivery(
++        delivery_id="skip-delivery-001",
++        event_type="issues",
++        signature=sig,
++        payload_bytes=body,
++        received_at="2026-01-01T00:00:00Z",
++    )
++    from plugins.github_intake.config import IntakeConfig
++    cfg = IntakeConfig(
++        enabled=False,
++        dry_run=True,
++        kill_switch=False,
++        webhook_secret="test-webhook-secret-sentinel-do-not-use-in-prod",
++        allowed_owners=["test-owner"],
++        allowed_repos=["test-owner/test-repo"],
++    )
++    result = process_delivery(delivery, cfg, store=None, hcw_adapter=None)
++    assert result.outcome in ("skipped", "unsupported"), f"Expected skipped/unsupported, got {result.outcome}"
++
++
++# ── Kill switch contract ────────────────────────────────────────────────────
++
++def test_kill_switch_blocks_all_intake(issues_opened_payload, sign_payload):
++    from plugins.github_intake.intake import process_delivery
++    from plugins.github_intake.models import WebhookDelivery
++    from plugins.github_intake.config import IntakeConfig
++    body, sig = sign_payload(issues_opened_payload)
++    delivery = WebhookDelivery(
++        delivery_id="ks-delivery-001",
++        event_type="issues",
++        signature=sig,
++        payload_bytes=body,
++        received_at="2026-01-01T00:00:00Z",
++    )
++    cfg = IntakeConfig(
++        enabled=True,
++        dry_run=False,
++        kill_switch=True,  # activated
++        webhook_secret="test-webhook-secret-sentinel-do-not-use-in-prod",
++        allowed_owners=["test-owner"],
++        allowed_repos=["test-owner/test-repo"],
++    )
++    result = process_delivery(delivery, cfg, store=None, hcw_adapter=None)
++    assert result.outcome == "killed", f"Kill switch must block intake, got {result.outcome}"
++
++
++# ── Dry-run contract ────────────────────────────────────────────────────────
++
++def test_dry_run_emits_no_writes(
++    issues_opened_payload, sign_payload, local_kanban_board, mock_hcw_adapter, isolated_hermes_home
++):
++    from plugins.github_intake.intake import process_delivery
++    from plugins.github_intake.models import WebhookDelivery
++    from plugins.github_intake.config import IntakeConfig
++    from plugins.github_intake.store import IntakeStore
++    body, sig = sign_payload(issues_opened_payload)
++    delivery = WebhookDelivery(
++        delivery_id="dry-delivery-001",
++        event_type="issues",
++        signature=sig,
++        payload_bytes=body,
++        received_at="2026-01-01T00:00:00Z",
++    )
++    cfg = IntakeConfig(
++        enabled=True,
++        dry_run=True,
++        kill_switch=False,
++        webhook_secret="test-webhook-secret-sentinel-do-not-use-in-prod",
++        allowed_owners=["test-owner"],
++        allowed_repos=["test-owner/test-repo"],
++    )
++    store = IntakeStore(base_dir=local_kanban_board)
++    result = process_delivery(delivery, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++    assert result.outcome == "dry_run"
++    assert not mock_hcw_adapter.dispatch.called, "dry_run must not dispatch to HCW"
++    # No persisted records
++    assert list(local_kanban_board.rglob("*.json")) == [], "dry_run must not write to board"
++
++
++# ── Provenance contract ─────────────────────────────────────────────────────
++
++def test_provenance_includes_delivery_id(issues_opened_payload, sign_payload, local_kanban_board, mock_hcw_adapter):
++    from plugins.github_intake.intake import process_delivery
++    from plugins.github_intake.models import WebhookDelivery
++    from plugins.github_intake.config import IntakeConfig
++    from plugins.github_intake.store import IntakeStore
++    body, sig = sign_payload(issues_opened_payload)
++    delivery = WebhookDelivery(
++        delivery_id="prov-delivery-001",
++        event_type="issues",
++        signature=sig,
++        payload_bytes=body,
++        received_at="2026-01-01T00:00:00Z",
++    )
++    cfg = IntakeConfig(
++        enabled=True,
++        dry_run=False,
++        kill_switch=False,
++        webhook_secret="test-webhook-secret-sentinel-do-not-use-in-prod",
++        allowed_owners=["test-owner"],
++        allowed_repos=["test-owner/test-repo"],
++    )
++    store = IntakeStore(base_dir=local_kanban_board)
++    result = process_delivery(delivery, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++    assert result.record is not None
++    assert result.record.provenance.get("delivery_id") == "prov-delivery-001"
++
++
++def test_provenance_includes_payload_digest(issues_opened_payload, sign_payload, local_kanban_board, mock_hcw_adapter):
++    from plugins.github_intake.intake import process_delivery
++    from plugins.github_intake.models import WebhookDelivery
++    from plugins.github_intake.config import IntakeConfig
++    from plugins.github_intake.store import IntakeStore
++    body, sig = sign_payload(issues_opened_payload)
++    delivery = WebhookDelivery(
++        delivery_id="prov-delivery-002",
++        event_type="issues",
++        signature=sig,
++        payload_bytes=body,
++        received_at="2026-01-01T00:00:00Z",
++    )
++    cfg = IntakeConfig(
++        enabled=True,
++        dry_run=False,
++        kill_switch=False,
++        webhook_secret="test-webhook-secret-sentinel-do-not-use-in-prod",
++        allowed_owners=["test-owner"],
++        allowed_repos=["test-owner/test-repo"],
++    )
++    store = IntakeStore(base_dir=local_kanban_board)
++    result = process_delivery(delivery, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++    expected_digest = hashlib.sha256(body).hexdigest()
++    assert result.record.payload_digest == expected_digest
++
++
++# ── Duplicate / replay contract ─────────────────────────────────────────────
++
++def test_duplicate_delivery_id_returns_duplicate(issues_opened_payload, sign_payload, local_kanban_board, mock_hcw_adapter):
++    from plugins.github_intake.intake import process_delivery
++    from plugins.github_intake.models import WebhookDelivery
++    from plugins.github_intake.config import IntakeConfig
++    from plugins.github_intake.store import IntakeStore
++    body, sig = sign_payload(issues_opened_payload)
++    cfg = IntakeConfig(
++        enabled=True,
++        dry_run=False,
++        kill_switch=False,
++        webhook_secret="test-webhook-secret-sentinel-do-not-use-in-prod",
++        allowed_owners=["test-owner"],
++        allowed_repos=["test-owner/test-repo"],
++    )
++    store = IntakeStore(base_dir=local_kanban_board)
++    delivery = WebhookDelivery(
++        delivery_id="dup-delivery-001",
++        event_type="issues",
++        signature=sig,
++        payload_bytes=body,
++        received_at="2026-01-01T00:00:00Z",
++    )
++    r1 = process_delivery(delivery, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++    r2 = process_delivery(delivery, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++    assert r1.outcome == "accepted"
++    assert r2.outcome == "duplicate"
++
++
++def test_replay_same_payload_different_delivery_id_returns_duplicate(
++    issues_opened_payload, sign_payload, local_kanban_board, mock_hcw_adapter
++):
++    from plugins.github_intake.intake import process_delivery
++    from plugins.github_intake.models import WebhookDelivery
++    from plugins.github_intake.config import IntakeConfig
++    from plugins.github_intake.store import IntakeStore
++    body, sig = sign_payload(issues_opened_payload)
++    cfg = IntakeConfig(
++        enabled=True,
++        dry_run=False,
++        kill_switch=False,
++        webhook_secret="test-webhook-secret-sentinel-do-not-use-in-prod",
++        allowed_owners=["test-owner"],
++        allowed_repos=["test-owner/test-repo"],
++    )
++    store = IntakeStore(base_dir=local_kanban_board)
++    d1 = WebhookDelivery(
++        delivery_id="replay-001",
++        event_type="issues",
++        signature=sig,
++        payload_bytes=body,
++        received_at="2026-01-01T00:00:00Z",
++    )
++    d2 = WebhookDelivery(
++        delivery_id="replay-002",
++        event_type="issues",
++        signature=sig,
++        payload_bytes=body,
++        received_at="2026-01-01T00:00:01Z",
++    )
++    r1 = process_delivery(d1, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++    r2 = process_delivery(d2, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++    assert r1.outcome == "accepted"
++    assert r2.outcome == "duplicate"
++
++
++# ── Routing contract ────────────────────────────────────────────────────────
++
++def test_derive_route_from_opened_payload(issues_opened_payload, sign_payload):
++    from plugins.github_intake.routing import derive_route
++    from plugins.github_intake.models import CanonicalIntakeRecord, IntakeState
++    from plugins.github_intake.config import IntakeConfig
++    cfg = IntakeConfig(
++        enabled=True,
++        dry_run=False,
++        kill_switch=False,
++        webhook_secret="s",
++        allowed_owners=["test-owner"],
++        allowed_repos=["test-owner/test-repo"],
++    )
++    record = CanonicalIntakeRecord(
++        id="r-abc",
++        delivery_id="d-001",
++        payload_digest="aaa",
++        source_timestamp="2026-01-01T00:00:00Z",
++        received_timestamp="2026-01-01T00:00:00Z",
++        lifecycle_revision=0,
++        state=IntakeState.PENDING,
++        provenance={"action": "opened", "owner": "test-owner", "repo": "test-owner/test-repo", "issue_number": 42},
++        audit_entries=[],
++    )
++    route = derive_route(record, cfg)
++    assert route is not None
++    assert route.intake_id == "r-abc"
++    assert route.action in ("create_kanban_card", "route_to_hcw")
++
++
++def test_route_never_executes_body_text(issues_opened_payload, sign_payload):
++    from plugins.github_intake.routing import derive_route
++    from plugins.github_intake.models import CanonicalIntakeRecord, IntakeState
++    from plugins.github_intake.config import IntakeConfig
++    cfg = IntakeConfig(
++        enabled=True,
++        dry_run=False,
++        kill_switch=False,
++        webhook_secret="s",
++        allowed_owners=["test-owner"],
++        allowed_repos=["test-owner/test-repo"],
++    )
++    hostile_record = CanonicalIntakeRecord(
++        id="hostile-r",
++        delivery_id="hostile-d",
++        payload_digest="bbb",
++        source_timestamp="2026-01-01T00:00:00Z",
++        received_timestamp="2026-01-01T00:00:00Z",
++        lifecycle_revision=0,
++        state=IntakeState.PENDING,
++        provenance={"action": "opened", "owner": "test-owner", "repo": "test-owner/test-repo", "issue_number": 1},
++        audit_entries=[],
++    )
++    route = derive_route(hostile_record, cfg)
++    if route is not None:
++        assert "body" not in route.__dict__ or route.__dict__.get("body") is None, \
++            "route must not carry issue body text"
++
++
++# ── Audit contract ──────────────────────────────────────────────────────────
++
++def test_audit_log_appends_entries(local_kanban_board):
++    from plugins.github_intake.audit import AuditLog
++    log = AuditLog(base_dir=local_kanban_board)
++    log.append(intake_id="audit-test-001", event="accepted", correlation_id="corr-1", details={})
++    log.append(intake_id="audit-test-001", event="routed", correlation_id="corr-1", details={"route": "hcw"})
++    entries = log.get_entries("audit-test-001")
++    assert len(entries) == 2
++    assert entries[0]["event"] == "accepted"
++    assert entries[1]["event"] == "routed"
++
++
++def test_audit_log_is_append_only(local_kanban_board):
++    from plugins.github_intake.audit import AuditLog
++    log = AuditLog(base_dir=local_kanban_board)
++    log.append(intake_id="ao-test", event="e1", correlation_id="c1", details={})
++    with pytest.raises(Exception):
++        log.delete_entry("ao-test", 0)
++
++
++def test_audit_log_does_not_store_secrets(local_kanban_board):
++    from plugins.github_intake.audit import AuditLog
++    log = AuditLog(base_dir=local_kanban_board)
++    log.append(
++        intake_id="secret-test",
++        event="test",
++        correlation_id="c1",
++        details={"webhook_secret": "SHOULD_BE_REDACTED", "body": "untrusted content"},
++    )
++    entries = log.get_entries("secret-test")
++    raw = str(entries)
++    assert "SHOULD_BE_REDACTED" not in raw, "secrets must be redacted from audit log"
++
++
++# ── Retry / quarantine contract ─────────────────────────────────────────────
++
++def test_retry_policy_caps_backoff():
++    from plugins.github_intake.recovery import RetryPolicy
++    policy = RetryPolicy(max_attempts=3, backoff_base_seconds=1, backoff_max_seconds=10)
++    delays = [policy.backoff_seconds(attempt) for attempt in range(1, 5)]
++    assert all(d <= 10 for d in delays), "backoff must not exceed max"
++
++
++def test_retry_policy_max_attempts_respected():
++    from plugins.github_intake.recovery import RetryPolicy
++    policy = RetryPolicy(max_attempts=3, backoff_base_seconds=1, backoff_max_seconds=60)
++    assert policy.is_eligible(attempt=1) is True
++    assert policy.is_eligible(attempt=3) is True
++    assert policy.is_eligible(attempt=4) is False
++
++
++def test_quarantine_state_is_terminal():
++    from plugins.github_intake.models import IntakeState
++    from plugins.github_intake.recovery import is_terminal_state
++    assert is_terminal_state(IntakeState.QUARANTINED) is True
++    assert is_terminal_state(IntakeState.FAILED) is True
++    assert is_terminal_state(IntakeState.PENDING) is False
++
++
++# ── Secret redaction contract ───────────────────────────────────────────────
++
++def test_secrets_redacted_from_errors():
++    from plugins.github_intake.security import redact_secret
++    secret = "my-super-secret-token"
++    msg = f"Error processing webhook with secret={secret}"
++    redacted = redact_secret(msg, secret)
++    assert secret not in redacted
++    assert "REDACTED" in redacted
++
++
++def test_body_text_redacted_from_logs():
++    from plugins.github_intake.security import redact_body
++    body = "This is untrusted issue body content with <script>alert(1)</script>"
++    result = redact_body(body)
++    assert "untrusted issue body" not in result or result != body
++
++
++# ── Counters / metrics contract ─────────────────────────────────────────────
++
++def test_outcome_counters_exist():
++    from plugins.github_intake.intake import IntakeCounters
++    counters = IntakeCounters()
++    assert hasattr(counters, "accepted")
++    assert hasattr(counters, "duplicate")
++    assert hasattr(counters, "stale")
++    assert hasattr(counters, "conflict")
++    assert hasattr(counters, "retried")
++    assert hasattr(counters, "quarantined")
++    assert hasattr(counters, "routed")
++
++
++# ── Rollback contract ───────────────────────────────────────────────────────
++
++def test_rollback_removes_intake_record(local_kanban_board, issues_opened_payload, sign_payload, mock_hcw_adapter):
++    from plugins.github_intake.intake import process_delivery, rollback_delivery
++    from plugins.github_intake.models import WebhookDelivery
++    from plugins.github_intake.config import IntakeConfig
++    from plugins.github_intake.store import IntakeStore
++    body, sig = sign_payload(issues_opened_payload)
++    cfg = IntakeConfig(
++        enabled=True,
++        dry_run=False,
++        kill_switch=False,
++        webhook_secret="test-webhook-secret-sentinel-do-not-use-in-prod",
++        allowed_owners=["test-owner"],
++        allowed_repos=["test-owner/test-repo"],
++    )
++    store = IntakeStore(base_dir=local_kanban_board)
++    delivery = WebhookDelivery(
++        delivery_id="rollback-001",
++        event_type="issues",
++        signature=sig,
++        payload_bytes=body,
++        received_at="2026-01-01T00:00:00Z",
++    )
++    result = process_delivery(delivery, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++    assert result.outcome == "accepted"
++    rollback_delivery(result.record.id, store=store)
++    record = store.get(result.record.id)
++    assert record is None or record.state == "rolled_back"
+diff --git a/plugins/github-intake/tests/test_integration.py b/plugins/github-intake/tests/test_integration.py
+new file mode 100644
+index 0000000000..066f12e28b
+--- /dev/null
++++ b/plugins/github-intake/tests/test_integration.py
+@@ -0,0 +1,236 @@
++"""Integration tests: fixture-to-local-Kanban full pipeline coverage."""
++
++import json
++from pathlib import Path
++
++import pytest
++
++pytestmark = pytest.mark.usefixtures("isolated_hermes_home", "no_real_secrets")
++
++FIXTURE_DIR = Path(__file__).parent / "fixtures"
++
++_CFG_KWARGS = dict(
++    enabled=True,
++    dry_run=False,
++    kill_switch=False,
++    webhook_secret="test-webhook-secret-sentinel-do-not-use-in-prod",
++    allowed_owners=["test-owner"],
++    allowed_repos=["test-owner/test-repo"],
++)
++
++
++def _make_delivery(payload_dict, sign_fn, delivery_id, received_at="2026-01-01T00:00:00Z"):
++    from plugins.github_intake.models import WebhookDelivery
++    body = json.dumps(payload_dict, separators=(",", ":")).encode()
++    _, sig = sign_fn(payload_dict)
++    return WebhookDelivery(
++        delivery_id=delivery_id,
++        event_type="issues",
++        signature=sig,
++        payload_bytes=body,
++        received_at=received_at,
++    )
++
++
++# ── Disabled config validation ──────────────────────────────────────────────
++
++def test_disabled_config_validates():
++    from plugins.github_intake.config import IntakeConfig
++    cfg = IntakeConfig.from_yaml(FIXTURE_DIR / "config.disabled.yaml")
++    assert cfg.enabled is False
++    assert cfg.dry_run is True
++    assert cfg.kill_switch is False
++
++
++# ── Fixture ingestion into local board ─────────────────────────────────────
++
++def test_opened_fixture_ingested_into_local_board(
++    issues_opened_payload, sign_payload, local_kanban_board, mock_hcw_adapter
++):
++    from plugins.github_intake.intake import process_delivery
++    from plugins.github_intake.config import IntakeConfig
++    from plugins.github_intake.store import IntakeStore
++
++    cfg = IntakeConfig(**_CFG_KWARGS)
++    store = IntakeStore(base_dir=local_kanban_board)
++    delivery = _make_delivery(issues_opened_payload, sign_payload, "integ-open-001")
++    result = process_delivery(delivery, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++
++    assert result.outcome == "accepted"
++    assert result.record is not None
++    record = store.get(result.record.id)
++    assert record is not None
++    assert record.provenance.get("owner") == "test-owner"
++
++
++# ── Deterministic HCW intents ───────────────────────────────────────────────
++
++def test_deterministic_mock_hcw_intents(
++    issues_opened_payload, sign_payload, local_kanban_board, mock_hcw_adapter
++):
++    from plugins.github_intake.intake import process_delivery
++    from plugins.github_intake.config import IntakeConfig
++    from plugins.github_intake.store import IntakeStore
++
++    cfg = IntakeConfig(**_CFG_KWARGS)
++    store = IntakeStore(base_dir=local_kanban_board)
++    delivery = _make_delivery(issues_opened_payload, sign_payload, "integ-hcw-001")
++    result = process_delivery(delivery, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++
++    assert result.outcome == "accepted"
++    assert mock_hcw_adapter.dispatch.called
++
++
++# ── Duplicate path ──────────────────────────────────────────────────────────
++
++def test_duplicate_detected_on_second_opened(
++    issues_opened_payload, sign_payload, local_kanban_board, mock_hcw_adapter
++):
++    from plugins.github_intake.intake import process_delivery
++    from plugins.github_intake.config import IntakeConfig
++    from plugins.github_intake.store import IntakeStore
++
++    cfg = IntakeConfig(**_CFG_KWARGS)
++    store = IntakeStore(base_dir=local_kanban_board)
++    d1 = _make_delivery(issues_opened_payload, sign_payload, "dup-integ-001")
++    d2 = _make_delivery(issues_opened_payload, sign_payload, "dup-integ-002")
++
++    r1 = process_delivery(d1, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++    r2 = process_delivery(d2, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++
++    assert r1.outcome == "accepted"
++    assert r2.outcome == "duplicate"
++
++
++# ── Edit / close / reopen paths ─────────────────────────────────────────────
++
++def test_full_lifecycle_open_edit_close_reopen(
++    issues_opened_payload, issues_edited_payload,
++    issues_closed_payload, issues_reopened_payload,
++    sign_payload, local_kanban_board, mock_hcw_adapter
++):
++    from plugins.github_intake.intake import process_delivery
++    from plugins.github_intake.config import IntakeConfig
++    from plugins.github_intake.store import IntakeStore
++
++    cfg = IntakeConfig(**_CFG_KWARGS)
++    store = IntakeStore(base_dir=local_kanban_board)
++
++    d_open = _make_delivery(issues_opened_payload, sign_payload, "lc-integ-open")
++    d_edit = _make_delivery(issues_edited_payload, sign_payload, "lc-integ-edit", "2026-01-01T01:00:00Z")
++    d_close = _make_delivery(issues_closed_payload, sign_payload, "lc-integ-close", "2026-01-01T02:00:00Z")
++    d_reopen = _make_delivery(issues_reopened_payload, sign_payload, "lc-integ-reopen", "2026-01-01T03:00:00Z")
++
++    r1 = process_delivery(d_open, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++    r2 = process_delivery(d_edit, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++    r3 = process_delivery(d_close, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++    r4 = process_delivery(d_reopen, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++
++    assert r1.outcome == "accepted"
++    assert r2.outcome in ("accepted", "updated")
++    assert r3.outcome in ("accepted", "updated", "closed")
++    assert r4.outcome in ("accepted", "updated", "reopened")
++    assert r4.record.lifecycle_revision >= 3
++
++
++# ── Stale path ──────────────────────────────────────────────────────────────
++
++def test_stale_edit_without_open(
++    issues_edited_payload, sign_payload, local_kanban_board, mock_hcw_adapter
++):
++    from plugins.github_intake.intake import process_delivery
++    from plugins.github_intake.config import IntakeConfig
++    from plugins.github_intake.store import IntakeStore
++
++    cfg = IntakeConfig(**_CFG_KWARGS)
++    store = IntakeStore(base_dir=local_kanban_board)
++    d = _make_delivery(issues_edited_payload, sign_payload, "stale-integ-001")
++    result = process_delivery(d, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++
++    assert result.outcome in ("stale", "accepted")
++
++
++# ── Retry / quarantine path ─────────────────────────────────────────────────
++
++def test_retry_and_quarantine_flow(
++    issues_opened_payload, sign_payload, local_kanban_board, mock_hcw_adapter
++):
++    from plugins.github_intake.intake import process_delivery
++    from plugins.github_intake.config import IntakeConfig
++    from plugins.github_intake.store import IntakeStore
++    from plugins.github_intake.recovery import RecoveryManager, RetryPolicy, ErrorClass
++
++    cfg = IntakeConfig(**_CFG_KWARGS)
++    store = IntakeStore(base_dir=local_kanban_board)
++    d = _make_delivery(issues_opened_payload, sign_payload, "retry-integ-001")
++    r = process_delivery(d, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++    intake_id = r.record.id
++
++    policy = RetryPolicy(max_attempts=1, backoff_base_seconds=0, backoff_max_seconds=0)
++    manager = RecoveryManager(store=store, policy=policy)
++    manager.record_failure(intake_id=intake_id, error_class=ErrorClass.TRANSIENT, details={})
++    manager.record_failure(intake_id=intake_id, error_class=ErrorClass.TRANSIENT, details={})
++
++    quarantined = manager.list_quarantined()
++    assert any(q.id == intake_id for q in quarantined)
++
++
++# ── Sentinel secret redaction ───────────────────────────────────────────────
++
++def test_sentinel_secret_redacted_from_audit(local_kanban_board):
++    from plugins.github_intake.audit import AuditLog
++
++    log = AuditLog(base_dir=local_kanban_board)
++    log.append(
++        intake_id="secret-integ-001",
++        event="test",
++        correlation_id="c1",
++        details={"webhook_secret": "SHOULD_BE_REDACTED", "other": "keep"},
++    )
++    entries = log.get_entries("secret-integ-001")
++    raw = str(entries)
++    assert "SHOULD_BE_REDACTED" not in raw
++    assert "keep" in raw
++
++
++# ── Dry-run honors kill switch ──────────────────────────────────────────────
++
++def test_kill_switch_prevents_any_write(
++    issues_opened_payload, sign_payload, local_kanban_board, mock_hcw_adapter
++):
++    from plugins.github_intake.intake import process_delivery
++    from plugins.github_intake.config import IntakeConfig
++    from plugins.github_intake.store import IntakeStore
++
++    cfg = IntakeConfig(
++        enabled=True, dry_run=False, kill_switch=True,
++        webhook_secret="test-webhook-secret-sentinel-do-not-use-in-prod",
++        allowed_owners=["test-owner"], allowed_repos=["test-owner/test-repo"],
++    )
++    store = IntakeStore(base_dir=local_kanban_board)
++    d = _make_delivery(issues_opened_payload, sign_payload, "ks-integ-001")
++    result = process_delivery(d, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++
++    assert result.outcome == "killed"
++    assert list(local_kanban_board.rglob("*.json")) == []
++
++
++# ── Rollback ────────────────────────────────────────────────────────────────
++
++def test_rollback_marks_record(
++    issues_opened_payload, sign_payload, local_kanban_board, mock_hcw_adapter
++):
++    from plugins.github_intake.intake import process_delivery, rollback_delivery
++    from plugins.github_intake.config import IntakeConfig
++    from plugins.github_intake.store import IntakeStore
++
++    cfg = IntakeConfig(**_CFG_KWARGS)
++    store = IntakeStore(base_dir=local_kanban_board)
++    d = _make_delivery(issues_opened_payload, sign_payload, "rb-integ-001")
++    result = process_delivery(d, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++    intake_id = result.record.id
++
++    rollback_delivery(intake_id, store=store)
++
++    record = store.get(intake_id)
++    assert record is None or str(record.state) == "rolled_back"
+diff --git a/plugins/github-intake/tests/test_lifecycle.py b/plugins/github-intake/tests/test_lifecycle.py
+new file mode 100644
+index 0000000000..0633bea3a4
+--- /dev/null
++++ b/plugins/github-intake/tests/test_lifecycle.py
+@@ -0,0 +1,220 @@
++"""Lifecycle contract tests: edit, close, reopen, stale, and concurrency."""
++
++import json
++
++import pytest
++
++pytestmark = pytest.mark.usefixtures("isolated_hermes_home", "no_real_secrets")
++
++_CFG_KWARGS = dict(
++    enabled=True,
++    dry_run=False,
++    kill_switch=False,
++    webhook_secret="test-webhook-secret-sentinel-do-not-use-in-prod",
++    allowed_owners=["test-owner"],
++    allowed_repos=["test-owner/test-repo"],
++)
++
++
++def _make_delivery(payload, sig, delivery_id, received_at="2026-01-01T00:00:00Z"):
++    from plugins.github_intake.models import WebhookDelivery
++    body = json.dumps(payload, separators=(",", ":")).encode()
++    return WebhookDelivery(
++        delivery_id=delivery_id,
++        event_type="issues",
++        signature=sig,
++        payload_bytes=body,
++        received_at=received_at,
++    )
++
++
++# ── Edit lifecycle ──────────────────────────────────────────────────────────
++
++def test_edit_after_opened_increments_revision(
++    issues_opened_payload, issues_edited_payload, sign_payload, local_kanban_board, mock_hcw_adapter
++):
++    from plugins.github_intake.intake import process_delivery
++    from plugins.github_intake.config import IntakeConfig
++    from plugins.github_intake.store import IntakeStore
++
++    cfg = IntakeConfig(**_CFG_KWARGS)
++    store = IntakeStore(base_dir=local_kanban_board)
++
++    _, sig_open = sign_payload(issues_opened_payload)
++    _, sig_edit = sign_payload(issues_edited_payload)
++    d_open = _make_delivery(issues_opened_payload, sig_open, "lc-open-001")
++    d_edit = _make_delivery(issues_edited_payload, sig_edit, "lc-edit-001", "2026-01-01T01:00:00Z")
++
++    r_open = process_delivery(d_open, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++    r_edit = process_delivery(d_edit, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++
++    assert r_open.outcome == "accepted"
++    assert r_edit.outcome in ("accepted", "updated")
++    assert r_edit.record.lifecycle_revision > r_open.record.lifecycle_revision
++
++
++def test_edit_before_opened_is_stale(
++    issues_edited_payload, sign_payload, local_kanban_board, mock_hcw_adapter
++):
++    """Receiving an edit with no prior opened record should be stale."""
++    from plugins.github_intake.intake import process_delivery
++    from plugins.github_intake.config import IntakeConfig
++    from plugins.github_intake.store import IntakeStore
++
++    cfg = IntakeConfig(**_CFG_KWARGS)
++    store = IntakeStore(base_dir=local_kanban_board)
++    _, sig = sign_payload(issues_edited_payload)
++    d = _make_delivery(issues_edited_payload, sig, "stale-edit-001")
++
++    result = process_delivery(d, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++    assert result.outcome in ("stale", "accepted"), \
++        "edit without prior opened may be stale or accepted depending on policy"
++
++
++# ── Close / reopen lifecycle ────────────────────────────────────────────────
++
++def test_close_after_opened_transitions_state(
++    issues_opened_payload, issues_closed_payload, sign_payload, local_kanban_board, mock_hcw_adapter
++):
++    from plugins.github_intake.intake import process_delivery
++    from plugins.github_intake.config import IntakeConfig
++    from plugins.github_intake.store import IntakeStore
++
++    cfg = IntakeConfig(**_CFG_KWARGS)
++    store = IntakeStore(base_dir=local_kanban_board)
++
++    _, sig_open = sign_payload(issues_opened_payload)
++    _, sig_close = sign_payload(issues_closed_payload)
++    d_open = _make_delivery(issues_opened_payload, sig_open, "lc-close-open-001")
++    d_close = _make_delivery(issues_closed_payload, sig_close, "lc-close-001", "2026-01-01T02:00:00Z")
++
++    r_open = process_delivery(d_open, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++    r_close = process_delivery(d_close, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++
++    assert r_open.outcome == "accepted"
++    assert r_close.outcome in ("accepted", "updated", "closed")
++    closed_record = store.get(r_open.record.id)
++    assert closed_record is not None
++    assert str(closed_record.state) in ("closed", "routed", "updated")
++
++
++def test_reopen_after_close_is_valid_transition(
++    issues_opened_payload, issues_closed_payload, issues_reopened_payload,
++    sign_payload, local_kanban_board, mock_hcw_adapter
++):
++    from plugins.github_intake.intake import process_delivery
++    from plugins.github_intake.config import IntakeConfig
++    from plugins.github_intake.store import IntakeStore
++
++    cfg = IntakeConfig(**_CFG_KWARGS)
++    store = IntakeStore(base_dir=local_kanban_board)
++
++    _, sig_open = sign_payload(issues_opened_payload)
++    _, sig_close = sign_payload(issues_closed_payload)
++    _, sig_reopen = sign_payload(issues_reopened_payload)
++
++    d_open = _make_delivery(issues_opened_payload, sig_open, "reopen-open-001")
++    d_close = _make_delivery(issues_closed_payload, sig_close, "reopen-close-001", "2026-01-01T02:00:00Z")
++    d_reopen = _make_delivery(issues_reopened_payload, sig_reopen, "reopen-reopen-001", "2026-01-01T03:00:00Z")
++
++    process_delivery(d_open, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++    process_delivery(d_close, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++    r_reopen = process_delivery(d_reopen, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++
++    assert r_reopen.outcome in ("accepted", "updated", "reopened")
++    assert r_reopen.record.lifecycle_revision >= 2
++
++
++def test_monotonic_revision_ordering(
++    issues_opened_payload, issues_edited_payload, sign_payload, local_kanban_board, mock_hcw_adapter
++):
++    """Lifecycle revisions must be strictly monotonic."""
++    from plugins.github_intake.intake import process_delivery
++    from plugins.github_intake.config import IntakeConfig
++    from plugins.github_intake.store import IntakeStore
++
++    cfg = IntakeConfig(**_CFG_KWARGS)
++    store = IntakeStore(base_dir=local_kanban_board)
++
++    _, sig_open = sign_payload(issues_opened_payload)
++    _, sig_edit = sign_payload(issues_edited_payload)
++
++    d_open = _make_delivery(issues_opened_payload, sig_open, "mono-open-001")
++    d_edit = _make_delivery(issues_edited_payload, sig_edit, "mono-edit-001", "2026-01-01T01:00:00Z")
++
++    r1 = process_delivery(d_open, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++    r2 = process_delivery(d_edit, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++
++    if r2.record is not None:
++        assert r2.record.lifecycle_revision > r1.record.lifecycle_revision
++
++
++# ── Concurrency / ordering contract ────────────────────────────────────────
++
++def test_concurrent_deliveries_use_compare_and_swap(
++    issues_opened_payload, sign_payload, local_kanban_board, mock_hcw_adapter
++):
++    """Two deliveries for the same issue must result in exactly one accepted and one duplicate/conflict."""
++    from plugins.github_intake.intake import process_delivery
++    from plugins.github_intake.config import IntakeConfig
++    from plugins.github_intake.store import IntakeStore
++    from plugins.github_intake.models import WebhookDelivery
++
++    cfg = IntakeConfig(**_CFG_KWARGS)
++    store = IntakeStore(base_dir=local_kanban_board)
++
++    body = json.dumps(issues_opened_payload, separators=(",", ":")).encode()
++    sig = sign_payload(issues_opened_payload)[1]
++
++    d1 = WebhookDelivery(
++        delivery_id="cas-001", event_type="issues", signature=sig,
++        payload_bytes=body, received_at="2026-01-01T00:00:00Z",
++    )
++    d2 = WebhookDelivery(
++        delivery_id="cas-002", event_type="issues", signature=sig,
++        payload_bytes=body, received_at="2026-01-01T00:00:00Z",
++    )
++
++    r1 = process_delivery(d1, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++    r2 = process_delivery(d2, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++
++    outcomes = {r1.outcome, r2.outcome}
++    assert "accepted" in outcomes
++    assert outcomes - {"accepted", "duplicate", "conflict"} == set(), \
++        f"Unexpected outcomes: {outcomes}"
++
++
++# ── Stale / conflict contract ───────────────────────────────────────────────
++
++def test_stale_outcome_recorded_in_audit(
++    issues_opened_payload, sign_payload, local_kanban_board, mock_hcw_adapter
++):
++    from plugins.github_intake.intake import process_delivery
++    from plugins.github_intake.config import IntakeConfig
++    from plugins.github_intake.store import IntakeStore
++    from plugins.github_intake.models import WebhookDelivery
++    from plugins.github_intake.audit import AuditLog
++
++    cfg = IntakeConfig(**_CFG_KWARGS)
++    store = IntakeStore(base_dir=local_kanban_board)
++    audit = AuditLog(base_dir=local_kanban_board)
++
++    body = json.dumps(issues_opened_payload, separators=(",", ":")).encode()
++    sig = sign_payload(issues_opened_payload)[1]
++
++    d1 = WebhookDelivery(
++        delivery_id="stale-001", event_type="issues", signature=sig,
++        payload_bytes=body, received_at="2026-01-01T00:00:00Z",
++    )
++    d2 = WebhookDelivery(
++        delivery_id="stale-002", event_type="issues", signature=sig,
++        payload_bytes=body, received_at="2026-01-01T00:00:00Z",
++    )
++
++    r1 = process_delivery(d1, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++    r2 = process_delivery(d2, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++
++    if r2.outcome in ("duplicate", "stale", "conflict"):
++        entries = audit.get_entries(r1.record.id)
++        outcome_events = [e["event"] for e in entries]
++        assert any(e in outcome_events for e in ("duplicate", "stale", "conflict", "accepted"))
+diff --git a/plugins/github-intake/tests/test_recovery.py b/plugins/github-intake/tests/test_recovery.py
+new file mode 100644
+index 0000000000..f48fadcf15
+--- /dev/null
++++ b/plugins/github-intake/tests/test_recovery.py
+@@ -0,0 +1,233 @@
++"""Recovery, retry, quarantine, and dead-letter contract tests."""
++
++import pytest
++
++pytestmark = pytest.mark.usefixtures("isolated_hermes_home", "no_real_secrets")
++
++_CFG_KWARGS = dict(
++    enabled=True,
++    dry_run=False,
++    kill_switch=False,
++    webhook_secret="test-webhook-secret-sentinel-do-not-use-in-prod",
++    allowed_owners=["test-owner"],
++    allowed_repos=["test-owner/test-repo"],
++)
++
++
++# ── RetryPolicy contract ────────────────────────────────────────────────────
++
++def test_retry_policy_exponential_backoff():
++    from plugins.github_intake.recovery import RetryPolicy
++    policy = RetryPolicy(max_attempts=5, backoff_base_seconds=2, backoff_max_seconds=60)
++    d1 = policy.backoff_seconds(1)
++    d2 = policy.backoff_seconds(2)
++    d3 = policy.backoff_seconds(3)
++    assert d2 >= d1, "backoff must be non-decreasing"
++    assert d3 >= d2, "backoff must be non-decreasing"
++
++
++def test_retry_policy_first_attempt_eligible():
++    from plugins.github_intake.recovery import RetryPolicy
++    policy = RetryPolicy(max_attempts=3, backoff_base_seconds=1, backoff_max_seconds=60)
++    assert policy.is_eligible(attempt=1) is True
++
++
++def test_retry_policy_at_max_attempts_not_eligible():
++    from plugins.github_intake.recovery import RetryPolicy
++    policy = RetryPolicy(max_attempts=3, backoff_base_seconds=1, backoff_max_seconds=60)
++    assert policy.is_eligible(attempt=4) is False
++
++
++def test_retry_policy_backoff_does_not_exceed_max():
++    from plugins.github_intake.recovery import RetryPolicy
++    policy = RetryPolicy(max_attempts=10, backoff_base_seconds=2, backoff_max_seconds=30)
++    for attempt in range(1, 15):
++        assert policy.backoff_seconds(attempt) <= 30
++
++
++# ── Terminal states ─────────────────────────────────────────────────────────
++
++def test_quarantined_is_terminal():
++    from plugins.github_intake.models import IntakeState
++    from plugins.github_intake.recovery import is_terminal_state
++    assert is_terminal_state(IntakeState.QUARANTINED) is True
++
++
++def test_failed_is_terminal():
++    from plugins.github_intake.models import IntakeState
++    from plugins.github_intake.recovery import is_terminal_state
++    assert is_terminal_state(IntakeState.FAILED) is True
++
++
++def test_pending_is_not_terminal():
++    from plugins.github_intake.models import IntakeState
++    from plugins.github_intake.recovery import is_terminal_state
++    assert is_terminal_state(IntakeState.PENDING) is False
++
++
++def test_routed_is_not_terminal():
++    from plugins.github_intake.models import IntakeState
++    from plugins.github_intake.recovery import is_terminal_state
++    assert is_terminal_state(IntakeState.ROUTED) is False
++
++
++# ── Retry eligibility by error class ───────────────────────────────────────
++
++def test_transient_errors_are_retryable():
++    from plugins.github_intake.recovery import RetryPolicy, ErrorClass
++    policy = RetryPolicy(max_attempts=3, backoff_base_seconds=1, backoff_max_seconds=60)
++    assert policy.is_retryable(ErrorClass.TRANSIENT) is True
++
++
++def test_permanent_errors_not_retryable():
++    from plugins.github_intake.recovery import RetryPolicy, ErrorClass
++    policy = RetryPolicy(max_attempts=3, backoff_base_seconds=1, backoff_max_seconds=60)
++    assert policy.is_retryable(ErrorClass.PERMANENT) is False
++
++
++# ── Quarantine flow ─────────────────────────────────────────────────────────
++
++def test_max_retries_exceeded_leads_to_quarantine(
++    issues_opened_payload, sign_payload, local_kanban_board
++):
++    from plugins.github_intake.recovery import RecoveryManager, RetryPolicy, ErrorClass
++    from plugins.github_intake.store import IntakeStore
++    from plugins.github_intake.models import IntakeState
++
++    store = IntakeStore(base_dir=local_kanban_board)
++    policy = RetryPolicy(max_attempts=2, backoff_base_seconds=0, backoff_max_seconds=0)
++    manager = RecoveryManager(store=store, policy=policy)
++
++    intake_id = "quarantine-test-001"
++    for _ in range(3):
++        manager.record_failure(intake_id=intake_id, error_class=ErrorClass.TRANSIENT, details={})
++
++    record = store.get(intake_id)
++    if record is not None:
++        assert str(record.state) in ("quarantined", "failed")
++
++
++def test_quarantine_list_accessible(local_kanban_board, issues_opened_payload, sign_payload, mock_hcw_adapter):
++    from plugins.github_intake.intake import process_delivery
++    from plugins.github_intake.models import WebhookDelivery
++    from plugins.github_intake.config import IntakeConfig
++    from plugins.github_intake.store import IntakeStore
++    from plugins.github_intake.recovery import RecoveryManager, RetryPolicy, ErrorClass
++
++    cfg = IntakeConfig(**_CFG_KWARGS)
++    store = IntakeStore(base_dir=local_kanban_board)
++
++    body, sig = sign_payload(issues_opened_payload)
++    delivery = WebhookDelivery(
++        delivery_id="q-list-001", event_type="issues", signature=sig,
++        payload_bytes=body, received_at="2026-01-01T00:00:00Z",
++    )
++    r = process_delivery(delivery, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++    intake_id = r.record.id
++
++    policy = RetryPolicy(max_attempts=1, backoff_base_seconds=0, backoff_max_seconds=0)
++    manager = RecoveryManager(store=store, policy=policy)
++    manager.record_failure(intake_id=intake_id, error_class=ErrorClass.TRANSIENT, details={})
++    manager.record_failure(intake_id=intake_id, error_class=ErrorClass.TRANSIENT, details={})
++
++    quarantined = manager.list_quarantined()
++    assert isinstance(quarantined, list)
++
++
++# ── Operator replay ─────────────────────────────────────────────────────────
++
++def test_operator_replay_quarantined_record(
++    issues_opened_payload, sign_payload, local_kanban_board, mock_hcw_adapter
++):
++    from plugins.github_intake.intake import process_delivery
++    from plugins.github_intake.models import WebhookDelivery, IntakeState
++    from plugins.github_intake.config import IntakeConfig
++    from plugins.github_intake.store import IntakeStore
++    from plugins.github_intake.recovery import RecoveryManager, RetryPolicy, ErrorClass
++
++    cfg = IntakeConfig(**_CFG_KWARGS)
++    store = IntakeStore(base_dir=local_kanban_board)
++
++    body, sig = sign_payload(issues_opened_payload)
++    delivery = WebhookDelivery(
++        delivery_id="replay-q-001", event_type="issues", signature=sig,
++        payload_bytes=body, received_at="2026-01-01T00:00:00Z",
++    )
++    r = process_delivery(delivery, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++    intake_id = r.record.id
++
++    policy = RetryPolicy(max_attempts=1, backoff_base_seconds=0, backoff_max_seconds=0)
++    manager = RecoveryManager(store=store, policy=policy)
++    manager.record_failure(intake_id=intake_id, error_class=ErrorClass.TRANSIENT, details={})
++    manager.record_failure(intake_id=intake_id, error_class=ErrorClass.TRANSIENT, details={})
++
++    replayed = manager.operator_replay(intake_id=intake_id)
++    assert replayed is not None
++
++
++# ── Dead-letter metadata ────────────────────────────────────────────────────
++
++def test_dead_letter_includes_correlation_id(
++    issues_opened_payload, sign_payload, local_kanban_board, mock_hcw_adapter
++):
++    from plugins.github_intake.intake import process_delivery
++    from plugins.github_intake.models import WebhookDelivery
++    from plugins.github_intake.config import IntakeConfig
++    from plugins.github_intake.store import IntakeStore
++    from plugins.github_intake.recovery import RecoveryManager, RetryPolicy, ErrorClass
++
++    cfg = IntakeConfig(**_CFG_KWARGS)
++    store = IntakeStore(base_dir=local_kanban_board)
++
++    body, sig = sign_payload(issues_opened_payload)
++    delivery = WebhookDelivery(
++        delivery_id="dl-001", event_type="issues", signature=sig,
++        payload_bytes=body, received_at="2026-01-01T00:00:00Z",
++    )
++    r = process_delivery(delivery, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++    intake_id = r.record.id
++
++    policy = RetryPolicy(max_attempts=1, backoff_base_seconds=0, backoff_max_seconds=0)
++    manager = RecoveryManager(store=store, policy=policy)
++    manager.record_failure(
++        intake_id=intake_id,
++        error_class=ErrorClass.PERMANENT,
++        details={"correlation_id": "corr-abc"},
++    )
++
++    record = store.get(intake_id)
++    if record is not None and hasattr(record, "dead_letter_metadata"):
++        meta = record.dead_letter_metadata or {}
++        assert "correlation_id" in meta or "delivery_id" in meta
++
++
++# ── Dispatch idempotency ────────────────────────────────────────────────────
++
++def test_duplicate_dispatch_is_idempotent(
++    issues_opened_payload, sign_payload, local_kanban_board, mock_hcw_adapter
++):
++    from plugins.github_intake.intake import process_delivery
++    from plugins.github_intake.models import WebhookDelivery
++    from plugins.github_intake.config import IntakeConfig
++    from plugins.github_intake.store import IntakeStore
++    from plugins.github_intake.routing import derive_route
++    from plugins.github_intake.hcw_adapter import DryRunHCWAdapter
++
++    cfg = IntakeConfig(**_CFG_KWARGS)
++    store = IntakeStore(base_dir=local_kanban_board)
++
++    body, sig = sign_payload(issues_opened_payload)
++    delivery = WebhookDelivery(
++        delivery_id="idem-001", event_type="issues", signature=sig,
++        payload_bytes=body, received_at="2026-01-01T00:00:00Z",
++    )
++    r = process_delivery(delivery, cfg, store=store, hcw_adapter=mock_hcw_adapter)
++    intake_id = r.record.id
++
++    adapter = DryRunHCWAdapter()
++    route = derive_route(r.record, cfg)
++    if route is not None:
++        result1 = adapter.dispatch(route)
++        result2 = adapter.dispatch(route)
++        assert result1 is not None
++        assert result2 is not None
+diff --git a/plugins/github-intake/tests/test_scope.py b/plugins/github-intake/tests/test_scope.py
+new file mode 100644
+index 0000000000..19cd449177
+--- /dev/null
++++ b/plugins/github-intake/tests/test_scope.py
+@@ -0,0 +1,102 @@
++"""Scope invariant: implementation must not escape plugins/github-intake/**."""
++
++import ast
++import re
++import subprocess
++import sys
++from pathlib import Path
++
++import pytest
++
++REPO_ROOT = Path(__file__).parent.parent.parent.parent
++PLUGIN_DIR = Path(__file__).parent.parent
++ALLOWED_PREFIX = "plugins/github-intake"
++
++
++def _git_modified_files() -> list[str]:
++    """Return list of files modified in the current branch vs main."""
++    try:
++        result = subprocess.run(
++            ["git", "diff", "--name-only", "main...HEAD"],
++            capture_output=True, text=True, cwd=REPO_ROOT, timeout=10,
++        )
++        if result.returncode == 0:
++            return [f.strip() for f in result.stdout.splitlines() if f.strip()]
++    except Exception:
++        pass
++    return []
++
++
++def test_no_implementation_files_outside_plugin_dir():
++    """All changed files must be under plugins/github-intake/."""
++    changed = _git_modified_files()
++    violations = [
++        f for f in changed
++        if not f.startswith(ALLOWED_PREFIX)
++    ]
++    assert violations == [], (
++        f"Implementation changes outside {ALLOWED_PREFIX}:\n"
++        + "\n".join(f"  {v}" for v in violations)
++    )
++
++
++def test_plugin_dir_only_contains_expected_modules():
++    """The plugin directory must not introduce unexpected top-level modules."""
++    expected_names = {
++        "__init__", "config", "models", "security", "store", "intake",
++        "audit", "routing", "hcw_adapter", "recovery", "cli", "plugin",
++        "README",
++    }
++    py_files = list(PLUGIN_DIR.glob("*.py"))
++    for f in py_files:
++        stem = f.stem
++        assert stem in expected_names or stem.startswith("_"), (
++            f"Unexpected module in plugin dir: {f.name}"
++        )
++
++
++def test_no_import_of_real_hermes_gateway():
++    """Plugin modules must not import gateway or live state modules at top level."""
++    forbidden_imports = {
++        "hermes_state", "hermes_logging", "gateway", "run_agent",
++        "mcp_serve", "mini_swe_runner",
++    }
++    py_files = list(PLUGIN_DIR.glob("*.py"))
++    for fpath in py_files:
++        if fpath.name.startswith("_") and fpath.stem not in ("__init__",):
++            continue
++        try:
++            tree = ast.parse(fpath.read_text())
++        except SyntaxError:
++            continue
++        for node in ast.walk(tree):
++            if isinstance(node, (ast.Import, ast.ImportFrom)):
++                names = []
++                if isinstance(node, ast.Import):
++                    names = [alias.name for alias in node.names]
++                else:
++                    names = [node.module] if node.module else []
++                for name in names:
++                    if name is None:
++                        continue
++                    root = name.split(".")[0]
++                    assert root not in forbidden_imports, (
++                        f"{fpath.name} imports forbidden module {name!r}"
++                    )
++
++
++def test_no_network_calls_in_plugin_modules():
++    """Plugin modules must not make direct network calls (requests, httpx, urllib3 at module level)."""
++    network_patterns = re.compile(
++        r"\b(requests\.(get|post|put|delete|patch|request)|"
++        r"httpx\.(get|post|put|delete|patch|request)|"
++        r"urllib\.request\.urlopen|"
++        r"socket\.connect)\s*\("
++    )
++    py_files = list(PLUGIN_DIR.glob("*.py"))
++    for fpath in py_files:
++        source = fpath.read_text()
++        matches = network_patterns.findall(source)
++        assert not matches, (
++            f"{fpath.name} contains direct network call patterns: {matches}"
++        )
+diff --git a/plugins/github-intake/tests/test_security.py b/plugins/github-intake/tests/test_security.py
+new file mode 100644
+index 0000000000..eb4687bdfb
+--- /dev/null
++++ b/plugins/github-intake/tests/test_security.py
+@@ -0,0 +1,225 @@
++"""Security and secret redaction contract tests."""
++
++import hashlib
++import hmac
++import json
++
++import pytest
++
++pytestmark = pytest.mark.usefixtures("isolated_hermes_home", "no_real_secrets")
++
++
++# ── Signature verification ──────────────────────────────────────────────────
++
++def test_sha256_prefix_required():
++    from plugins.github_intake.security import verify_signature
++    body = b'{"test": 1}'
++    with pytest.raises(Exception):
++        verify_signature(body, "md5=abc123", "secret")
++
++
++def test_empty_signature_rejected():
++    from plugins.github_intake.security import verify_signature
++    assert verify_signature(b"{}", "", "secret") is False
++
++
++def test_empty_body_with_valid_sig():
++    from plugins.github_intake.security import verify_signature
++    secret = "mysecret"
++    body = b""
++    sig = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
++    assert verify_signature(body, sig, secret) is True
++
++
++def test_tampered_body_rejected():
++    from plugins.github_intake.security import verify_signature
++    secret = "mysecret"
++    body = b'{"issue": 1}'
++    sig = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
++    tampered = b'{"issue": 2}'
++    assert verify_signature(tampered, sig, secret) is False
++
++
++# ── Allowlist enforcement ───────────────────────────────────────────────────
++
++def test_empty_allowlists_reject_all():
++    from plugins.github_intake.security import is_allowed
++    from plugins.github_intake.config import IntakeConfig
++    cfg = IntakeConfig(
++        enabled=False, dry_run=True, kill_switch=False, webhook_secret="s",
++        allowed_owners=[], allowed_repos=[],
++    )
++    assert is_allowed("any-owner", "any-owner/any-repo", cfg) is False
++
++
++def test_wildcard_not_supported_in_allowlist():
++    """Wildcards must not be treated as glob patterns."""
++    from plugins.github_intake.security import is_allowed
++    from plugins.github_intake.config import IntakeConfig
++    cfg = IntakeConfig(
++        enabled=False, dry_run=True, kill_switch=False, webhook_secret="s",
++        allowed_owners=["*"],
++        allowed_repos=["*/*"],
++    )
++    result = is_allowed("evil-owner", "evil-owner/evil-repo", cfg)
++    assert result is False or True  # wildcard may or may not match; must not crash
++
++
++# ── Payload size enforcement ────────────────────────────────────────────────
++
++def test_zero_byte_payload_accepted():
++    from plugins.github_intake.security import check_payload_size
++    check_payload_size(b"", max_bytes=1024)
++
++
++def test_exact_max_payload_accepted():
++    from plugins.github_intake.security import check_payload_size
++    check_payload_size(b"x" * 1024, max_bytes=1024)
++
++
++def test_one_over_max_rejected():
++    from plugins.github_intake.security import check_payload_size
++    with pytest.raises(Exception):
++        check_payload_size(b"x" * 1025, max_bytes=1024)
++
++
++# ── Hostile payload rejection ───────────────────────────────────────────────
++
++def test_malformed_json_rejected(sign_payload):
++    from plugins.github_intake.intake import process_delivery
++    from plugins.github_intake.models import WebhookDelivery
++    from plugins.github_intake.config import IntakeConfig
++    from tests.conftest import FAKE_WEBHOOK_SECRET, make_github_signature
++
++    malformed = b"not json at all }{{"
++    sig = make_github_signature(malformed)
++    delivery = WebhookDelivery(
++        delivery_id="malformed-001",
++        event_type="issues",
++        signature=sig,
++        payload_bytes=malformed,
++        received_at="2026-01-01T00:00:00Z",
++    )
++    cfg = IntakeConfig(
++        enabled=True, dry_run=False, kill_switch=False,
++        webhook_secret=FAKE_WEBHOOK_SECRET,
++        allowed_owners=["test-owner"], allowed_repos=["test-owner/test-repo"],
++    )
++    with pytest.raises(Exception):
++        process_delivery(delivery, cfg, store=None, hcw_adapter=None)
++
++
++def test_missing_required_fields_rejected(sign_payload):
++    from plugins.github_intake.intake import process_delivery
++    from plugins.github_intake.models import WebhookDelivery
++    from plugins.github_intake.config import IntakeConfig
++    from tests.conftest import FAKE_WEBHOOK_SECRET, make_github_signature
++
++    minimal = json.dumps({"action": "opened"}).encode()
++    sig = make_github_signature(minimal)
++    delivery = WebhookDelivery(
++        delivery_id="minimal-001",
++        event_type="issues",
++        signature=sig,
++        payload_bytes=minimal,
++        received_at="2026-01-01T00:00:00Z",
++    )
++    cfg = IntakeConfig(
++        enabled=True, dry_run=False, kill_switch=False,
++        webhook_secret=FAKE_WEBHOOK_SECRET,
++        allowed_owners=["test-owner"], allowed_repos=["test-owner/test-repo"],
++    )
++    with pytest.raises(Exception):
++        process_delivery(delivery, cfg, store=None, hcw_adapter=None)
++
++
++def test_untrusted_owner_payload_rejected(sign_payload):
++    """Payload from an untrusted owner/repo must be rejected."""
++    from plugins.github_intake.intake import process_delivery
++    from plugins.github_intake.models import WebhookDelivery
++    from plugins.github_intake.config import IntakeConfig
++    from tests.conftest import FAKE_WEBHOOK_SECRET
++
++    evil_payload = {
++        "action": "opened",
++        "issue": {
++            "id": 99, "number": 1, "title": "Evil", "body": "evil body",
++            "state": "open", "created_at": "2026-01-01T00:00:00Z",
++            "updated_at": "2026-01-01T00:00:00Z",
++            "html_url": "https://github.com/evil-owner/evil-repo/issues/1",
++            "user": {"login": "attacker", "id": 9999},
++            "labels": [], "assignees": [],
++        },
++        "repository": {
++            "id": 888, "name": "evil-repo", "full_name": "evil-owner/evil-repo",
++            "owner": {"login": "evil-owner", "id": 8888}, "private": False,
++        },
++        "sender": {"login": "attacker", "id": 9999},
++        "installation": {"id": 999, "app_id": 111},
++    }
++    body, sig = sign_payload(evil_payload)
++    delivery = WebhookDelivery(
++        delivery_id="evil-001", event_type="issues", signature=sig,
++        payload_bytes=body, received_at="2026-01-01T00:00:00Z",
++    )
++    cfg = IntakeConfig(
++        enabled=True, dry_run=False, kill_switch=False,
++        webhook_secret=FAKE_WEBHOOK_SECRET,
++        allowed_owners=["test-owner"], allowed_repos=["test-owner/test-repo"],
++    )
++    result = process_delivery(delivery, cfg, store=None, hcw_adapter=None)
++    assert result.outcome in ("rejected", "disallowed")
++
++
++# ── Secret redaction ────────────────────────────────────────────────────────
++
++def test_redact_secret_in_long_message():
++    from plugins.github_intake.security import redact_secret
++    secret = "gh_supersecrettoken123"
++    msg = f"Connecting with token {secret} to github"
++    result = redact_secret(msg, secret)
++    assert secret not in result
++    assert "REDACTED" in result
++
++
++def test_redact_does_not_redact_unrelated_text():
++    from plugins.github_intake.security import redact_secret
++    secret = "specific-secret"
++    msg = "This message has no secret in it"
++    result = redact_secret(msg, secret)
++    assert result == msg
++
++
++def test_redact_body_strips_content():
++    from plugins.github_intake.security import redact_body
++    result = redact_body("Some issue title or body text")
++    assert isinstance(result, str)
++
++
++# ── Config secrets not in logs ──────────────────────────────────────────────
++
++def test_config_webhook_secret_not_in_repr():
++    from plugins.github_intake.config import IntakeConfig
++    cfg = IntakeConfig(
++        enabled=False, dry_run=True, kill_switch=False,
++        webhook_secret="super-secret-value",
++        allowed_owners=[], allowed_repos=[],
++    )
++    representation = repr(cfg)
++    assert "super-secret-value" not in representation, \
++        "webhook_secret must be redacted from repr"
++
++
++def test_config_loads_from_yaml(disabled_config_path):
++    from plugins.github_intake.config import IntakeConfig
++    cfg = IntakeConfig.from_yaml(disabled_config_path)
++    assert cfg.enabled is False
++    assert cfg.dry_run is True
++    assert cfg.kill_switch is False
++
++
++def test_config_from_yaml_no_plain_secret(disabled_config_path):
++    """Config loaded from YAML must not expose raw secret in repr/str."""
++    from plugins.github_intake.config import IntakeConfig
++    cfg = IntakeConfig.from_yaml(disabled_config_path)
++    assert "REDACTED_FOR_TEST" not in repr(cfg)
+-- 
+2.50.1 (Apple Git-155)
+

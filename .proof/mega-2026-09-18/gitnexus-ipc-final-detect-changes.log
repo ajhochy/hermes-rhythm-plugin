@@ -1,0 +1,24 @@
+Changes: 21 files, 69 symbols
+Affected processes: 1
+Risk level: medium
+
+Changed symbols:
+  Symbol RouteTilePane → apps/desktop/src/app/chat/route-tile.tsx
+  Symbol getGateway → apps/desktop/src/app/contrib/surfaces.test.tsx
+  Symbol dispose → apps/desktop/src/app/contrib/surfaces.test.tsx
+  Symbol render → apps/desktop/src/app/contrib/surfaces.test.tsx
+  Symbol ChatRoutesSurface → apps/desktop/src/app/contrib/surfaces.tsx
+  Symbol ChatRoutesSurface → apps/desktop/src/app/contrib/surfaces.tsx
+  Symbol render → apps/desktop/src/app/routes.test.ts
+  Symbol contributedRoutes → apps/desktop/src/app/routes.ts
+  Symbol AgentPluginsSection → apps/desktop/src/app/settings/plugins-settings.tsx
+  Symbol PluginsSettings → apps/desktop/src/app/settings/plugins-settings.tsx
+  Symbol rest → apps/desktop/src/contrib/rhythm-workspace-ui.test.tsx
+  Symbol dropOriginRecord → apps/desktop/src/contrib/runtime-loader.ts
+  Symbol scanDiskPlugins → apps/desktop/src/contrib/runtime-loader.ts
+  Symbol loadAgentPlugins → apps/desktop/src/store/agent-plugins.ts
+  Symbol reconcile_removed_plugins → hermes_cli/plugins.py
+... and 54 more
+
+Affected execution flows:
+  • ContribWiring → GetArea (5 steps) — changed: contributedRoutes

@@ -51,14 +51,17 @@ function isPinnedCommit(commit) {
 }
 
 type ExecGitFn = (args: string[], cwd: string) => string
-type ResolveHeadFn = (activeRoot: string | null | undefined) => string | null
+type ResolveHeadFn = (activeRoot: string | null | undefined, opts?: { env?: NodeJS.ProcessEnv }) => string | null
 
 /**
  * Read HEAD from a managed checkout. Used after bootstrap so fallback
  * (all-zero) install stamps still produce a marker that
  * isBootstrapComplete() accepts (pinnedCommit length >= 7).
  */
-function resolveCheckoutHead(activeRoot: string | null | undefined, opts: { execGit?: ExecGitFn } = {}): string | null {
+function resolveCheckoutHead(
+  activeRoot: string | null | undefined,
+  opts: { execGit?: ExecGitFn; env?: NodeJS.ProcessEnv } = {}
+): string | null {
   if (!activeRoot) {
     return null
   }
@@ -69,6 +72,7 @@ function resolveCheckoutHead(activeRoot: string | null | undefined, opts: { exec
       execFileSync('git', args, {
         cwd,
         encoding: 'utf8',
+        env: opts.env ?? process.env,
         stdio: ['ignore', 'pipe', 'ignore'],
         timeout: 15_000,
         ...hiddenWindowsChildOptions()
@@ -107,7 +111,7 @@ function readExistingPinnedCommit(activeRoot: string | null | undefined): string
 function resolveMarkerPinnedCommit(
   installStamp: { commit?: string; branch?: string | null } | null | undefined,
   activeRoot: string | null | undefined,
-  opts: { resolveHead?: ResolveHeadFn } = {}
+  opts: { resolveHead?: ResolveHeadFn; env?: NodeJS.ProcessEnv } = {}
 ): string | null {
   const resolveHead = opts.resolveHead || resolveCheckoutHead
 
@@ -115,7 +119,7 @@ function resolveMarkerPinnedCommit(
     return installStamp.commit
   }
 
-  const head = resolveHead(activeRoot)
+  const head = resolveHead(activeRoot, { env: opts.env })
 
   if (head) {
     return head
@@ -420,9 +424,9 @@ function powershellUnderRoot(root) {
 // install.ps1 ever runs — the installer stalls at "0 of 0 steps". Resolve by
 // absolute path first, then fall back to PATH (powershell 5.1, then pwsh 7),
 // then a bare name as a last resort.
-function resolveWindowsPowerShell() {
+function resolveWindowsPowerShell(baseEnv: NodeJS.ProcessEnv = process.env) {
   for (const v of ['SystemRoot', 'windir']) {
-    const root = process.env[v]
+    const root = baseEnv[v]
 
     if (root) {
       const candidate = powershellUnderRoot(root)
@@ -437,7 +441,7 @@ function resolveWindowsPowerShell() {
     }
   }
 
-  const pathDirs = (process.env.PATH || process.env.Path || '').split(path.delimiter).filter(Boolean)
+  const pathDirs = (baseEnv.PATH || baseEnv.Path || '').split(path.delimiter).filter(Boolean)
 
   for (const exe of ['powershell.exe', 'pwsh.exe']) {
     for (const dir of pathDirs) {
@@ -456,9 +460,10 @@ function resolveWindowsPowerShell() {
   return 'powershell.exe'
 }
 
-function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, hermesHome }: any = {}) {
+function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, hermesHome, baseEnv }: any = {}) {
   return new Promise<any>((resolve, reject) => {
-    const ps = process.platform === 'win32' ? resolveWindowsPowerShell() : 'pwsh'
+    const childBaseEnv = baseEnv ?? process.env
+    const ps = process.platform === 'win32' ? resolveWindowsPowerShell(childBaseEnv) : 'pwsh'
     const fullArgs = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, ...args]
 
     const child = spawn(
@@ -467,10 +472,10 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
       hiddenWindowsChildOptions({
         stdio: ['ignore', 'pipe', 'pipe'],
         env: {
-          ...process.env,
+          ...childBaseEnv,
           // Pass HERMES_HOME through so install.ps1 respects the caller's
           // choice rather than re-computing the default.
-          HERMES_HOME: hermesHome || process.env.HERMES_HOME || ''
+          HERMES_HOME: hermesHome || childBaseEnv.HERMES_HOME || ''
         }
       })
     )
@@ -560,13 +565,14 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
   })
 }
 
-function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome }: any = {}) {
+function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome, baseEnv }: any = {}) {
   return new Promise<any>((resolve, reject) => {
+    const childBaseEnv = baseEnv ?? process.env
     const child = spawn('bash', [scriptPath, ...args], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
-        ...process.env,
-        HERMES_HOME: hermesHome || process.env.HERMES_HOME || ''
+        ...childBaseEnv,
+        HERMES_HOME: hermesHome || childBaseEnv.HERMES_HOME || ''
       }
     })
 
@@ -690,7 +696,16 @@ function buildPosixPinArgs({ installStamp, activeRoot, hermesHome, pinCommit = t
   return args
 }
 
-async function fetchManifest({ scriptPath, installerKind, emit, hermesHome, activeRoot, installStamp, pinCommit }) {
+async function fetchManifest({
+  scriptPath,
+  installerKind,
+  emit,
+  hermesHome,
+  activeRoot,
+  installStamp,
+  pinCommit,
+  baseEnv
+}) {
   const isPosix = installerKind === 'posix'
 
   const args = isPosix
@@ -700,7 +715,8 @@ async function fetchManifest({ scriptPath, installerKind, emit, hermesHome, acti
   const result = await (isPosix ? spawnBash : spawnPowerShell)(scriptPath, args, {
     emit,
     stageName: '__manifest__',
-    hermesHome
+    hermesHome,
+    baseEnv
   })
 
   if (result.code !== 0) {
@@ -761,7 +777,8 @@ async function runStage({
   activeRoot,
   abortSignal,
   installStamp,
-  pinCommit
+  pinCommit,
+  baseEnv
 }) {
   const startedAt = Date.now()
   emit({ type: 'stage', name: stage.name, state: 'running' })
@@ -782,7 +799,8 @@ async function runStage({
     emit,
     stageName: stage.name,
     abortSignal,
-    hermesHome
+    hermesHome,
+    baseEnv
   })
 
   const durationMs = Date.now() - startedAt
@@ -865,6 +883,7 @@ async function runBootstrap(opts) {
     logRoot,
     onEvent,
     abortSignal,
+    baseEnv = process.env,
     writeMarker // callback to write the bootstrap-complete marker; main.ts provides
   } = opts
 
@@ -938,7 +957,8 @@ async function runBootstrap(opts) {
       hermesHome,
       activeRoot,
       installStamp,
-      pinCommit
+      pinCommit,
+      baseEnv
     })
 
     emit({
@@ -967,7 +987,8 @@ async function runBootstrap(opts) {
         activeRoot,
         abortSignal,
         installStamp,
-        pinCommit
+        pinCommit,
+        baseEnv
       })
 
       if (ev.state === 'failed') {
@@ -981,7 +1002,7 @@ async function runBootstrap(opts) {
     // not real pins -- resolve HEAD from the checkout we just installed so
     // isBootstrapComplete() (pinnedCommit.length >= 7) accepts the marker
     // instead of re-running bootstrap on every launch (#50823 review).
-    const pinnedCommit = resolveMarkerPinnedCommit(installStamp, activeRoot)
+    const pinnedCommit = resolveMarkerPinnedCommit(installStamp, activeRoot, { env: baseEnv })
 
     if (!pinnedCommit) {
       emit({

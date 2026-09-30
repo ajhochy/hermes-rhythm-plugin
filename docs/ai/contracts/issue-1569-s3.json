@@ -1,0 +1,50 @@
+{
+  "issue": 1569,
+  "generated": "2026-09-24",
+  "criteria": [
+    {
+      "criterion_id": "issue-1569-c1",
+      "text": "Rhythm-owned default-profile Hermes spawns receive a controlled clean base environment (PATH, HOME, temporary-directory variables, and locale), host-owned Hermes/session variables override callback values, and only the four approved provider API-key names plus the separately gated memory capability endpoint may be added. Arbitrary ambient secrets, loader/proxy variables, approval material, relay tokens, and unapproved callback names are absent.",
+      "mode": "unit",
+      "test_file": "apps/desktop/electron/embedded-host-backend-env.test.ts",
+      "test_id": "issue-1569-s3-c1: owned spawn uses a clean controlled environment and only filtered broker keys",
+      "status": "pass",
+      "reason": "Host boundary tests with synthetic spawned-child streams; actual owned Hermes process and Rhythm consumer not yet qualified."
+    },
+    {
+      "criterion_id": "issue-1569-c2",
+      "text": "The optional backendEnv callback supports synchronous or asynchronous env maps; throw or a timeout of at most two seconds fails closed, with no injected extras, and does not prevent the backend from starting.",
+      "mode": "unit",
+      "test_file": "apps/desktop/electron/embedded-host-backend-env.test.ts",
+      "test_id": "issue-1569-s3-c2: throwing or slow broker fails closed at the two-second deadline",
+      "status": "pass",
+      "reason": "Host boundary tests with synthetic spawned-child streams; actual owned Hermes process and Rhythm consumer not yet qualified."
+    },
+    {
+      "criterion_id": "issue-1569-c3",
+      "text": "The broker callback is called only for a Rhythm-owned default-profile spawn; borrowed registered or discovered runtimes and owned non-default profiles never invoke it.",
+      "mode": "unit",
+      "test_file": "apps/desktop/electron/embedded-host-backend-env.test.ts",
+      "test_id": "issue-1569-s3-c3: borrowed and non-default runtimes never call the broker",
+      "status": "pass",
+      "reason": "Host boundary tests with synthetic spawned-child streams; actual owned Hermes process and Rhythm consumer not yet qualified."
+    },
+    {
+      "criterion_id": "issue-1569-c4",
+      "text": "Every granted value is redacted from child stdout and stderr before host logging.",
+      "mode": "unit",
+      "test_file": "apps/desktop/electron/embedded-host-backend-env.test.ts",
+      "test_id": "issue-1569-s3-c4: injected values are redacted from child output in host logs",
+      "status": "pass",
+      "reason": "Host boundary tests with synthetic spawned-child streams; actual owned Hermes process and Rhythm consumer not yet qualified."
+    }
+  ],
+  "stack": "typescript",
+  "not_tested": [
+    "real-owned-Hermes-process",
+    "Rhythm-main-grant-lifecycle",
+    "packaged-runtime"
+  ],
+  "repository": "ajhochy/Rhythm",
+  "slice": "S3 host callback; real child and grant lifecycle pending"
+}

@@ -1,0 +1,24 @@
+{
+  "contract": "rhythm-permissions",
+  "version": 1,
+  "description": "Approval and write-capability invariants for the Rhythm campaign's ACP surface and its Ask Hermes entry point.",
+  "acp": {
+    "default_approval_mode": "interactive",
+    "auto_persistent_approval_allowed": false,
+    "write_capability_requires_policy": true,
+    "notes": "ACP must never auto-select a persistent/always-allow outcome; the option is only ever chosen by an explicit user response, and is omitted from the option list entirely when policy denies it. Write capability is advertised only when the resolved edit-approval policy allows it, never unconditionally."
+  },
+  "ask_hermes": {
+    "auto_send_allowed": false,
+    "opens_editable_draft": true,
+    "notes": "Ask Hermes opens an editable draft in the composer; it never auto-sends on the user's behalf."
+  },
+  "write_readiness_gate": {
+    "required_before": [
+      "task_completion",
+      "task_rescheduling"
+    ],
+    "satisfied": true,
+    "notes": "M4b permits only confirmed completion/rescheduling through the server-held bearer authority; every other task write remains forbidden."
+  }
+}

@@ -1,0 +1,131 @@
+▶ skipping venv without pytest: /Users/ajhochhalter/Documents/hermes-rhythm-plugin/.venv
+▶ running per-file parallel test suite via run_tests_parallel.py
+  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)
+▶ pre-compiling bytecode cache
+▶ launching test runner
+Discovered 1 test files (~5 tests) under ['tests/plugins/rhythm/test_rhythm_m10_cutover.py']; running with -j 1
+[100.0% |     5/~5 | ✓4 | ✗1] ✗ tests/plugins/rhythm/test_rhythm_m10_cutover.py (4✓ 1✗, 11.9s)
+
+  ╔╍ Failed: tests/plugins/rhythm/test_rhythm_m10_cutover.py ╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍
+  ║             responsive = row.get("responsive_a11y")
+  ║             if not isinstance(responsive, dict) or responsive.get("result") != "pass" or responsive.get("test") != _MOUNTED_DESTINATION_EVIDENCE["test"]:
+  ║                 raise CutoverError("module is missing mounted responsive/a11y evidence")
+  ║             failure = row.get("failure_state")
+  ║             if not isinstance(failure, dict) or failure.get("result") != "pass" or failure.get("test") != _MOUNTED_DESTINATION_EVIDENCE["test"]:
+  ║                 raise CutoverError("module is missing mounted failure-state evidence")
+  ║             allowed = row.get("allowed_write_confirmation")
+  ║             if allowed is not None:
+  ║                 if allowed.get("operation") not in {entry["operation"] for entry in _ALLOWED_WRITE_CONFIRMATIONS.values()} or allowed.get("evidence", {}).get("result") != "pass":
+  ║                     raise CutoverError("unapproved or unexecuted write confirmation in ledger")
+  ║         if ledger.get("native_tools", {}).get("exercised") != _NATIVE_TOOLS:
+  ║             raise CutoverError("ledger native tools are not exact")
+  ║         if ledger.get("policy_disabled_actions") != list(POLICY_DISABLED_ACTIONS):
+  ║             raise CutoverError("policy-disabled actions are incomplete")
+  ║         if ledger.get("policy_disabled_proof") != "absent_from_adapter_and_native_tool_surface":
+  ║             raise CutoverError("policy-disabled proof is missing")
+  ║         profile = ledger.get("safety_checks", {}).get("profile_switch_generation_invalidation")
+  ║         if profile != _PROFILE_SWITCH_EVIDENCE:
+  ║             raise CutoverError("profile-switch evidence is not the executed mounted regression")
+  ║         if _has_secret(ledger):
+  ║             raise CutoverError("credential-shaped value found in cutover ledger")
+  ║         performance = ledger.get("safety_checks", {}).get("performance", {})
+  ║         if performance.get("elapsed_ms", performance.get("budget_ms", 0) + 1) > performance.get("budget_ms", 0):
+  ║ >           raise CutoverError("performance budget exceeded")
+  ║ E           plugins.rhythm.packaging.cutover.CutoverError: performance budget exceeded
+  ║ 
+  ║ plugins/rhythm/packaging/cutover.py:179: CutoverError
+  ║ =========================== short test summary info ============================
+  ║ FAILED tests/plugins/rhythm/test_rhythm_m10_cutover.py::test_issue_14_c1_final_fixture_cutover_exercises_every_approved_destination_and_only_three_tools
+  ║ ========================= 1 failed, 4 passed in 11.16s =========================
+  ║
+  ║  Repro: python -m pytest tests/plugins/rhythm/test_rhythm_m10_cutover.py
+  ╚╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍
+
+
+=== Summary: 1 files, 4 tests passed, 1 failed (100% complete) in 12.0s (1 workers) ===
+  Durations cached to test_durations.json (1 files)
+
+=== Per-file subprocess time distribution ===
+  Files:   1
+  Total subprocess CPU-wall: 11.9s  (runner wall: 12.0s, parallelism: 1x)
+  P50: 11.95s  P90: 11.95s  P95: 11.95s  P99: 11.95s  Max: 11.95s
+  <1s: 0 files (0%)  <2s: 0 files (0%)
+  Top 10 slowest:
+     11.95s  tests/plugins/rhythm/test_rhythm_m10_cutover.py
+
+=== Failure output ===
+
+--- tests/plugins/rhythm/test_rhythm_m10_cutover.py ---
+============================= test session starts ==============================
+platform darwin -- Python 3.11.15, pytest-9.1.1, pluggy-1.6.0
+rootdir: /Users/ajhochhalter/Documents/hermes-rhythm-plugin
+configfile: pyproject.toml
+plugins: anyio-4.12.1, asyncio-1.3.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 5 items
+
+tests/plugins/rhythm/test_rhythm_m10_cutover.py F....                    [100%]
+
+=================================== FAILURES ===================================
+_ test_issue_14_c1_final_fixture_cutover_exercises_every_approved_destination_and_only_three_tools _
+
+tmp_path = PosixPath('/private/tmp/pytest-of-ajhochhalter/pytest-90/test_issue_14_c1_final_fixture0')
+
+    def test_issue_14_c1_final_fixture_cutover_exercises_every_approved_destination_and_only_three_tools(tmp_path):
+        """Regression: a final dogfood report claims a screen/tool that the fixture cycle did not execute."""
+>       ledger = run_fixture_cutover(REPO_ROOT, tmp_path / "hermes-home" / "profiles" / "m10")
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/plugins/rhythm/test_rhythm_m10_cutover.py:24: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+plugins/rhythm/packaging/cutover.py:254: in run_fixture_cutover
+    validate_cutover_ledger(ledger)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+ledger = {'schema': 1, 'issue': 14, 'evidence_mode': 'sanitized_canonical_fixture_transport', 'external_credentialed_live_read': 'pending_manual', ...}
+
+    def validate_cutover_ledger(ledger: dict[str, Any]) -> None:
+        """Validate the committed/generated ledger without contacting any service."""
+        if ledger.get("evidence_mode") != "sanitized_canonical_fixture_transport":
+            raise CutoverError("ledger must identify sanitized canonical fixture transport")
+        modules = ledger.get("modules")
+        if not isinstance(modules, list) or [row.get("module") for row in modules] != list(APPROVED_DESTINATIONS):
+            raise CutoverError("ledger must contain every approved destination in canonical order")
+        for row in modules:
+            if not row.get("fixture"):
+                raise CutoverError("module is missing fixture evidence")
+            if not row.get("canonical_reads"):
+                raise CutoverError("module is missing canonical read evidence")
+            responsive = row.get("responsive_a11y")
+            if not isinstance(responsive, dict) or responsive.get("result") != "pass" or responsive.get("test") != _MOUNTED_DESTINATION_EVIDENCE["test"]:
+                raise CutoverError("module is missing mounted responsive/a11y evidence")
+            failure = row.get("failure_state")
+            if not isinstance(failure, dict) or failure.get("result") != "pass" or failure.get("test") != _MOUNTED_DESTINATION_EVIDENCE["test"]:
+                raise CutoverError("module is missing mounted failure-state evidence")
+            allowed = row.get("allowed_write_confirmation")
+            if allowed is not None:
+                if allowed.get("operation") not in {entry["operation"] for entry in _ALLOWED_WRITE_CONFIRMATIONS.values()} or allowed.get("evidence", {}).get("result") != "pass":
+                    raise CutoverError("unapproved or unexecuted write confirmation in ledger")
+        if ledger.get("native_tools", {}).get("exercised") != _NATIVE_TOOLS:
+            raise CutoverError("ledger native tools are not exact")
+        if ledger.get("policy_disabled_actions") != list(POLICY_DISABLED_ACTIONS):
+            raise CutoverError("policy-disabled actions are incomplete")
+        if ledger.get("policy_disabled_proof") != "absent_from_adapter_and_native_tool_surface":
+            raise CutoverError("policy-disabled proof is missing")
+        profile = ledger.get("safety_checks", {}).get("profile_switch_generation_invalidation")
+        if profile != _PROFILE_SWITCH_EVIDENCE:
+            raise CutoverError("profile-switch evidence is not the executed mounted regression")
+        if _has_secret(ledger):
+            raise CutoverError("credential-shaped value found in cutover ledger")
+        performance = ledger.get("safety_checks", {}).get("performance", {})
+        if performance.get("elapsed_ms", performance.get("budget_ms", 0) + 1) > performance.get("budget_ms", 0):
+>           raise CutoverError("performance budget exceeded")
+E           plugins.rhythm.packaging.cutover.CutoverError: performance budget exceeded
+
+plugins/rhythm/packaging/cutover.py:179: CutoverError
+=========================== short test summary info ============================
+FAILED tests/plugins/rhythm/test_rhythm_m10_cutover.py::test_issue_14_c1_final_fixture_cutover_exercises_every_approved_destination_and_only_three_tools
+========================= 1 failed, 4 passed in 11.16s =========================
+
+=== 1 file with test failures (1 test failed) ===
+  tests/plugins/rhythm/test_rhythm_m10_cutover.py  (1 test failed)

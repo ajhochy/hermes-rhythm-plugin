@@ -29,6 +29,12 @@ def test_scrub_on_strips_dynamic_internal_secret(monkeypatch):
     assert "GATEWAY_RELAY_FOO_TOKEN" not in env
 
 
+def test_scrub_on_strips_required_host_plugin_authority(monkeypatch):
+    monkeypatch.setenv("HERMES_HOST_REQUIRED_PLUGINS", "rhythm")
+    env = build_subprocess_env()
+    assert "HERMES_HOST_REQUIRED_PLUGINS" not in env
+
+
 def test_scrub_on_forwards_extra_like_sanitize_extra_env(monkeypatch):
     env = build_subprocess_env(extra={"MY_HARMLESS_VAR": "1"})
     assert env.get("MY_HARMLESS_VAR") == "1"

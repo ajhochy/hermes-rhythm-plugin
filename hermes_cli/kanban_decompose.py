@@ -289,6 +289,18 @@ def decompose_task(
         return DecomposeOutcome(
             task_id, False, f"task is not in triage (status={task.status!r})"
         )
+    # Only ORIGINAL requests may be decomposed. A workflow stage, a
+    # decomposer child, or anything parked in triage by the block-loop
+    # breaker is fan-out fuel, not a new problem — decomposing those is what
+    # turned one blocked HCW stage into a recursive workflow graph. Structured
+    # provenance is the authority; titles are never parsed.
+    with kb.connect_closing() as conn:
+        eligible, why = kb.decompose_eligibility(conn, task_id)
+    if not eligible:
+        logger.info("decompose: refusing %s (%s)", task_id, why)
+        return DecomposeOutcome(
+            task_id, False, f"not eligible for decomposition ({why})"
+        )
 
     cfg = _load_config()
     orchestrator = _resolve_orchestrator_profile(cfg)
@@ -457,7 +469,11 @@ def decompose_task(
 
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
-    """Return task ids currently in the triage column."""
+    """Return task ids currently in the triage column (UNFILTERED).
+
+    This is the raw column view for display. Do NOT feed it to the
+    auto-decomposer — use :func:`list_decomposable_ids`.
+    """
     with kb.connect_closing() as conn:
         rows = kb.list_tasks(
             conn,
@@ -466,3 +482,25 @@ def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
             limit=1000,
         )
     return [row.id for row in rows]
+
+
+def list_decomposable_ids(*, tenant: Optional[str] = None) -> list[str]:
+    """Triage ids that ``decompose_eligibility`` actually permits.
+
+    The auto-decompose tick consumes THIS list. Feeding it the raw triage
+    column is the incident's root cause: machine-generated workflow stages
+    and block-looped cards sit in triage too, and decomposing them created
+    recursive workflow graphs.
+    """
+    with kb.connect_closing() as conn:
+        rows = kb.list_tasks(conn, status="triage", tenant=tenant, limit=1000)
+        out = []
+        for row in rows:
+            eligible, why = kb.decompose_eligibility(conn, row.id)
+            if eligible:
+                out.append(row.id)
+            else:
+                logger.debug(
+                    "auto-decompose: skipping %s (%s)", row.id, why,
+                )
+    return out

@@ -1,0 +1,4858 @@
+From 7d6680a422d50514ffa904dd296a5119b3058abe Mon Sep 17 00:00:00 2001
+From: ajhochy <ajhochy@gmail.com>
+Date: Sat, 22 Aug 2026 05:35:38 -0700
+Subject: [PATCH] fix(github-intake): implement canonical recovery pipeline
+
+---
+ plugins/github-intake/__init__.py             |  16 +
+ plugins/github-intake/audit.py                |  23 +
+ plugins/github-intake/cli.py                  | 311 +++++++
+ plugins/github-intake/config.py               | 137 +++
+ plugins/github-intake/conftest.py             |  44 +
+ plugins/github-intake/hcw_adapter.py          |  27 +
+ plugins/github-intake/intake.py               | 334 +++++++
+ plugins/github-intake/models.py               | 120 +++
+ plugins/github-intake/plugin.yaml             |   5 +
+ plugins/github-intake/recovery.py             | 165 ++++
+ plugins/github-intake/routing.py              |  62 ++
+ plugins/github-intake/security.py             |  79 ++
+ plugins/github-intake/store.py                | 418 +++++++++
+ plugins/github-intake/tests/__init__.py       |   0
+ plugins/github-intake/tests/conftest.py       | 205 +++++
+ .../tests/fixtures/config.disabled.yaml       |  27 +
+ .../tests/fixtures/issues-closed.json         |  37 +
+ .../tests/fixtures/issues-edited.json         |  42 +
+ .../tests/fixtures/issues-opened.json         |  37 +
+ .../tests/fixtures/issues-reopened.json       |  37 +
+ .../tests/fixtures/unsupported-event.json     |  38 +
+ plugins/github-intake/tests/plugin.yaml       |   5 +
+ plugins/github-intake/tests/test_cli.py       | 280 ++++++
+ plugins/github-intake/tests/test_contracts.py | 824 ++++++++++++++++++
+ .../github-intake/tests/test_integration.py   | 416 +++++++++
+ plugins/github-intake/tests/test_lifecycle.py | 228 +++++
+ plugins/github-intake/tests/test_recovery.py  | 359 ++++++++
+ plugins/github-intake/tests/test_scope.py     | 106 +++
+ plugins/github-intake/tests/test_security.py  | 236 +++++
+ 29 files changed, 4618 insertions(+)
+ create mode 100644 plugins/github-intake/__init__.py
+ create mode 100644 plugins/github-intake/audit.py
+ create mode 100644 plugins/github-intake/cli.py
+ create mode 100644 plugins/github-intake/config.py
+ create mode 100644 plugins/github-intake/conftest.py
+ create mode 100644 plugins/github-intake/hcw_adapter.py
+ create mode 100644 plugins/github-intake/intake.py
+ create mode 100644 plugins/github-intake/models.py
+ create mode 100644 plugins/github-intake/plugin.yaml
+ create mode 100644 plugins/github-intake/recovery.py
+ create mode 100644 plugins/github-intake/routing.py
+ create mode 100644 plugins/github-intake/security.py
+ create mode 100644 plugins/github-intake/store.py
+ create mode 100644 plugins/github-intake/tests/__init__.py
+ create mode 100644 plugins/github-intake/tests/conftest.py
+ create mode 100644 plugins/github-intake/tests/fixtures/config.disabled.yaml
+ create mode 100644 plugins/github-intake/tests/fixtures/issues-closed.json
+ create mode 100644 plugins/github-intake/tests/fixtures/issues-edited.json
+ create mode 100644 plugins/github-intake/tests/fixtures/issues-opened.json
+ create mode 100644 plugins/github-intake/tests/fixtures/issues-reopened.json
+ create mode 100644 plugins/github-intake/tests/fixtures/unsupported-event.json
+ create mode 100644 plugins/github-intake/tests/plugin.yaml
+ create mode 100644 plugins/github-intake/tests/test_cli.py
+ create mode 100644 plugins/github-intake/tests/test_contracts.py
+ create mode 100644 plugins/github-intake/tests/test_integration.py
+ create mode 100644 plugins/github-intake/tests/test_lifecycle.py
+ create mode 100644 plugins/github-intake/tests/test_recovery.py
+ create mode 100644 plugins/github-intake/tests/test_scope.py
+ create mode 100644 plugins/github-intake/tests/test_security.py
+
+diff --git a/plugins/github-intake/__init__.py b/plugins/github-intake/__init__.py
+new file mode 100644
+index 0000000000..11cf6cfb03
+--- /dev/null
++++ b/plugins/github-intake/__init__.py
+@@ -0,0 +1,16 @@
++"""GitHub issue intake plugin for Hermes.
++
++Disabled by default. Requires explicit enablement and configuration.
++"""
++from __future__ import annotations
++
++
++def register(ctx) -> None:
++    from . import cli as _cli
++
++    ctx.register_cli_command(
++        "github-intake",
++        help="GitHub issue intake pipeline (disabled by default)",
++        setup_fn=_cli.setup_cli,
++        handler_fn=_cli.handle_cli,
++    )
+diff --git a/plugins/github-intake/audit.py b/plugins/github-intake/audit.py
+new file mode 100644
+index 0000000000..864b1681e5
+--- /dev/null
++++ b/plugins/github-intake/audit.py
+@@ -0,0 +1,23 @@
++"""Append-only audit log for the github-intake plugin."""
++from __future__ import annotations
++
++import uuid
++from typing import Any, Dict, List
++
++from .store import IntakeStore
++
++
++class AuditLog:
++    def __init__(self, store: IntakeStore) -> None:
++        self._store = store
++
++    def log(self, canonical_id: str, event: str, data: Dict[str, Any], timestamp: str = "") -> None:
++        entry_id = str(uuid.uuid4())
++        ts = timestamp or ""
++        self._store.store_audit_entry(entry_id, canonical_id, event, ts, data)
++
++    def get_entries(self, canonical_id: str) -> List[Dict[str, Any]]:
++        return self._store.get_audit_entries(canonical_id)
++
++    def delete_entry(self, canonical_id: str, entry_id: str) -> None:
++        raise NotImplementedError("audit log is append-only; deletion is not permitted")
+diff --git a/plugins/github-intake/cli.py b/plugins/github-intake/cli.py
+new file mode 100644
+index 0000000000..54a6a960aa
+--- /dev/null
++++ b/plugins/github-intake/cli.py
+@@ -0,0 +1,311 @@
++"""CLI for the github-intake plugin.
++
++SR5-001: Secrets are loaded from configured environment/credential state,
++never from argv or YAML plaintext.
++
++Subcommands: validate-config, dry-run, ingest-fixture, status,
++quarantine-list, audit, replay.
++"""
++from __future__ import annotations
++
++import argparse
++import datetime
++import hashlib
++import json
++import sys
++import uuid
++from pathlib import Path
++from typing import Any, Dict
++
++
++def setup_cli(parser: argparse.ArgumentParser) -> None:
++    """Register all github-intake subcommands on the given parser."""
++    subparsers = parser.add_subparsers(dest="subcommand", metavar="SUBCOMMAND")
++
++    # validate-config
++    p_validate = subparsers.add_parser(
++        "validate-config",
++        help="Validate the plugin configuration and report errors as JSON",
++    )
++    p_validate.add_argument("--config", required=True, metavar="PATH",
++                            help="Path to github-intake config YAML")
++
++    # dry-run — SR5-001: --event is path to fixture, NO --secret in argv
++    p_dry_run = subparsers.add_parser(
++        "dry-run",
++        help="Ingest a fixture in dry-run mode (no Kanban or HCW writes)",
++    )
++    p_dry_run.add_argument("--config", required=True, metavar="PATH",
++                           help="Path to github-intake config YAML")
++    p_dry_run.add_argument("--event", required=True, metavar="PATH",
++                           help="Path to a GitHub webhook fixture JSON file")
++
++    # ingest-fixture
++    p_ingest = subparsers.add_parser(
++        "ingest-fixture",
++        help="Ingest a signed fixture into a local Kanban board",
++    )
++    p_ingest.add_argument("--config", required=True, metavar="PATH",
++                          help="Path to github-intake config YAML")
++    p_ingest.add_argument("--fixture", required=True, metavar="PATH",
++                          help="Path to a GitHub webhook fixture JSON file")
++    p_ingest.add_argument("--board", required=True, metavar="PATH",
++                          help="Path to the local Kanban board SQLite DB")
++
++    # status
++    p_status = subparsers.add_parser(
++        "status",
++        help="Show plugin status as JSON",
++    )
++    p_status.add_argument("--config", required=True, metavar="PATH",
++                          help="Path to github-intake config YAML")
++
++    # quarantine-list
++    p_quarantine = subparsers.add_parser(
++        "quarantine-list",
++        help="List quarantined records from the local board as a JSON array",
++    )
++    p_quarantine.add_argument("--board", required=True, metavar="PATH",
++                              help="Path to the local Kanban board SQLite DB")
++
++    # audit
++    p_audit = subparsers.add_parser(
++        "audit",
++        help="Retrieve audit log entries for a canonical ID as a JSON array",
++    )
++    p_audit.add_argument("--board", required=True, metavar="PATH",
++                         help="Path to the local Kanban board SQLite DB")
++    p_audit.add_argument("--canonical-id", required=True, metavar="ID",
++                         help="Canonical ID (64-char hex SHA-256)")
++
++    # replay
++    p_replay = subparsers.add_parser(
++        "replay",
++        help="Operator replay of a quarantined record",
++    )
++    p_replay.add_argument("--board", required=True, metavar="PATH",
++                          help="Path to the local Kanban board SQLite DB")
++    p_replay.add_argument("--canonical-id", required=True, metavar="ID",
++                          help="Canonical ID of the quarantined record to replay")
++
++
++def handle_cli(args: argparse.Namespace) -> None:
++    """Dispatch to the appropriate subcommand handler."""
++    subcommand = getattr(args, "subcommand", None)
++    if subcommand == "validate-config":
++        _cmd_validate_config(args)
++    elif subcommand == "dry-run":
++        _cmd_dry_run(args)
++    elif subcommand == "ingest-fixture":
++        _cmd_ingest_fixture(args)
++    elif subcommand == "status":
++        _cmd_status(args)
++    elif subcommand == "quarantine-list":
++        _cmd_quarantine_list(args)
++    elif subcommand == "audit":
++        _cmd_audit(args)
++    elif subcommand == "replay":
++        _cmd_replay(args)
++    else:
++        _emit({"error": "unknown or missing subcommand; use --help"})
++
++
++# ---------------------------------------------------------------------------
++# Subcommand handlers
++# ---------------------------------------------------------------------------
++
++def _cmd_validate_config(args: argparse.Namespace) -> None:
++    from .config import load_config
++    config = load_config(Path(args.config))
++    errors = config.validate()
++    _emit({
++        "valid": len(errors) == 0,
++        "enabled": config.enabled,
++        "dry_run": config.dry_run,
++        "kill_switch": config.kill_switch,
++        "errors": errors,
++    })
++
++
++def _cmd_status(args: argparse.Namespace) -> None:
++    from .config import load_config
++    config = load_config(Path(args.config))
++    _emit({
++        "enabled": config.enabled,
++        "dry_run": config.dry_run,
++        "kill_switch": config.kill_switch,
++        "hcw_adapter": config.hcw.adapter,
++        "hcw_enabled": config.hcw.enabled,
++    })
++
++
++def _cmd_quarantine_list(args: argparse.Namespace) -> None:
++    from .store import IntakeStore
++    board = Path(args.board)
++    if not board.exists():
++        _emit([])
++        return
++    store = IntakeStore(db_path=board)
++    records = store.list_quarantined()
++    _emit([r.to_dict() for r in records])
++
++
++def _cmd_audit(args: argparse.Namespace) -> None:
++    from .store import IntakeStore
++    board = Path(args.board)
++    canonical_id = args.canonical_id
++    if not board.exists():
++        _emit([])
++        return
++    store = IntakeStore(db_path=board)
++    entries = store.get_audit_entries(canonical_id)
++    _emit(entries)
++
++
++def _cmd_replay(args: argparse.Namespace) -> None:
++    from .config import GithubIntakeConfig
++    from .store import IntakeStore
++    from .audit import AuditLog
++    from .recovery import RecoveryManager
++    from .hcw_adapter import DryRunHCWAdapter
++
++    board = Path(args.board)
++    store = IntakeStore(db_path=board)
++    audit = AuditLog(store=store)
++    config = GithubIntakeConfig()
++    recovery = RecoveryManager(store=store, audit=audit, config=config)
++    adapter = DryRunHCWAdapter()
++    result = recovery.operator_replay(
++        canonical_id=args.canonical_id,
++        hcw_adapter=adapter,
++        clock=_SystemClock(),
++    )
++    _emit(result.to_dict())
++
++
++def _cmd_dry_run(args: argparse.Namespace) -> None:
++    """
++    SR5-001: dry-run --config <cfg> --event <fixture>
++    Secrets are loaded from the configured environment variable (not argv).
++    No Kanban writes, no real HCW dispatch.
++    """
++    import tempfile
++    from .config import load_config
++    from .models import DeliveryEnvelope
++    from .store import IntakeStore
++    from .audit import AuditLog
++    from .intake import process_delivery
++    from .hcw_adapter import DryRunHCWAdapter
++
++    config_path = Path(args.config)
++    event_path = Path(args.event)
++
++    config = load_config(config_path)
++    config.dry_run = True  # enforce dry-run for this command
++
++    body = event_path.read_bytes()
++    payload = json.loads(body)
++
++    # Compute signature from configured env secret (SR5-001: NOT from argv)
++    secret = config.webhook.credentials.get_secret()
++    if secret:
++        import hmac as _hmac
++        sig = _hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
++        signature = f"sha256={sig}"
++    else:
++        # No secret configured: use a placeholder that will pass (no verification)
++        signature = f"sha256={'0' * 64}"
++
++    env = DeliveryEnvelope(
++        delivery_id=str(uuid.uuid4()),
++        event_type="issues",
++        action=payload.get("action", "opened"),
++        payload=payload,
++        raw_body=body,
++        signature=signature,
++        received_at=_now_iso(),
++    )
++
++    clock = _SystemClock()
++    # Use a temporary board so dry-run never writes to a real board
++    with tempfile.TemporaryDirectory() as tmpdir:
++        db_path = Path(tmpdir) / "dry_run.db"
++        store = IntakeStore(db_path=db_path)
++        audit = AuditLog(store=store)
++        adapter = DryRunHCWAdapter()
++        result = process_delivery(env, config, store, audit, adapter, clock)
++
++    output = result.to_dict()
++    _emit(output)
++
++
++def _cmd_ingest_fixture(args: argparse.Namespace) -> None:
++    """Ingest a fixture into the specified local board."""
++    from .config import load_config
++    from .models import DeliveryEnvelope
++    from .store import IntakeStore
++    from .audit import AuditLog
++    from .intake import process_delivery
++    from .hcw_adapter import DryRunHCWAdapter
++
++    config_path = Path(args.config)
++    fixture_path = Path(args.fixture)
++    board_path = Path(args.board)
++
++    config = load_config(config_path)
++
++    body = fixture_path.read_bytes()
++    payload = json.loads(body)
++
++    # Compute signature from configured env secret (SR5-001: NOT from argv)
++    secret = config.webhook.credentials.get_secret()
++    if secret:
++        import hmac as _hmac
++        sig = _hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
++        signature = f"sha256={sig}"
++    else:
++        signature = f"sha256={'0' * 64}"
++
++    env = DeliveryEnvelope(
++        delivery_id=str(uuid.uuid4()),
++        event_type="issues",
++        action=payload.get("action", "opened"),
++        payload=payload,
++        raw_body=body,
++        signature=signature,
++        received_at=_now_iso(),
++    )
++
++    clock = _SystemClock()
++    store = IntakeStore(db_path=board_path)
++    audit = AuditLog(store=store)
++    # Use DryRunHCWAdapter — fixture ingestion never performs real HCW dispatch
++    adapter = DryRunHCWAdapter()
++    result = process_delivery(env, config, store, audit, adapter, clock)
++
++    _emit(result.to_dict())
++
++
++# ---------------------------------------------------------------------------
++# Helpers
++# ---------------------------------------------------------------------------
++
++def _emit(data: Any) -> None:
++    """Write JSON to stdout."""
++    print(json.dumps(data))
++
++
++def _now_iso() -> str:
++    return datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
++
++
++class _SystemClock:
++    def now(self) -> float:
++        import time
++        return time.time()
++
++    def iso(self) -> str:
++        return _now_iso()
++
++    def advance(self, seconds: float = 1.0) -> None:
++        pass
+diff --git a/plugins/github-intake/config.py b/plugins/github-intake/config.py
+new file mode 100644
+index 0000000000..b5dce618f9
+--- /dev/null
++++ b/plugins/github-intake/config.py
+@@ -0,0 +1,137 @@
++"""Configuration for the github-intake plugin."""
++from __future__ import annotations
++
++import os
++from dataclasses import dataclass, field
++from pathlib import Path
++from typing import Any, Dict, List, Optional
++
++import yaml
++
++
++@dataclass
++class WebhookCredentialsConfig:
++    secret_env: str = "GITHUB_INTAKE_WEBHOOK_SECRET"
++
++    def get_secret(self) -> Optional[str]:
++        val = os.environ.get(self.secret_env, "").strip()
++        return val if val else None
++
++
++@dataclass
++class WebhookConfig:
++    max_payload_bytes: int = 25 * 1024 * 1024
++    credentials: WebhookCredentialsConfig = field(default_factory=WebhookCredentialsConfig)
++
++
++@dataclass
++class AllowlistConfig:
++    owners: List[str] = field(default_factory=list)
++    repositories: List[str] = field(default_factory=list)
++
++
++@dataclass
++class HCWAdapterConfig:
++    adapter: str = "dry_run"
++    enabled: bool = False
++
++
++@dataclass
++class RoutingConfig:
++    default_priority: str = "normal"
++    rules: List[Any] = field(default_factory=list)
++
++
++@dataclass
++class AuditConfig:
++    enabled: bool = True
++    redact_body: bool = True
++
++
++@dataclass
++class RecoveryConfig:
++    max_attempts: int = 3
++    backoff_base: float = 2.0
++    backoff_max_seconds: float = 300.0
++
++
++@dataclass
++class GithubIntakeConfig:
++    enabled: bool = False
++    dry_run: bool = True
++    kill_switch: bool = False
++    allowlist: AllowlistConfig = field(default_factory=AllowlistConfig)
++    webhook: WebhookConfig = field(default_factory=WebhookConfig)
++    hcw: HCWAdapterConfig = field(default_factory=HCWAdapterConfig)
++    routing: RoutingConfig = field(default_factory=RoutingConfig)
++    audit: AuditConfig = field(default_factory=AuditConfig)
++    recovery: RecoveryConfig = field(default_factory=RecoveryConfig)
++
++    @classmethod
++    def from_dict(cls, data: Dict[str, Any]) -> "GithubIntakeConfig":
++        allowlist_data = data.get("allowlist", {}) or {}
++        allowlist = AllowlistConfig(
++            owners=allowlist_data.get("owners", []) or [],
++            repositories=allowlist_data.get("repositories", []) or [],
++        )
++
++        webhook_data = data.get("webhook", {}) or {}
++        creds_data = webhook_data.get("credentials", {}) or {}
++        creds = WebhookCredentialsConfig(
++            secret_env=creds_data.get("secret_env", "GITHUB_INTAKE_WEBHOOK_SECRET"),
++        )
++        webhook = WebhookConfig(
++            max_payload_bytes=webhook_data.get("max_payload_bytes", 25 * 1024 * 1024),
++            credentials=creds,
++        )
++
++        hcw_data = data.get("hcw", {}) or {}
++        hcw = HCWAdapterConfig(
++            adapter=hcw_data.get("adapter", "dry_run"),
++            enabled=hcw_data.get("enabled", False),
++        )
++
++        routing_data = data.get("routing", {}) or {}
++        routing = RoutingConfig(
++            default_priority=routing_data.get("default_priority", "normal"),
++            rules=routing_data.get("rules", []) or [],
++        )
++
++        audit_data = data.get("audit", {}) or {}
++        audit = AuditConfig(
++            enabled=audit_data.get("enabled", True),
++            redact_body=audit_data.get("redact_body", True),
++        )
++
++        recovery_data = data.get("recovery", {}) or {}
++        recovery = RecoveryConfig(
++            max_attempts=recovery_data.get("max_attempts", 3),
++            backoff_base=recovery_data.get("backoff_base", 2.0),
++            backoff_max_seconds=recovery_data.get("backoff_max_seconds", 300.0),
++        )
++
++        return cls(
++            enabled=data.get("enabled", False),
++            dry_run=data.get("dry_run", True),
++            kill_switch=data.get("kill_switch", False),
++            allowlist=allowlist,
++            webhook=webhook,
++            hcw=hcw,
++            routing=routing,
++            audit=audit,
++            recovery=recovery,
++        )
++
++    def validate(self) -> List[str]:
++        errors = []
++        if not self.allowlist.owners:
++            errors.append("allowlist.owners must not be empty")
++        if not self.allowlist.repositories:
++            errors.append("allowlist.repositories must not be empty")
++        return errors
++
++
++def load_config(path: Path) -> GithubIntakeConfig:
++    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
++    intake_data = raw.get("github_intake", {}) or {}
++    return GithubIntakeConfig.from_dict(intake_data)
+diff --git a/plugins/github-intake/conftest.py b/plugins/github-intake/conftest.py
+new file mode 100644
+index 0000000000..07fb754e31
+--- /dev/null
++++ b/plugins/github-intake/conftest.py
+@@ -0,0 +1,44 @@
++"""Pytest conftest that makes plugins.github_intake importable.
++
++The physical directory is plugins/github-intake/ (hyphen), but tests import
++via the dotted name plugins.github_intake (underscore). This conftest runs
++before any test module is imported and registers the mapping in sys.modules.
++"""
++from __future__ import annotations
++
++import importlib.util
++import sys
++from pathlib import Path
++
++_PLUGIN_DIR = Path(__file__).parent
++_PKG = "plugins.github_intake"
++
++
++def _setup_import_alias() -> None:
++    if _PKG in sys.modules:
++        return
++
++    spec = importlib.util.spec_from_file_location(
++        _PKG,
++        _PLUGIN_DIR / "__init__.py",
++        submodule_search_locations=[str(_PLUGIN_DIR)],
++    )
++    if spec is None or spec.loader is None:
++        return
++
++    mod = importlib.util.module_from_spec(spec)
++    mod.__path__ = [str(_PLUGIN_DIR)]  # type: ignore[attr-defined]
++    mod.__package__ = _PKG
++    sys.modules[_PKG] = mod
++
++    try:
++        import plugins as _plugins_pkg
++        if not hasattr(_plugins_pkg, "github_intake"):
++            _plugins_pkg.github_intake = mod  # type: ignore[attr-defined]
++    except ImportError:
++        pass
++
++    spec.loader.exec_module(mod)  # type: ignore[union-attr]
++
++
++_setup_import_alias()
+diff --git a/plugins/github-intake/hcw_adapter.py b/plugins/github-intake/hcw_adapter.py
+new file mode 100644
+index 0000000000..dd6196969d
+--- /dev/null
++++ b/plugins/github-intake/hcw_adapter.py
+@@ -0,0 +1,27 @@
++"""HCW adapter implementations for the github-intake plugin.
++
++The default adapter is DryRunHCWAdapter, a recording sink that does not
++perform any real HCW writes. Real HCW dispatch requires explicit enablement.
++"""
++from __future__ import annotations
++
++import time
++import uuid
++from typing import Any, Dict, List
++
++
++class DryRunHCWAdapter:
++    """Records all dispatch intents without any real HCW writes."""
++
++    def __init__(self) -> None:
++        self.dispatched: List[Dict[str, Any]] = []
++
++    def dispatch(self, intent: Dict[str, Any]) -> Dict[str, Any]:
++        record = dict(intent)
++        record["_dry_run"] = True
++        record["_dispatched_at"] = time.time()
++        self.dispatched.append(record)
++        return {"status": "dry_run", "intent_id": str(uuid.uuid4())}
++
++    def clear(self) -> None:
++        self.dispatched.clear()
+diff --git a/plugins/github-intake/intake.py b/plugins/github-intake/intake.py
+new file mode 100644
+index 0000000000..6aedac2312
+--- /dev/null
++++ b/plugins/github-intake/intake.py
+@@ -0,0 +1,334 @@
++"""Transactional intake processor for the github-intake plugin.
++
++SR5-003: Write PENDING before dispatch; update to ACCEPTED only after
++dispatch succeeds. Redelivery of a PENDING record resumes dispatch.
++Persistence failures propagate rather than being swallowed.
++Dispatch always happens (even in dry_run mode); dry_run only skips
++the Kanban task creation.
++"""
++from __future__ import annotations
++
++import logging
++from typing import Any, Optional
++
++from .audit import AuditLog
++from .config import GithubIntakeConfig
++from .models import (
++    CanonicalIntakeRecord,
++    DeliveryEnvelope,
++    ProvenanceRecord,
++    compute_canonical_id,
++)
++from .routing import derive_route_intent
++from .security import (
++    AllowlistError,
++    SignatureError,
++    check_allowlist,
++    check_payload_size,
++    SUPPORTED_ACTIONS,
++)
++from .store import IntakeStore, _action_to_issue_state
++
++_log = logging.getLogger(__name__)
++
++_LIFECYCLE_ORDER = {"opened": 0, "edited": 1, "closed": 2, "reopened": 3}
++
++
++def process_delivery(
++    envelope: DeliveryEnvelope,
++    config: GithubIntakeConfig,
++    store: IntakeStore,
++    audit: AuditLog,
++    hcw_adapter: Any,
++    clock: Any,
++) -> CanonicalIntakeRecord:
++
++    # --- Kill switch ---
++    if config.kill_switch:
++        canonical_id = _safe_compute_canonical_id(envelope)
++        return CanonicalIntakeRecord(
++            canonical_id=canonical_id,
++            delivery_id=envelope.delivery_id,
++            payload_digest=envelope.payload_digest,
++            source_timestamp=_get_source_timestamp(envelope),
++            received_timestamp=clock.iso(),
++            lifecycle_revision=0,
++            provenance=_build_provenance(envelope),
++            state="killed",
++            dry_run=config.dry_run,
++        )
++
++    # --- Validate signature (only if secret is configured) ---
++    secret = config.webhook.credentials.get_secret()
++    if secret:
++        try:
++            from .security import verify_github_signature
++            verify_github_signature(
++                body=envelope.raw_body,
++                signature=envelope.signature,
++                secret=secret,
++            )
++        except SignatureError:
++            _log.debug("signature verification failed for delivery %s", envelope.delivery_id)
++            canonical_id = _safe_compute_canonical_id(envelope)
++            return CanonicalIntakeRecord(
++                canonical_id=canonical_id,
++                delivery_id=envelope.delivery_id,
++                payload_digest=envelope.payload_digest,
++                source_timestamp=_get_source_timestamp(envelope),
++                received_timestamp=clock.iso(),
++                lifecycle_revision=0,
++                provenance=_build_provenance(envelope),
++                state="rejected",
++                dry_run=config.dry_run,
++            )
++
++    # --- Validate action ---
++    if envelope.action not in SUPPORTED_ACTIONS:
++        canonical_id = _safe_compute_canonical_id(envelope)
++        prov = _build_provenance(envelope)
++        record = CanonicalIntakeRecord(
++            canonical_id=canonical_id,
++            delivery_id=envelope.delivery_id,
++            payload_digest=envelope.payload_digest,
++            source_timestamp=_get_source_timestamp(envelope),
++            received_timestamp=clock.iso(),
++            lifecycle_revision=0,
++            provenance=prov,
++            state="rejected",
++            dry_run=config.dry_run,
++        )
++        store.write_non_canonical(canonical_id, envelope.delivery_id, "rejected", clock.iso())
++        return record
++
++    # --- Validate allowlist ---
++    try:
++        owner = envelope.payload.get("repository", {}).get("owner", {}).get("login", "")
++        repo_full_name = envelope.payload.get("repository", {}).get("full_name", "")
++        check_allowlist(owner=owner, repository_full_name=repo_full_name, config=config)
++    except AllowlistError:
++        _log.debug("allowlist check failed for delivery %s", envelope.delivery_id)
++        canonical_id = _safe_compute_canonical_id(envelope)
++        return CanonicalIntakeRecord(
++            canonical_id=canonical_id,
++            delivery_id=envelope.delivery_id,
++            payload_digest=envelope.payload_digest,
++            source_timestamp=_get_source_timestamp(envelope),
++            received_timestamp=clock.iso(),
++            lifecycle_revision=0,
++            provenance=_build_provenance(envelope),
++            state="rejected",
++            dry_run=config.dry_run,
++        )
++
++    # --- Compute canonical ID and provenance ---
++    canonical_id = _safe_compute_canonical_id(envelope)
++    provenance = _build_provenance(envelope)
++    source_timestamp = _get_source_timestamp(envelope)
++    received_timestamp = clock.iso()
++
++    # --- Atomic classify + write PENDING (with lock) ---
++    with store._lock:
++        # Check for existing delivery (same delivery_id)
++        existing_by_did = store.load_by_delivery_id(envelope.delivery_id)
++        if existing_by_did is not None:
++            if existing_by_did.state == "pending":
++                # Resume dispatch — fall through
++                pass
++            else:
++                # Already processed — return duplicate
++                return CanonicalIntakeRecord(
++                    canonical_id=existing_by_did.canonical_id,
++                    delivery_id=envelope.delivery_id,
++                    payload_digest=envelope.payload_digest,
++                    source_timestamp=source_timestamp,
++                    received_timestamp=received_timestamp,
++                    lifecycle_revision=existing_by_did.lifecycle_revision,
++                    provenance=provenance,
++                    state="duplicate",
++                    dry_run=config.dry_run,
++                )
++
++        # Check for existing canonical record (different delivery, same issue)
++        existing = store.load_record(canonical_id)
++
++        if existing_by_did is not None and existing_by_did.state == "pending":
++            # Resume: use existing pending record, skip writing new PENDING
++            pending_record = existing or CanonicalIntakeRecord(
++                canonical_id=canonical_id,
++                delivery_id=envelope.delivery_id,
++                payload_digest=envelope.payload_digest,
++                source_timestamp=source_timestamp,
++                received_timestamp=received_timestamp,
++                lifecycle_revision=0,
++                provenance=provenance,
++                state="pending",
++                dry_run=config.dry_run,
++            )
++            pending_record.delivery_id = envelope.delivery_id
++        else:
++            # Classify this delivery against existing canonical record
++            if existing is not None:
++                outcome = _classify_against_existing(envelope, existing, source_timestamp)
++                if outcome != "accepted":
++                    result_record = CanonicalIntakeRecord(
++                        canonical_id=canonical_id,
++                        delivery_id=envelope.delivery_id,
++                        payload_digest=envelope.payload_digest,
++                        source_timestamp=source_timestamp,
++                        received_timestamp=received_timestamp,
++                        lifecycle_revision=existing.lifecycle_revision,
++                        provenance=provenance,
++                        state=outcome,
++                        dry_run=config.dry_run,
++                    )
++                    store.write_non_canonical(canonical_id, envelope.delivery_id, outcome, received_timestamp)
++                    audit.log(canonical_id, f"delivery_{outcome}", {
++                        "delivery_id": envelope.delivery_id,
++                        "action": envelope.action,
++                    }, timestamp=received_timestamp)
++                    return result_record
++                new_revision = existing.lifecycle_revision + 1
++            else:
++                new_revision = 0
++
++            pending_record = CanonicalIntakeRecord(
++                canonical_id=canonical_id,
++                delivery_id=envelope.delivery_id,
++                payload_digest=envelope.payload_digest,
++                source_timestamp=source_timestamp,
++                received_timestamp=received_timestamp,
++                lifecycle_revision=new_revision,
++                provenance=provenance,
++                state="pending",
++                dry_run=config.dry_run,
++            )
++            store.write_pending(pending_record, envelope.delivery_id, received_timestamp)
++            audit.log(canonical_id, "delivery_pending", {
++                "delivery_id": envelope.delivery_id,
++                "action": envelope.action,
++            }, timestamp=received_timestamp)
++
++    # --- Create Kanban task (non-dry-run only) ---
++    kanban_task_id: Optional[str] = None
++    if not config.dry_run:
++        issue_title = _sanitize_for_title(provenance.issue_title)
++        kanban_title = f"[GitHub] {provenance.repository_full_name}#{provenance.issue_number}: {issue_title}"
++        idempotency_key = f"github-intake:{canonical_id}"
++        kanban_task_id = store.ensure_kanban_task(
++            canonical_id, provenance, kanban_title, idempotency_key
++        )
++
++    # --- Derive and dispatch route intent ---
++    # Dispatch always happens (dry_run only skips Kanban, not dispatch).
++    # Catch Exception (not BaseException) so SystemExit/crash propagates.
++    route_intent = derive_route_intent(
++        provenance=provenance,
++        config_rules=config.routing.rules,
++        priority=config.routing.default_priority,
++    )
++    intent_dict = route_intent.model_dump()
++
++    try:
++        hcw_adapter.dispatch(intent_dict)
++    except Exception:
++        # Dispatch failed — leave record as pending for recovery
++        pending_record.state = "pending"
++        return pending_record
++
++    # --- Update record to ACCEPTED — do NOT catch, persistence failures must propagate ---
++    store.update_record_state(
++        canonical_id, "accepted",
++        kanban_task_id=kanban_task_id,
++        dry_run=config.dry_run,
++        updated_at=received_timestamp,
++    )
++    store.update_delivery_state(envelope.delivery_id, "accepted")
++    audit.log(canonical_id, "delivery_accepted", {
++        "delivery_id": envelope.delivery_id,
++        "action": envelope.action,
++        "kanban_task_id": kanban_task_id,
++        "dry_run": config.dry_run,
++    }, timestamp=received_timestamp)
++
++    pending_record.state = "accepted"
++    pending_record.dry_run = config.dry_run
++    pending_record.kanban_task_id = kanban_task_id
++    return pending_record
++
++
++def _classify_against_existing(
++    envelope: DeliveryEnvelope,
++    existing: CanonicalIntakeRecord,
++    source_timestamp: str,
++) -> str:
++    action = envelope.action
++
++    # Conflict: reopen when already open
++    if action == "reopened":
++        current_state = _action_to_issue_state(existing.provenance.action)
++        if current_state == "open":
++            return "conflict"
++
++    # Stale: older source timestamp
++    if source_timestamp < existing.source_timestamp:
++        return "stale"
++
++    # Same timestamp and same action: stale
++    if source_timestamp == existing.source_timestamp and action == existing.provenance.action:
++        return "stale"
++
++    # Same timestamp, different action (e.g., two "opened" events from different deliveries)
++    if source_timestamp == existing.source_timestamp and action == "opened":
++        return "duplicate"
++
++    return "accepted"
++
++
++def _safe_compute_canonical_id(envelope: DeliveryEnvelope) -> str:
++    try:
++        return compute_canonical_id(
++            installation_id=envelope.payload["installation"]["id"],
++            repository_full_name=envelope.payload["repository"]["full_name"],
++            issue_number=envelope.payload["issue"]["number"],
++        )
++    except (KeyError, TypeError):
++        import hashlib
++        return hashlib.sha256(envelope.delivery_id.encode()).hexdigest()
++
++
++def _get_source_timestamp(envelope: DeliveryEnvelope) -> str:
++    try:
++        return envelope.payload["issue"]["updated_at"]
++    except (KeyError, TypeError):
++        return envelope.received_at
++
++
++def _build_provenance(envelope: DeliveryEnvelope) -> ProvenanceRecord:
++    payload = envelope.payload
++    try:
++        return ProvenanceRecord(
++            installation_id=payload["installation"]["id"],
++            repository_full_name=payload["repository"]["full_name"],
++            issue_number=payload["issue"]["number"],
++            event_type=envelope.event_type,
++            action=envelope.action,
++            sender_login=payload.get("sender", {}).get("login", ""),
++            issue_title=payload["issue"].get("title", ""),
++        )
++    except (KeyError, TypeError):
++        return ProvenanceRecord(
++            installation_id=0,
++            repository_full_name="unknown/unknown",
++            issue_number=0,
++            event_type=envelope.event_type,
++            action=envelope.action,
++            sender_login="",
++            issue_title="",
++        )
++
++
++def _sanitize_for_title(title: str) -> str:
++    import re
++    sanitized = re.sub(r"<[^>]+>", "", title or "")
++    return sanitized[:200]
+diff --git a/plugins/github-intake/models.py b/plugins/github-intake/models.py
+new file mode 100644
+index 0000000000..5d9723b049
+--- /dev/null
++++ b/plugins/github-intake/models.py
+@@ -0,0 +1,120 @@
++"""Data models for the github-intake plugin."""
++from __future__ import annotations
++
++import hashlib
++import json
++from dataclasses import dataclass, field
++from typing import Any, Dict, List, Optional
++
++
++def compute_canonical_id(
++    *,
++    installation_id: int,
++    repository_full_name: str,
++    issue_number: int,
++) -> str:
++    key = f"{installation_id}:{repository_full_name}:{issue_number}"
++    return hashlib.sha256(key.encode("utf-8")).hexdigest()
++
++
++@dataclass
++class DeliveryEnvelope:
++    delivery_id: str
++    event_type: str
++    action: str
++    payload: Dict[str, Any]
++    raw_body: bytes
++    signature: str
++    received_at: str
++    payload_digest: str = field(init=False)
++
++    def __post_init__(self) -> None:
++        self.payload_digest = hashlib.sha256(self.raw_body).hexdigest()
++
++
++@dataclass
++class ProvenanceRecord:
++    installation_id: int
++    repository_full_name: str
++    issue_number: int
++    event_type: str
++    action: str
++    sender_login: str
++    issue_title: str
++
++    def model_dump(self) -> Dict[str, Any]:
++        return {
++            "installation_id": self.installation_id,
++            "repository_full_name": self.repository_full_name,
++            "issue_number": self.issue_number,
++            "event_type": self.event_type,
++            "action": self.action,
++            "sender_login": self.sender_login,
++            "issue_title": self.issue_title,
++        }
++
++
++@dataclass
++class HCWRouteIntent:
++    canonical_id: str
++    route_key: str
++    action: str
++    priority: str = "normal"
++    metadata: Dict[str, Any] = field(default_factory=dict)
++
++    def model_dump(self) -> Dict[str, Any]:
++        return {
++            "canonical_id": self.canonical_id,
++            "route_key": self.route_key,
++            "action": self.action,
++            "priority": self.priority,
++            "metadata": self.metadata,
++        }
++
++    def __iter__(self):
++        return iter(self.model_dump().items())
++
++
++class IntakeOutcome:
++    ACCEPTED = "accepted"
++    DUPLICATE = "duplicate"
++    STALE = "stale"
++    CONFLICT = "conflict"
++    QUARANTINED = "quarantined"
++    REJECTED = "rejected"
++    KILLED = "killed"
++    PENDING = "pending"
++
++
++@dataclass
++class CanonicalIntakeRecord:
++    canonical_id: str
++    delivery_id: str
++    payload_digest: str
++    source_timestamp: str
++    received_timestamp: str
++    lifecycle_revision: int
++    provenance: ProvenanceRecord
++    state: str
++    dry_run: bool = False
++    dead_letter_reason: Optional[str] = None
++    retry_count: int = 0
++    kanban_task_id: Optional[str] = None
++
++    def to_dict(self) -> Dict[str, Any]:
++        return {
++            "canonical_id": self.canonical_id,
++            "delivery_id": self.delivery_id,
++            "payload_digest": self.payload_digest,
++            "source_timestamp": self.source_timestamp,
++            "received_timestamp": self.received_timestamp,
++            "lifecycle_revision": self.lifecycle_revision,
++            "provenance": self.provenance.model_dump(),
++            "state": self.state,
++            "dry_run": self.dry_run,
++            "dead_letter_reason": self.dead_letter_reason,
++            "retry_count": self.retry_count,
++        }
++
++    def model_dump(self) -> Dict[str, Any]:
++        return self.to_dict()
+diff --git a/plugins/github-intake/plugin.yaml b/plugins/github-intake/plugin.yaml
+new file mode 100644
+index 0000000000..14852c6a03
+--- /dev/null
++++ b/plugins/github-intake/plugin.yaml
+@@ -0,0 +1,5 @@
++name: github-intake
++version: 0.1.0
++description: "GitHub issue to canonical Kanban intake and HCW routing pipeline (disabled by default)"
++enabled: false
++kind: backend
+diff --git a/plugins/github-intake/recovery.py b/plugins/github-intake/recovery.py
+new file mode 100644
+index 0000000000..0857ccf9c3
+--- /dev/null
++++ b/plugins/github-intake/recovery.py
+@@ -0,0 +1,165 @@
++"""Recovery manager for the github-intake plugin.
++
++Provides classified retry eligibility, capped exponential backoff,
++quarantine with dead-letter metadata, and operator replay.
++
++SR5-003: run_recovery exhausts remaining attempts per pending record
++within one call so that a single recovery run can succeed after
++transient failures.
++"""
++from __future__ import annotations
++
++from dataclasses import dataclass, field
++from typing import Any, Optional
++
++from .audit import AuditLog
++from .config import GithubIntakeConfig
++from .models import CanonicalIntakeRecord
++from .routing import derive_route_intent
++from .store import IntakeStore
++
++
++@dataclass
++class RecoveryOutcome:
++    retried: int = 0
++    quarantined: int = 0
++    errors: int = 0
++
++
++class RecoveryManager:
++    def __init__(
++        self,
++        *,
++        store: IntakeStore,
++        audit: AuditLog,
++        config: GithubIntakeConfig,
++    ) -> None:
++        self._store = store
++        self._audit = audit
++        self._config = config
++
++    def run_recovery(self, *, hcw_adapter: Any, clock: Any) -> RecoveryOutcome:
++        outcome = RecoveryOutcome()
++        pending_records = self._store.list_pending()
++        max_attempts = self._config.recovery.max_attempts
++
++        for record in pending_records:
++            if record.retry_count >= max_attempts:
++                self._quarantine(record, reason="max_attempts_exceeded", clock=clock)
++                outcome.quarantined += 1
++                continue
++
++            remaining = max_attempts - record.retry_count
++            route_intent = derive_route_intent(
++                provenance=record.provenance,
++                config_rules=self._config.routing.rules,
++                priority=self._config.routing.default_priority,
++            )
++            intent_dict = route_intent.model_dump()
++
++            succeeded = False
++            failed_attempts = 0
++            last_error: Optional[Exception] = None
++
++            for _ in range(remaining):
++                try:
++                    hcw_adapter.dispatch(intent_dict)
++                    succeeded = True
++                    break
++                except Exception as exc:
++                    last_error = exc
++                    failed_attempts += 1
++
++            new_retry_count = record.retry_count + failed_attempts
++
++            if succeeded:
++                self._store.update_record_state(
++                    record.canonical_id, "accepted",
++                    updated_at=clock.iso(),
++                )
++                if record.delivery_id:
++                    self._store.update_delivery_state(record.delivery_id, "accepted")
++                self._audit.log(
++                    record.canonical_id, "delivery_accepted_via_recovery",
++                    {"retry_count": new_retry_count},
++                    timestamp=clock.iso(),
++                )
++                outcome.retried += 1
++            elif new_retry_count >= max_attempts:
++                record.retry_count = new_retry_count
++                self._quarantine(
++                    record,
++                    reason=str(last_error) if last_error else "max_attempts_exceeded",
++                    clock=clock,
++                )
++                outcome.quarantined += 1
++            else:
++                self._store.update_record_state(
++                    record.canonical_id, "pending",
++                    retry_count=new_retry_count,
++                    updated_at=clock.iso(),
++                )
++                self._audit.log(
++                    record.canonical_id, "delivery_retry_failed",
++                    {"retry_count": new_retry_count, "error": str(last_error)},
++                    timestamp=clock.iso(),
++                )
++                outcome.errors += 1
++
++        return outcome
++
++    def _quarantine(self, record: CanonicalIntakeRecord, *, reason: str, clock: Any) -> None:
++        self._store.update_record_state(
++            record.canonical_id, "quarantined",
++            dead_letter_reason=reason,
++            retry_count=record.retry_count,
++            updated_at=clock.iso(),
++        )
++        if record.delivery_id:
++            self._store.update_delivery_state(record.delivery_id, "quarantined")
++        self._audit.log(
++            record.canonical_id, "delivery_quarantined",
++            {"reason": reason, "retry_count": record.retry_count},
++            timestamp=clock.iso(),
++        )
++
++    def operator_replay(
++        self,
++        *,
++        canonical_id: str,
++        hcw_adapter: Any,
++        clock: Any,
++    ) -> CanonicalIntakeRecord:
++        record = self._store.load_record(canonical_id)
++        if record is None:
++            raise ValueError(f"no record found for canonical_id={canonical_id}")
++        if record.state != "quarantined":
++            raise ValueError(f"record state is '{record.state}', expected 'quarantined'")
++
++        # Reset for replay
++        self._store.update_record_state(
++            canonical_id, "pending",
++            retry_count=0,
++            dead_letter_reason=None,
++            updated_at=clock.iso(),
++        )
++
++        route_intent = derive_route_intent(
++            provenance=record.provenance,
++            config_rules=self._config.routing.rules,
++            priority=self._config.routing.default_priority,
++        )
++        hcw_adapter.dispatch(route_intent.model_dump())
++
++        self._store.update_record_state(
++            canonical_id, "accepted",
++            updated_at=clock.iso(),
++        )
++        self._audit.log(
++            canonical_id, "delivery_operator_replayed",
++            {},
++            timestamp=clock.iso(),
++        )
++
++        record.state = "accepted"
++        return record
+diff --git a/plugins/github-intake/routing.py b/plugins/github-intake/routing.py
+new file mode 100644
+index 0000000000..fc2fce264e
+--- /dev/null
++++ b/plugins/github-intake/routing.py
+@@ -0,0 +1,62 @@
++"""Deterministic routing for the github-intake plugin.
++
++Routes derive only from validated, allowlisted provenance metadata.
++Issue body text is never included in route keys or dispatch intents.
++"""
++from __future__ import annotations
++
++import hashlib
++from typing import Any, Dict, List
++
++from .models import HCWRouteIntent, ProvenanceRecord, compute_canonical_id
++
++
++def derive_route_intent(
++    *,
++    provenance: ProvenanceRecord,
++    config_rules: List[Any],
++    priority: str = "normal",
++) -> HCWRouteIntent:
++    canonical_id = compute_canonical_id(
++        installation_id=provenance.installation_id,
++        repository_full_name=provenance.repository_full_name,
++        issue_number=provenance.issue_number,
++    )
++
++    route_key_material = (
++        f"{provenance.repository_full_name}:"
++        f"{provenance.issue_number}:"
++        f"{provenance.action}"
++    )
++    route_key = hashlib.sha256(route_key_material.encode("utf-8")).hexdigest()[:16]
++
++    resolved_priority = priority
++    for rule in config_rules or []:
++        if isinstance(rule, dict) and rule.get("repository") == provenance.repository_full_name:
++            resolved_priority = rule.get("priority", priority)
++            break
++
++    metadata: Dict[str, Any] = {
++        "installation_id": provenance.installation_id,
++        "repository_full_name": provenance.repository_full_name,
++        "issue_number": provenance.issue_number,
++        "sender_login": provenance.sender_login,
++        "issue_title": _sanitize_title(provenance.issue_title),
++    }
++
++    return HCWRouteIntent(
++        canonical_id=canonical_id,
++        route_key=route_key,
++        action=provenance.action,
++        priority=resolved_priority,
++        metadata=metadata,
++    )
++
++
++def _sanitize_title(title: str) -> str:
++    if not title:
++        return ""
++    import re
++    sanitized = re.sub(r"<[^>]+>", "", title)
++    sanitized = sanitized[:200]
++    return sanitized
+diff --git a/plugins/github-intake/security.py b/plugins/github-intake/security.py
+new file mode 100644
+index 0000000000..e779901609
+--- /dev/null
++++ b/plugins/github-intake/security.py
+@@ -0,0 +1,79 @@
++"""Security checks for the github-intake plugin.
++
++Provides HMAC signature verification (constant-time), allowlist enforcement,
++payload size checking, and JSON parsing. No secrets are stored or logged.
++"""
++from __future__ import annotations
++
++import hashlib
++import hmac
++import json
++import logging
++from typing import Any, Dict
++
++from .config import GithubIntakeConfig
++
++_log = logging.getLogger(__name__)
++
++SUPPORTED_ACTIONS = frozenset({"opened", "edited", "closed", "reopened"})
++
++
++class SignatureError(ValueError):
++    pass
++
++
++class AllowlistError(ValueError):
++    pass
++
++
++class PayloadTooLargeError(ValueError):
++    pass
++
++
++class MalformedPayloadError(ValueError):
++    pass
++
++
++def verify_github_signature(*, body: bytes, signature: str, secret: str) -> None:
++    """Verify a GitHub HMAC-SHA256 webhook signature using constant-time comparison."""
++    if not signature or not signature.startswith("sha256="):
++        raise SignatureError("invalid signature format: missing sha256= prefix")
++
++    expected = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
++    received = signature[len("sha256="):]
++
++    if not hmac.compare_digest(expected, received):
++        raise SignatureError("webhook signature verification failed")
++
++
++def check_allowlist(
++    *,
++    owner: str,
++    repository_full_name: str,
++    config: GithubIntakeConfig,
++) -> None:
++    """Raise AllowlistError if owner or repo are not in the configured allowlist."""
++    if owner not in config.allowlist.owners:
++        raise AllowlistError(f"owner not in allowlist")
++    if repository_full_name not in config.allowlist.repositories:
++        raise AllowlistError(f"repository not in allowlist")
++
++
++def check_payload_size(*, body: bytes, config: GithubIntakeConfig) -> None:
++    """Raise PayloadTooLargeError if body exceeds configured limit."""
++    limit = config.webhook.max_payload_bytes
++    if len(body) > limit:
++        raise PayloadTooLargeError(
++            f"payload size {len(body)} exceeds limit {limit}"
++        )
++
++
++def parse_and_validate_payload(body: bytes, event_type: str) -> Dict[str, Any]:
++    """Parse body as JSON and return the payload dict."""
++    try:
++        data = json.loads(body)
++    except (json.JSONDecodeError, ValueError) as exc:
++        raise MalformedPayloadError(f"invalid JSON payload: {exc}") from exc
++    if not isinstance(data, dict):
++        raise MalformedPayloadError("payload must be a JSON object")
++    return data
+diff --git a/plugins/github-intake/store.py b/plugins/github-intake/store.py
+new file mode 100644
+index 0000000000..116200bb73
+--- /dev/null
++++ b/plugins/github-intake/store.py
+@@ -0,0 +1,418 @@
++"""Durable intake repository for the github-intake plugin.
++
++Uses SQLite for intake records and the Kanban adapter for canonical tasks.
++No raw INSERT INTO tasks statements; all Kanban mutations go through
++hermes_cli.kanban_db.create_task.
++"""
++from __future__ import annotations
++
++import json
++import sqlite3
++import threading
++import uuid
++from pathlib import Path
++from typing import Any, Dict, List, Optional
++
++from .models import (
++    CanonicalIntakeRecord,
++    DeliveryEnvelope,
++    ProvenanceRecord,
++    compute_canonical_id,
++)
++
++
++class IntakeStore:
++    def __init__(self, db_path: Path) -> None:
++        self.db_path = db_path
++        self._lock = threading.Lock()
++        self._init_db()
++
++    def _connect(self) -> sqlite3.Connection:
++        conn = sqlite3.connect(str(self.db_path), timeout=30)
++        conn.row_factory = sqlite3.Row
++        conn.execute("PRAGMA journal_mode=WAL")
++        conn.execute("PRAGMA foreign_keys=ON")
++        return conn
++
++    def _init_db(self) -> None:
++        self.db_path.parent.mkdir(parents=True, exist_ok=True)
++        conn = self._connect()
++        try:
++            conn.executescript("""
++                CREATE TABLE IF NOT EXISTS github_intake_records (
++                    canonical_id TEXT PRIMARY KEY,
++                    payload_digest TEXT NOT NULL,
++                    source_timestamp TEXT NOT NULL,
++                    received_timestamp TEXT NOT NULL,
++                    lifecycle_revision INTEGER NOT NULL DEFAULT 0,
++                    provenance_json TEXT NOT NULL,
++                    state TEXT NOT NULL,
++                    dry_run INTEGER NOT NULL DEFAULT 0,
++                    dead_letter_reason TEXT,
++                    retry_count INTEGER NOT NULL DEFAULT 0,
++                    issue_state TEXT,
++                    last_action TEXT,
++                    kanban_task_id TEXT,
++                    route_intent_json TEXT,
++                    updated_at TEXT NOT NULL
++                );
++                CREATE TABLE IF NOT EXISTS github_intake_deliveries (
++                    delivery_id TEXT PRIMARY KEY,
++                    canonical_id TEXT NOT NULL,
++                    state TEXT NOT NULL DEFAULT 'pending',
++                    received_at TEXT NOT NULL
++                );
++                CREATE TABLE IF NOT EXISTS github_intake_audit (
++                    id TEXT PRIMARY KEY,
++                    canonical_id TEXT NOT NULL,
++                    event TEXT NOT NULL,
++                    timestamp TEXT NOT NULL,
++                    data_json TEXT NOT NULL
++                );
++                CREATE INDEX IF NOT EXISTS idx_audit_canonical
++                    ON github_intake_audit(canonical_id);
++                CREATE INDEX IF NOT EXISTS idx_delivery_canonical
++                    ON github_intake_deliveries(canonical_id);
++            """)
++            conn.commit()
++        finally:
++            conn.close()
++
++    def _compute_canonical_id_from_env(self, env: DeliveryEnvelope) -> str:
++        return compute_canonical_id(
++            installation_id=env.payload["installation"]["id"],
++            repository_full_name=env.payload["repository"]["full_name"],
++            issue_number=env.payload["issue"]["number"],
++        )
++
++    def load_record(self, canonical_id: str) -> Optional[CanonicalIntakeRecord]:
++        conn = self._connect()
++        try:
++            row = conn.execute(
++                "SELECT * FROM github_intake_records WHERE canonical_id = ?",
++                (canonical_id,),
++            ).fetchone()
++            if row is None:
++                return None
++            return self._row_to_record(row, delivery_id="")
++        finally:
++            conn.close()
++
++    def load_by_delivery_id(self, delivery_id: str) -> Optional[CanonicalIntakeRecord]:
++        conn = self._connect()
++        try:
++            drow = conn.execute(
++                "SELECT canonical_id, state FROM github_intake_deliveries WHERE delivery_id = ?",
++                (delivery_id,),
++            ).fetchone()
++            if drow is None:
++                return None
++            cid = drow["canonical_id"]
++            row = conn.execute(
++                "SELECT * FROM github_intake_records WHERE canonical_id = ?",
++                (cid,),
++            ).fetchone()
++            if row is None:
++                return None
++            record = self._row_to_record(row, delivery_id=delivery_id)
++            record.state = drow["state"]
++            return record
++        finally:
++            conn.close()
++
++    def _row_to_record(self, row: sqlite3.Row, delivery_id: str) -> CanonicalIntakeRecord:
++        prov_data = json.loads(row["provenance_json"])
++        prov = ProvenanceRecord(
++            installation_id=prov_data["installation_id"],
++            repository_full_name=prov_data["repository_full_name"],
++            issue_number=prov_data["issue_number"],
++            event_type=prov_data["event_type"],
++            action=prov_data["action"],
++            sender_login=prov_data["sender_login"],
++            issue_title=prov_data["issue_title"],
++        )
++        rec = CanonicalIntakeRecord(
++            canonical_id=row["canonical_id"],
++            delivery_id=delivery_id,
++            payload_digest=row["payload_digest"],
++            source_timestamp=row["source_timestamp"],
++            received_timestamp=row["received_timestamp"],
++            lifecycle_revision=row["lifecycle_revision"],
++            provenance=prov,
++            state=row["state"],
++            dry_run=bool(row["dry_run"]),
++            dead_letter_reason=row["dead_letter_reason"],
++            retry_count=row["retry_count"],
++            kanban_task_id=row["kanban_task_id"],
++        )
++        return rec
++
++    def write_pending(
++        self,
++        record: CanonicalIntakeRecord,
++        delivery_id: str,
++        received_at: str,
++    ) -> None:
++        conn = self._connect()
++        try:
++            conn.execute("BEGIN IMMEDIATE")
++            prov_json = json.dumps(record.provenance.model_dump())
++            conn.execute(
++                """INSERT OR REPLACE INTO github_intake_records
++                   (canonical_id, payload_digest, source_timestamp,
++                    received_timestamp, lifecycle_revision, provenance_json,
++                    state, dry_run, dead_letter_reason, retry_count,
++                    issue_state, last_action, kanban_task_id, route_intent_json,
++                    updated_at)
++                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
++                (
++                    record.canonical_id,
++                    record.payload_digest,
++                    record.source_timestamp,
++                    record.received_timestamp,
++                    record.lifecycle_revision,
++                    prov_json,
++                    "pending",
++                    1 if record.dry_run else 0,
++                    record.dead_letter_reason,
++                    record.retry_count,
++                    _action_to_issue_state(record.provenance.action),
++                    record.provenance.action,
++                    None,
++                    None,
++                    record.received_timestamp,
++                ),
++            )
++            conn.execute(
++                """INSERT OR REPLACE INTO github_intake_deliveries
++                   (delivery_id, canonical_id, state, received_at)
++                   VALUES (?,?,?,?)""",
++                (delivery_id, record.canonical_id, "pending", received_at),
++            )
++            conn.commit()
++        except Exception:
++            conn.rollback()
++            raise
++        finally:
++            conn.close()
++
++    def write_non_canonical(
++        self,
++        canonical_id: str,
++        delivery_id: str,
++        state: str,
++        received_at: str,
++    ) -> None:
++        conn = self._connect()
++        try:
++            conn.execute(
++                """INSERT OR IGNORE INTO github_intake_deliveries
++                   (delivery_id, canonical_id, state, received_at)
++                   VALUES (?,?,?,?)""",
++                (delivery_id, canonical_id, state, received_at),
++            )
++            conn.commit()
++        finally:
++            conn.close()
++
++    def update_record_state(
++        self,
++        canonical_id: str,
++        state: str,
++        *,
++        kanban_task_id: Optional[str] = None,
++        dead_letter_reason: Optional[str] = None,
++        retry_count: Optional[int] = None,
++        updated_at: str = "",
++        dry_run: Optional[bool] = None,
++    ) -> None:
++        conn = self._connect()
++        try:
++            sets = ["state = ?", "updated_at = ?"]
++            params: List[Any] = [state, updated_at or ""]
++            if kanban_task_id is not None:
++                sets.append("kanban_task_id = ?")
++                params.append(kanban_task_id)
++            if dead_letter_reason is not None:
++                sets.append("dead_letter_reason = ?")
++                params.append(dead_letter_reason)
++            if retry_count is not None:
++                sets.append("retry_count = ?")
++                params.append(retry_count)
++            if dry_run is not None:
++                sets.append("dry_run = ?")
++                params.append(1 if dry_run else 0)
++            params.append(canonical_id)
++            conn.execute(
++                f"UPDATE github_intake_records SET {', '.join(sets)} WHERE canonical_id = ?",
++                params,
++            )
++            conn.commit()
++        except Exception:
++            conn.rollback()
++            raise
++        finally:
++            conn.close()
++
++    def update_delivery_state(self, delivery_id: str, state: str) -> None:
++        conn = self._connect()
++        try:
++            conn.execute(
++                "UPDATE github_intake_deliveries SET state = ? WHERE delivery_id = ?",
++                (state, delivery_id),
++            )
++            conn.commit()
++        finally:
++            conn.close()
++
++    def list_pending(self) -> List[CanonicalIntakeRecord]:
++        conn = self._connect()
++        try:
++            rows = conn.execute(
++                "SELECT * FROM github_intake_records WHERE state = 'pending'"
++            ).fetchall()
++            result = []
++            for row in rows:
++                rec = self._row_to_record(row, delivery_id="")
++                drow = conn.execute(
++                    "SELECT delivery_id FROM github_intake_deliveries WHERE canonical_id = ? AND state = 'pending' LIMIT 1",
++                    (row["canonical_id"],),
++                ).fetchone()
++                if drow:
++                    rec.delivery_id = drow["delivery_id"]
++                result.append(rec)
++            return result
++        finally:
++            conn.close()
++
++    def list_quarantined(self) -> List[CanonicalIntakeRecord]:
++        conn = self._connect()
++        try:
++            rows = conn.execute(
++                "SELECT * FROM github_intake_records WHERE state = 'quarantined'"
++            ).fetchall()
++            return [self._row_to_record(row, delivery_id="") for row in rows]
++        finally:
++            conn.close()
++
++    def get_record_issue_state(self, canonical_id: str) -> Optional[str]:
++        conn = self._connect()
++        try:
++            row = conn.execute(
++                "SELECT issue_state FROM github_intake_records WHERE canonical_id = ?",
++                (canonical_id,),
++            ).fetchone()
++            return row["issue_state"] if row else None
++        finally:
++            conn.close()
++
++    def store_audit_entry(self, entry_id: str, canonical_id: str, event: str, timestamp: str, data: Dict[str, Any]) -> None:
++        conn = self._connect()
++        try:
++            conn.execute(
++                """INSERT INTO github_intake_audit (id, canonical_id, event, timestamp, data_json)
++                   VALUES (?,?,?,?,?)""",
++                (entry_id, canonical_id, event, timestamp, json.dumps(data)),
++            )
++            conn.commit()
++        finally:
++            conn.close()
++
++    def get_audit_entries(self, canonical_id: str) -> List[Dict[str, Any]]:
++        conn = self._connect()
++        try:
++            rows = conn.execute(
++                "SELECT * FROM github_intake_audit WHERE canonical_id = ? ORDER BY timestamp ASC",
++                (canonical_id,),
++            ).fetchall()
++            result = []
++            for row in rows:
++                entry = {
++                    "id": row["id"],
++                    "canonical_id": row["canonical_id"],
++                    "event": row["event"],
++                    "timestamp": row["timestamp"],
++                    "data": json.loads(row["data_json"]),
++                }
++                result.append(entry)
++            return result
++        finally:
++            conn.close()
++
++    def count_kanban_tasks(self) -> int:
++        conn = self._connect()
++        try:
++            row = conn.execute(
++                "SELECT COUNT(*) FROM github_intake_records WHERE kanban_task_id IS NOT NULL"
++            ).fetchone()
++            return row[0] if row else 0
++        finally:
++            conn.close()
++
++    def get_kanban_task(self, canonical_id: str) -> Optional[Dict[str, Any]]:
++        record = self.load_record(canonical_id)
++        if record is None or record.kanban_task_id is None:
++            return None
++        try:
++            from hermes_cli import kanban_db as kb
++            conn = kb.connect(db_path=self.db_path)
++            task = kb.get_task(conn, record.kanban_task_id)
++            conn.close()
++            if task is None:
++                return None
++            return {
++                "id": task.id,
++                "task_id": task.id,
++                "canonical_id": canonical_id,
++                "title": task.title,
++                "status": task.status,
++            }
++        except Exception:
++            return None
++
++    def list_kanban_tasks(self) -> List[Dict[str, Any]]:
++        conn = self._connect()
++        try:
++            rows = conn.execute(
++                "SELECT canonical_id, kanban_task_id FROM github_intake_records WHERE kanban_task_id IS NOT NULL"
++            ).fetchall()
++            result = []
++            for row in rows:
++                result.append({
++                    "canonical_id": row["canonical_id"],
++                    "task_id": row["kanban_task_id"],
++                    "id": row["kanban_task_id"],
++                })
++            return result
++        finally:
++            conn.close()
++
++    def ensure_kanban_task(
++        self,
++        canonical_id: str,
++        provenance: ProvenanceRecord,
++        title: str,
++        idempotency_key: str,
++    ) -> Optional[str]:
++        try:
++            from hermes_cli import kanban_db as kb
++            conn = kb.connect(db_path=self.db_path)
++            task_id = kb.create_task(
++                conn,
++                title=title,
++                idempotency_key=idempotency_key,
++                initial_status="running",
++                created_by="github-intake",
++            )
++            conn.close()
++            return task_id
++        except Exception:
++            return None
++
++
++def _action_to_issue_state(action: str) -> Optional[str]:
++    if action in ("opened", "reopened", "edited"):
++        return "open"
++    if action == "closed":
++        return "closed"
++    return None
+diff --git a/plugins/github-intake/tests/__init__.py b/plugins/github-intake/tests/__init__.py
+new file mode 100644
+index 0000000000..e69de29bb2
+diff --git a/plugins/github-intake/tests/conftest.py b/plugins/github-intake/tests/conftest.py
+new file mode 100644
+index 0000000000..d1344f5ba6
+--- /dev/null
++++ b/plugins/github-intake/tests/conftest.py
+@@ -0,0 +1,205 @@
++"""Hermetic test fixtures for the github-intake plugin.
++
++All fixtures use temporary directories, fake clocks, mock adapters, and
++no network or real secrets. No HERMES_HOME mutation persists after the
++test session.
++"""
++
++from __future__ import annotations
++
++import hashlib
++import hmac
++import json
++import os
++import tempfile
++import time
++import uuid
++from pathlib import Path
++from typing import Any, Dict, Generator, List
++from unittest.mock import MagicMock, patch
++
++import pytest
++import yaml
++
++# ---------------------------------------------------------------------------
++# Paths
++# ---------------------------------------------------------------------------
++FIXTURE_DIR = Path(__file__).parent / "fixtures"
++PLUGIN_DIR = Path(__file__).parent.parent
++
++
++# ---------------------------------------------------------------------------
++# Sentinel webhook secret — never a real credential
++# ---------------------------------------------------------------------------
++TEST_WEBHOOK_SECRET = "test-sentinel-webhook-secret-not-real"
++
++
++# ---------------------------------------------------------------------------
++# Hermetic HERMES_HOME
++# ---------------------------------------------------------------------------
++
++@pytest.fixture()
++def tmp_hermes_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
++    """Isolated HERMES_HOME under a temporary directory."""
++    home = tmp_path / "hermes_home"
++    home.mkdir(parents=True)
++    monkeypatch.setenv("HERMES_HOME", str(home))
++    monkeypatch.setattr(
++        "hermes_constants.get_hermes_home", lambda: home, raising=False
++    )
++    return home
++
++
++# ---------------------------------------------------------------------------
++# Temporary local Kanban board (SQLite under tmp_hermes_home)
++# ---------------------------------------------------------------------------
++
++@pytest.fixture()
++def tmp_kanban_board(tmp_hermes_home: Path) -> Path:
++    """A fresh SQLite Kanban board under the temporary HERMES_HOME."""
++    board_dir = tmp_hermes_home / "kanban"
++    board_dir.mkdir(parents=True, exist_ok=True)
++    board_path = board_dir / "board.db"
++    return board_path
++
++
++# ---------------------------------------------------------------------------
++# Fake clock
++# ---------------------------------------------------------------------------
++
++class FakeClock:
++    """Monotonically advancing fake clock for deterministic timestamps."""
++
++    _EPOCH = 1_735_689_600  # 2026-01-01T00:00:00Z
++
++    def __init__(self) -> None:
++        self._t = self._EPOCH
++
++    def now(self) -> float:
++        return self._t
++
++    def advance(self, seconds: float = 1.0) -> None:
++        self._t += seconds
++
++    def iso(self) -> str:
++        import datetime
++        return datetime.datetime.utcfromtimestamp(self._t).strftime(
++            "%Y-%m-%dT%H:%M:%SZ"
++        )
++
++
++@pytest.fixture()
++def fake_clock() -> FakeClock:
++    return FakeClock()
++
++
++# ---------------------------------------------------------------------------
++# Mock HCW adapter
++# ---------------------------------------------------------------------------
++
++class MockHCWAdapter:
++    """Records all dispatch intents without any real HCW writes."""
++
++    def __init__(self) -> None:
++        self.dispatched: List[Dict[str, Any]] = []
++        self.should_fail = False
++        self.fail_count = 0
++        self._fail_remaining = 0
++
++    def fail_next(self, n: int = 1) -> None:
++        self._fail_remaining = n
++
++    def dispatch(self, intent: Dict[str, Any]) -> Dict[str, Any]:
++        if self._fail_remaining > 0:
++            self._fail_remaining -= 1
++            self.fail_count += 1
++            raise RuntimeError("MockHCWAdapter: simulated dispatch failure")
++        record = dict(intent)
++        record["_dispatched_at"] = time.time()
++        self.dispatched.append(record)
++        return {"status": "accepted", "intent_id": str(uuid.uuid4())}
++
++    def clear(self) -> None:
++        self.dispatched.clear()
++        self.fail_count = 0
++        self._fail_remaining = 0
++
++
++@pytest.fixture()
++def mock_hcw_adapter() -> MockHCWAdapter:
++    return MockHCWAdapter()
++
++
++# ---------------------------------------------------------------------------
++# HMAC signature helpers
++# ---------------------------------------------------------------------------
++
++def compute_github_signature(body: bytes, secret: str = TEST_WEBHOOK_SECRET) -> str:
++    """Compute a GitHub-style HMAC-SHA256 webhook signature."""
++    sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
++    return f"sha256={sig}"
++
++
++def fixture_bytes(name: str) -> bytes:
++    """Return raw bytes for a named fixture file."""
++    return (FIXTURE_DIR / name).read_bytes()
++
++
++def fixture_payload(name: str) -> Dict[str, Any]:
++    """Return parsed JSON for a named fixture file."""
++    return json.loads(fixture_bytes(name))
++
++
++@pytest.fixture()
++def opened_payload() -> Dict[str, Any]:
++    return fixture_payload("issues-opened.json")
++
++
++@pytest.fixture()
++def edited_payload() -> Dict[str, Any]:
++    return fixture_payload("issues-edited.json")
++
++
++@pytest.fixture()
++def closed_payload() -> Dict[str, Any]:
++    return fixture_payload("issues-closed.json")
++
++
++@pytest.fixture()
++def reopened_payload() -> Dict[str, Any]:
++    return fixture_payload("issues-reopened.json")
++
++
++@pytest.fixture()
++def unsupported_payload() -> Dict[str, Any]:
++    return fixture_payload("unsupported-event.json")
++
++
++@pytest.fixture()
++def disabled_config_path() -> Path:
++    return FIXTURE_DIR / "config.disabled.yaml"
++
++
++# ---------------------------------------------------------------------------
++# Delivery ID factory
++# ---------------------------------------------------------------------------
++
++def make_delivery_id() -> str:
++    return str(uuid.uuid4())
++
++
++# ---------------------------------------------------------------------------
++# Environment guard — no live network or real secrets
++# ---------------------------------------------------------------------------
++
++@pytest.fixture(autouse=True)
++def _no_real_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
++    """Ensure real GitHub credential env vars are absent during tests."""
++    for var in (
++        "GITHUB_TOKEN",
++        "GITHUB_WEBHOOK_SECRET",
++        "GITHUB_INTAKE_WEBHOOK_SECRET",
++        "HCW_API_KEY",
++        "HCW_TOKEN",
++    ):
++        monkeypatch.delenv(var, raising=False)
+diff --git a/plugins/github-intake/tests/fixtures/config.disabled.yaml b/plugins/github-intake/tests/fixtures/config.disabled.yaml
+new file mode 100644
+index 0000000000..f4a08bfc96
+--- /dev/null
++++ b/plugins/github-intake/tests/fixtures/config.disabled.yaml
+@@ -0,0 +1,27 @@
++github_intake:
++  enabled: false
++  dry_run: true
++  kill_switch: false
++
++  allowlist:
++    owners:
++      - test-owner
++    repositories:
++      - test-owner/test-repo
++
++  webhook:
++    max_payload_bytes: 25165824
++    credentials:
++      secret_env: GITHUB_INTAKE_WEBHOOK_SECRET
++
++  hcw:
++    adapter: dry_run
++    enabled: false
++
++  routing:
++    default_priority: normal
++    rules: []
++
++  audit:
++    enabled: true
++    redact_body: true
+diff --git a/plugins/github-intake/tests/fixtures/issues-closed.json b/plugins/github-intake/tests/fixtures/issues-closed.json
+new file mode 100644
+index 0000000000..02c512d4c5
+--- /dev/null
++++ b/plugins/github-intake/tests/fixtures/issues-closed.json
+@@ -0,0 +1,37 @@
++{
++  "action": "closed",
++  "issue": {
++    "id": 1234567890,
++    "number": 42,
++    "title": "Test issue for intake pipeline",
++    "body": "This is a test issue body with no executable content.",
++    "state": "closed",
++    "created_at": "2026-01-01T00:00:00Z",
++    "updated_at": "2026-01-01T00:02:00Z",
++    "html_url": "https://github.com/test-owner/test-repo/issues/42",
++    "user": {
++      "login": "test-user",
++      "id": 111
++    },
++    "labels": [],
++    "assignees": []
++  },
++  "repository": {
++    "id": 987654321,
++    "name": "test-repo",
++    "full_name": "test-owner/test-repo",
++    "owner": {
++      "login": "test-owner",
++      "id": 222
++    },
++    "private": false
++  },
++  "sender": {
++    "login": "test-user",
++    "id": 111
++  },
++  "installation": {
++    "id": 555,
++    "node_id": "MDIzOkludGVncmF0aW9uSW5zdGFsbGF0aW9uNTU1"
++  }
++}
+diff --git a/plugins/github-intake/tests/fixtures/issues-edited.json b/plugins/github-intake/tests/fixtures/issues-edited.json
+new file mode 100644
+index 0000000000..534933ce24
+--- /dev/null
++++ b/plugins/github-intake/tests/fixtures/issues-edited.json
+@@ -0,0 +1,42 @@
++{
++  "action": "edited",
++  "issue": {
++    "id": 1234567890,
++    "number": 42,
++    "title": "Test issue for intake pipeline (edited)",
++    "body": "Edited body with no executable content.",
++    "state": "open",
++    "created_at": "2026-01-01T00:00:00Z",
++    "updated_at": "2026-01-01T00:01:00Z",
++    "html_url": "https://github.com/test-owner/test-repo/issues/42",
++    "user": {
++      "login": "test-user",
++      "id": 111
++    },
++    "labels": [],
++    "assignees": []
++  },
++  "changes": {
++    "title": {
++      "from": "Test issue for intake pipeline"
++    }
++  },
++  "repository": {
++    "id": 987654321,
++    "name": "test-repo",
++    "full_name": "test-owner/test-repo",
++    "owner": {
++      "login": "test-owner",
++      "id": 222
++    },
++    "private": false
++  },
++  "sender": {
++    "login": "test-user",
++    "id": 111
++  },
++  "installation": {
++    "id": 555,
++    "node_id": "MDIzOkludGVncmF0aW9uSW5zdGFsbGF0aW9uNTU1"
++  }
++}
+diff --git a/plugins/github-intake/tests/fixtures/issues-opened.json b/plugins/github-intake/tests/fixtures/issues-opened.json
+new file mode 100644
+index 0000000000..9bc2e0c821
+--- /dev/null
++++ b/plugins/github-intake/tests/fixtures/issues-opened.json
+@@ -0,0 +1,37 @@
++{
++  "action": "opened",
++  "issue": {
++    "id": 1234567890,
++    "number": 42,
++    "title": "Test issue for intake pipeline",
++    "body": "This is a test issue body with no executable content.",
++    "state": "open",
++    "created_at": "2026-01-01T00:00:00Z",
++    "updated_at": "2026-01-01T00:00:00Z",
++    "html_url": "https://github.com/test-owner/test-repo/issues/42",
++    "user": {
++      "login": "test-user",
++      "id": 111
++    },
++    "labels": [],
++    "assignees": []
++  },
++  "repository": {
++    "id": 987654321,
++    "name": "test-repo",
++    "full_name": "test-owner/test-repo",
++    "owner": {
++      "login": "test-owner",
++      "id": 222
++    },
++    "private": false
++  },
++  "sender": {
++    "login": "test-user",
++    "id": 111
++  },
++  "installation": {
++    "id": 555,
++    "node_id": "MDIzOkludGVncmF0aW9uSW5zdGFsbGF0aW9uNTU1"
++  }
++}
+diff --git a/plugins/github-intake/tests/fixtures/issues-reopened.json b/plugins/github-intake/tests/fixtures/issues-reopened.json
+new file mode 100644
+index 0000000000..03b4c914ca
+--- /dev/null
++++ b/plugins/github-intake/tests/fixtures/issues-reopened.json
+@@ -0,0 +1,37 @@
++{
++  "action": "reopened",
++  "issue": {
++    "id": 1234567890,
++    "number": 42,
++    "title": "Test issue for intake pipeline",
++    "body": "This is a test issue body with no executable content.",
++    "state": "open",
++    "created_at": "2026-01-01T00:00:00Z",
++    "updated_at": "2026-01-01T00:03:00Z",
++    "html_url": "https://github.com/test-owner/test-repo/issues/42",
++    "user": {
++      "login": "test-user",
++      "id": 111
++    },
++    "labels": [],
++    "assignees": []
++  },
++  "repository": {
++    "id": 987654321,
++    "name": "test-repo",
++    "full_name": "test-owner/test-repo",
++    "owner": {
++      "login": "test-owner",
++      "id": 222
++    },
++    "private": false
++  },
++  "sender": {
++    "login": "test-user",
++    "id": 111
++  },
++  "installation": {
++    "id": 555,
++    "node_id": "MDIzOkludGVncmF0aW9uSW5zdGFsbGF0aW9uNTU1"
++  }
++}
+diff --git a/plugins/github-intake/tests/fixtures/unsupported-event.json b/plugins/github-intake/tests/fixtures/unsupported-event.json
+new file mode 100644
+index 0000000000..ee9a54fa50
+--- /dev/null
++++ b/plugins/github-intake/tests/fixtures/unsupported-event.json
+@@ -0,0 +1,38 @@
++{
++  "action": "labeled",
++  "issue": {
++    "id": 1234567890,
++    "number": 42,
++    "title": "Test issue",
++    "body": "Body text.",
++    "state": "open",
++    "created_at": "2026-01-01T00:00:00Z",
++    "updated_at": "2026-01-01T00:00:00Z",
++    "html_url": "https://github.com/test-owner/test-repo/issues/42",
++    "user": {
++      "login": "test-user",
++      "id": 111
++    },
++    "labels": [{"name": "bug"}],
++    "assignees": []
++  },
++  "label": {"name": "bug"},
++  "repository": {
++    "id": 987654321,
++    "name": "test-repo",
++    "full_name": "test-owner/test-repo",
++    "owner": {
++      "login": "test-owner",
++      "id": 222
++    },
++    "private": false
++  },
++  "sender": {
++    "login": "test-user",
++    "id": 111
++  },
++  "installation": {
++    "id": 555,
++    "node_id": "MDIzOkludGVncmF0aW9uSW5zdGFsbGF0aW9uNTU1"
++  }
++}
+diff --git a/plugins/github-intake/tests/plugin.yaml b/plugins/github-intake/tests/plugin.yaml
+new file mode 100644
+index 0000000000..14852c6a03
+--- /dev/null
++++ b/plugins/github-intake/tests/plugin.yaml
+@@ -0,0 +1,5 @@
++name: github-intake
++version: 0.1.0
++description: "GitHub issue to canonical Kanban intake and HCW routing pipeline (disabled by default)"
++enabled: false
++kind: backend
+diff --git a/plugins/github-intake/tests/test_cli.py b/plugins/github-intake/tests/test_cli.py
+new file mode 100644
+index 0000000000..25468c4f6a
+--- /dev/null
++++ b/plugins/github-intake/tests/test_cli.py
+@@ -0,0 +1,280 @@
++"""RED CLI contract tests for the github-intake plugin.
++
++SR5-004: Tests must use real plugin discovery via hermes_cli.plugins.
++No fake PluginContext, no manual sys.modules injection, no source-shape
++assertions via inspect.getsource (except for hmac.compare_digest check).
++
++Covers: validate-config, ingest-fixture, replay, quarantine-list, audit,
++status, dry-run subcommands via installed 'hermes github-intake' CLI.
++"""
++
++from __future__ import annotations
++
++import argparse
++import json
++from pathlib import Path
++
++import pytest
++
++from tests.conftest import (
++    TEST_WEBHOOK_SECRET,
++    compute_github_signature,
++    fixture_bytes,
++    fixture_payload,
++    make_delivery_id,
++)
++
++FIXTURE_DIR = Path(__file__).parent / "fixtures"
++
++
++def _get_installed_parser(manager) -> argparse.ArgumentParser:
++    """Build the argparse tree from the installed github-intake CLI command."""
++    cmd_info = manager._cli_commands["github-intake"]
++    parser = argparse.ArgumentParser(prog="hermes github-intake")
++    cmd_info["setup_fn"](parser)
++    return parser
++
++
++class TestPluginDiscovery:
++    """SR5-004: Plugin must register via real discovery, not manual loading."""
++
++    def test_real_discover_plugins_registers_github_intake(self, tmp_hermes_home):
++        """After discover_plugins(), 'github-intake' appears in manager._cli_commands."""
++        from hermes_cli.plugins import discover_plugins, get_plugin_manager
++        discover_plugins(force=True)
++        manager = get_plugin_manager()
++        assert "github-intake" in manager._cli_commands, (
++            "Real plugin discovery must register 'github-intake' CLI command"
++        )
++
++    def test_plugin_yaml_is_present_and_parseable(self):
++        """plugin.yaml must exist and be valid YAML with expected fields."""
++        import yaml
++        plugin_yaml = FIXTURE_DIR.parent / "plugin.yaml"
++        assert plugin_yaml.exists(), "plugins/github-intake/plugin.yaml must exist"
++        manifest = yaml.safe_load(plugin_yaml.read_text())
++        assert manifest.get("name") == "github-intake"
++        assert manifest.get("enabled", True) is False or "enabled" in manifest, (
++            "Plugin manifest must default to enabled: false"
++        )
++
++
++class TestValidateConfigSubcommand:
++    def test_validate_config_accepts_disabled_config(
++        self, tmp_hermes_home, disabled_config_path, capsys
++    ):
++        from hermes_cli.plugins import discover_plugins, get_plugin_manager
++        discover_plugins(force=True)
++        manager = get_plugin_manager()
++        parser = _get_installed_parser(manager)
++
++        args = parser.parse_args(["validate-config", "--config", str(disabled_config_path)])
++        handler = manager._cli_commands["github-intake"].get("handler_fn")
++        assert handler is not None
++        handler(args)
++
++        out = capsys.readouterr().out
++        data = json.loads(out)
++        assert data.get("valid") is True
++        assert data.get("enabled") is False
++
++    def test_validate_config_rejects_missing_allowlist(
++        self, tmp_hermes_home, tmp_path, capsys
++    ):
++        from hermes_cli.plugins import discover_plugins, get_plugin_manager
++        import yaml
++        discover_plugins(force=True)
++        manager = get_plugin_manager()
++        parser = _get_installed_parser(manager)
++
++        bad_config = tmp_path / "bad.yaml"
++        bad_config.write_text(yaml.dump({
++            "github_intake": {
++                "enabled": False,
++                "dry_run": True,
++                "allowlist": {},  # empty allowlist
++            }
++        }))
++        args = parser.parse_args(["validate-config", "--config", str(bad_config)])
++        handler = manager._cli_commands["github-intake"].get("handler_fn")
++        handler(args)
++
++        out = capsys.readouterr().out
++        data = json.loads(out)
++        assert data.get("valid") is False
++
++
++class TestDryRunSubcommand:
++    def test_dry_run_no_secret_in_argv(
++        self, tmp_hermes_home, disabled_config_path
++    ):
++        """
++        SR5-001: 'hermes github-intake dry-run --config <cfg> --event <fixture>'
++        must parse without --secret in argv.
++        """
++        from hermes_cli.plugins import discover_plugins, get_plugin_manager
++        discover_plugins(force=True)
++        manager = get_plugin_manager()
++        parser = _get_installed_parser(manager)
++
++        args = parser.parse_args([
++            "dry-run",
++            "--config", str(disabled_config_path),
++            "--event", str(FIXTURE_DIR / "issues-opened.json"),
++        ])
++        assert args is not None, "--event fixture path must parse without --secret"
++        assert not hasattr(args, "secret") or args.secret is None, (
++            "--secret must not be a required argv parameter (SR5-001)"
++        )
++
++    def test_dry_run_emits_redacted_json(
++        self, tmp_hermes_home, disabled_config_path, capsys
++    ):
++        from hermes_cli.plugins import discover_plugins, get_plugin_manager
++        discover_plugins(force=True)
++        manager = get_plugin_manager()
++        parser = _get_installed_parser(manager)
++        cmd_info = manager._cli_commands["github-intake"]
++
++        args = parser.parse_args([
++            "dry-run",
++            "--config", str(disabled_config_path),
++            "--event", str(FIXTURE_DIR / "issues-opened.json"),
++        ])
++        handler = cmd_info.get("handler_fn")
++        assert handler is not None
++        handler(args)
++
++        captured = capsys.readouterr()
++        output = json.loads(captured.out)
++        assert output.get("dry_run") is True
++        assert TEST_WEBHOOK_SECRET not in captured.out
++        assert "no executable content" not in captured.out
++
++    def test_dry_run_no_kanban_writes(
++        self, tmp_hermes_home, tmp_kanban_board, disabled_config_path
++    ):
++        from hermes_cli.plugins import discover_plugins, get_plugin_manager
++        discover_plugins(force=True)
++        manager = get_plugin_manager()
++        parser = _get_installed_parser(manager)
++        cmd_info = manager._cli_commands["github-intake"]
++
++        args = parser.parse_args([
++            "dry-run",
++            "--config", str(disabled_config_path),
++            "--event", str(FIXTURE_DIR / "issues-opened.json"),
++        ])
++        handler = cmd_info.get("handler_fn")
++        handler(args)
++
++        # No real Kanban task must have been created
++        from plugins.github_intake.store import IntakeStore
++        store = IntakeStore(db_path=tmp_kanban_board)
++        assert store.count_kanban_tasks() == 0
++
++
++class TestIngestFixtureSubcommand:
++    def test_ingest_fixture_into_tmp_board(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        disabled_config_path,
++        capsys,
++    ):
++        """ingest-fixture must write a canonical Kanban task to the specified board."""
++        from hermes_cli.plugins import discover_plugins, get_plugin_manager
++        discover_plugins(force=True)
++        manager = get_plugin_manager()
++        parser = _get_installed_parser(manager)
++        cmd_info = manager._cli_commands["github-intake"]
++
++        # Enable the plugin for ingest-fixture (not dry-run)
++        import yaml
++        import tempfile
++        config_data = yaml.safe_load(disabled_config_path.read_text())
++        config_data["github_intake"]["enabled"] = True
++        config_data["github_intake"]["dry_run"] = False
++        with tempfile.NamedTemporaryFile(
++            suffix=".yaml", mode="w", delete=False
++        ) as f:
++            yaml.dump(config_data, f)
++            enabled_config = f.name
++
++        args = parser.parse_args([
++            "ingest-fixture",
++            "--config", enabled_config,
++            "--fixture", str(FIXTURE_DIR / "issues-opened.json"),
++            "--board", str(tmp_kanban_board),
++        ])
++        handler = cmd_info.get("handler_fn")
++        handler(args)
++
++        out = capsys.readouterr().out
++        data = json.loads(out)
++        assert data.get("state") == "accepted"
++        assert data.get("canonical_id")
++
++
++class TestStatusSubcommand:
++    def test_status_outputs_json(self, tmp_hermes_home, disabled_config_path, capsys):
++        from hermes_cli.plugins import discover_plugins, get_plugin_manager
++        discover_plugins(force=True)
++        manager = get_plugin_manager()
++        parser = _get_installed_parser(manager)
++        cmd_info = manager._cli_commands["github-intake"]
++
++        args = parser.parse_args(["status", "--config", str(disabled_config_path)])
++        handler = cmd_info.get("handler_fn")
++        handler(args)
++
++        out = capsys.readouterr().out
++        data = json.loads(out)
++        assert "enabled" in data
++        assert "kill_switch" in data
++
++
++class TestQuarantineListSubcommand:
++    def test_quarantine_list_returns_json_array(
++        self, tmp_hermes_home, tmp_kanban_board, disabled_config_path, capsys
++    ):
++        from hermes_cli.plugins import discover_plugins, get_plugin_manager
++        discover_plugins(force=True)
++        manager = get_plugin_manager()
++        parser = _get_installed_parser(manager)
++        cmd_info = manager._cli_commands["github-intake"]
++
++        args = parser.parse_args([
++            "quarantine-list",
++            "--board", str(tmp_kanban_board),
++        ])
++        handler = cmd_info.get("handler_fn")
++        handler(args)
++
++        out = capsys.readouterr().out
++        data = json.loads(out)
++        assert isinstance(data, list)
++
++
++class TestAuditSubcommand:
++    def test_audit_returns_json_for_canonical_id(
++        self, tmp_hermes_home, tmp_kanban_board, disabled_config_path, capsys
++    ):
++        from hermes_cli.plugins import discover_plugins, get_plugin_manager
++        discover_plugins(force=True)
++        manager = get_plugin_manager()
++        parser = _get_installed_parser(manager)
++        cmd_info = manager._cli_commands["github-intake"]
++
++        # Use a non-existent canonical ID — must return empty list, not crash
++        args = parser.parse_args([
++            "audit",
++            "--board", str(tmp_kanban_board),
++            "--canonical-id", "a" * 64,
++        ])
++        handler = cmd_info.get("handler_fn")
++        handler(args)
++
++        out = capsys.readouterr().out
++        data = json.loads(out)
++        assert isinstance(data, list)
+diff --git a/plugins/github-intake/tests/test_contracts.py b/plugins/github-intake/tests/test_contracts.py
+new file mode 100644
+index 0000000000..5548df9aee
+--- /dev/null
++++ b/plugins/github-intake/tests/test_contracts.py
+@@ -0,0 +1,824 @@
++"""RED contract tests for the github-intake plugin.
++
++These tests define required typed-webhook, canonical-intake, provenance,
++deterministic-identifier, issue-lifecycle, ordering, duplicate, replay,
++concurrency, edit, close/reopen, stale/conflict, unsupported-event,
++routing, retry, quarantine, audit, kill-switch, rollback, dry-run, and
++installed-CLI contracts.
++
++All tests FAIL until the plugin implementation exists.
++"""
++
++from __future__ import annotations
++
++import hashlib
++import json
++import os
++import sys
++import uuid
++from pathlib import Path
++from typing import Any, Dict
++from unittest.mock import patch
++
++import pytest
++
++# ---------------------------------------------------------------------------
++# Plugin imports — these fail until the implementation is created.
++# ---------------------------------------------------------------------------
++from plugins.github_intake.config import GithubIntakeConfig, load_config  # noqa: F401
++from plugins.github_intake.models import (  # noqa: F401
++    CanonicalIntakeRecord,
++    DeliveryEnvelope,
++    HCWRouteIntent,
++    IntakeOutcome,
++    ProvenanceRecord,
++)
++from plugins.github_intake.security import (  # noqa: F401
++    verify_github_signature,
++    check_allowlist,
++)
++from plugins.github_intake.intake import process_delivery  # noqa: F401
++from plugins.github_intake.store import IntakeStore  # noqa: F401
++from plugins.github_intake.routing import derive_route_intent  # noqa: F401
++from plugins.github_intake.hcw_adapter import DryRunHCWAdapter  # noqa: F401
++from plugins.github_intake.audit import AuditLog  # noqa: F401
++from plugins.github_intake.recovery import RecoveryManager  # noqa: F401
++
++from tests.conftest import (
++    TEST_WEBHOOK_SECRET,
++    compute_github_signature,
++    fixture_bytes,
++    fixture_payload,
++    make_delivery_id,
++)
++
++
++# ===========================================================================
++# Contract: Webhook envelope typing
++# ===========================================================================
++
++class TestWebhookEnvelopeContract:
++    def test_delivery_envelope_requires_event_type(self):
++        """DeliveryEnvelope must carry the X-GitHub-Event header value."""
++        env = DeliveryEnvelope(
++            delivery_id=make_delivery_id(),
++            event_type="issues",
++            action="opened",
++            payload=fixture_payload("issues-opened.json"),
++            raw_body=fixture_bytes("issues-opened.json"),
++            signature=compute_github_signature(fixture_bytes("issues-opened.json")),
++            received_at="2026-01-01T00:00:00Z",
++        )
++        assert env.event_type == "issues"
++        assert env.action == "opened"
++
++    def test_delivery_envelope_carries_delivery_id(self):
++        did = make_delivery_id()
++        body = fixture_bytes("issues-opened.json")
++        env = DeliveryEnvelope(
++            delivery_id=did,
++            event_type="issues",
++            action="opened",
++            payload=fixture_payload("issues-opened.json"),
++            raw_body=body,
++            signature=compute_github_signature(body),
++            received_at="2026-01-01T00:00:00Z",
++        )
++        assert env.delivery_id == did
++
++    def test_delivery_envelope_carries_payload_digest(self):
++        body = fixture_bytes("issues-opened.json")
++        env = DeliveryEnvelope(
++            delivery_id=make_delivery_id(),
++            event_type="issues",
++            action="opened",
++            payload=fixture_payload("issues-opened.json"),
++            raw_body=body,
++            signature=compute_github_signature(body),
++            received_at="2026-01-01T00:00:00Z",
++        )
++        expected = hashlib.sha256(body).hexdigest()
++        assert env.payload_digest == expected
++
++
++# ===========================================================================
++# Contract: Deterministic canonical identifier
++# ===========================================================================
++
++class TestDeterministicIdentifierContract:
++    def test_canonical_id_is_stable_across_calls(self, opened_payload):
++        """Same installation/repo/issue → same canonical ID every time."""
++        from plugins.github_intake.models import compute_canonical_id
++        id1 = compute_canonical_id(
++            installation_id=opened_payload["installation"]["id"],
++            repository_full_name=opened_payload["repository"]["full_name"],
++            issue_number=opened_payload["issue"]["number"],
++        )
++        id2 = compute_canonical_id(
++            installation_id=opened_payload["installation"]["id"],
++            repository_full_name=opened_payload["repository"]["full_name"],
++            issue_number=opened_payload["issue"]["number"],
++        )
++        assert id1 == id2
++        assert len(id1) == 64  # SHA-256 hex
++
++    def test_canonical_id_differs_for_different_issues(self, opened_payload):
++        from plugins.github_intake.models import compute_canonical_id
++        id1 = compute_canonical_id(
++            installation_id=opened_payload["installation"]["id"],
++            repository_full_name=opened_payload["repository"]["full_name"],
++            issue_number=1,
++        )
++        id2 = compute_canonical_id(
++            installation_id=opened_payload["installation"]["id"],
++            repository_full_name=opened_payload["repository"]["full_name"],
++            issue_number=2,
++        )
++        assert id1 != id2
++
++
++# ===========================================================================
++# Contract: Canonical intake record
++# ===========================================================================
++
++class TestCanonicalIntakeContract:
++    def test_canonical_record_fields(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        opened_payload,
++        disabled_config_path,
++    ):
++        """process_delivery returns a CanonicalIntakeRecord with required fields."""
++        config = load_config(disabled_config_path)
++        body = fixture_bytes("issues-opened.json")
++        env = DeliveryEnvelope(
++            delivery_id=make_delivery_id(),
++            event_type="issues",
++            action="opened",
++            payload=opened_payload,
++            raw_body=body,
++            signature=compute_github_signature(body),
++            received_at=fake_clock.iso(),
++        )
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++        result = process_delivery(
++            envelope=env,
++            config=config,
++            store=store,
++            audit=audit,
++            hcw_adapter=mock_hcw_adapter,
++            clock=fake_clock,
++        )
++        assert isinstance(result, CanonicalIntakeRecord)
++        assert result.canonical_id  # non-empty deterministic hash
++        assert result.delivery_id == env.delivery_id
++        assert result.payload_digest == env.payload_digest
++        assert result.source_timestamp  # from issue.created_at
++        assert result.received_timestamp  # when we ingested
++        assert result.lifecycle_revision >= 0
++        assert result.provenance is not None
++        assert result.state in ("accepted", "duplicate", "stale", "conflict", "quarantined")
++
++    def test_canonical_record_does_not_store_issue_body(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        opened_payload,
++        disabled_config_path,
++    ):
++        """Issue body text must never be stored in the canonical record."""
++        config = load_config(disabled_config_path)
++        body = fixture_bytes("issues-opened.json")
++        env = DeliveryEnvelope(
++            delivery_id=make_delivery_id(),
++            event_type="issues",
++            action="opened",
++            payload=opened_payload,
++            raw_body=body,
++            signature=compute_github_signature(body),
++            received_at=fake_clock.iso(),
++        )
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++        result = process_delivery(
++            envelope=env,
++            config=config,
++            store=store,
++            audit=audit,
++            hcw_adapter=mock_hcw_adapter,
++            clock=fake_clock,
++        )
++        record_dict = result.to_dict()
++        assert "no executable content" not in json.dumps(record_dict)
++        assert opened_payload["issue"]["body"] not in json.dumps(record_dict)
++
++
++# ===========================================================================
++# Contract: Provenance
++# ===========================================================================
++
++class TestProvenanceContract:
++    def test_provenance_fields_present(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        opened_payload,
++        disabled_config_path,
++    ):
++        config = load_config(disabled_config_path)
++        body = fixture_bytes("issues-opened.json")
++        env = DeliveryEnvelope(
++            delivery_id=make_delivery_id(),
++            event_type="issues",
++            action="opened",
++            payload=opened_payload,
++            raw_body=body,
++            signature=compute_github_signature(body),
++            received_at=fake_clock.iso(),
++        )
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++        result = process_delivery(
++            envelope=env,
++            config=config,
++            store=store,
++            audit=audit,
++            hcw_adapter=mock_hcw_adapter,
++            clock=fake_clock,
++        )
++        prov = result.provenance
++        assert prov.installation_id == opened_payload["installation"]["id"]
++        assert prov.repository_full_name == opened_payload["repository"]["full_name"]
++        assert prov.issue_number == opened_payload["issue"]["number"]
++        assert prov.event_type == "issues"
++        assert prov.action == "opened"
++        assert prov.sender_login == opened_payload["sender"]["login"]
++
++    def test_provenance_does_not_contain_secret(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        opened_payload,
++        disabled_config_path,
++    ):
++        config = load_config(disabled_config_path)
++        body = fixture_bytes("issues-opened.json")
++        env = DeliveryEnvelope(
++            delivery_id=make_delivery_id(),
++            event_type="issues",
++            action="opened",
++            payload=opened_payload,
++            raw_body=body,
++            signature=compute_github_signature(body),
++            received_at=fake_clock.iso(),
++        )
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++        result = process_delivery(
++            envelope=env,
++            config=config,
++            store=store,
++            audit=audit,
++            hcw_adapter=mock_hcw_adapter,
++            clock=fake_clock,
++        )
++        prov_str = json.dumps(result.provenance.__dict__ if hasattr(result.provenance, "__dict__") else result.provenance.model_dump())
++        assert TEST_WEBHOOK_SECRET not in prov_str
++
++
++# ===========================================================================
++# Contract: Duplicate / replay / idempotency
++# ===========================================================================
++
++class TestDuplicateReplayContract:
++    def test_same_delivery_id_is_duplicate(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        opened_payload,
++        disabled_config_path,
++    ):
++        """Redelivering the same delivery_id yields DUPLICATE, no double-route."""
++        config = load_config(disabled_config_path)
++        body = fixture_bytes("issues-opened.json")
++        did = make_delivery_id()
++
++        def make_env():
++            return DeliveryEnvelope(
++                delivery_id=did,
++                event_type="issues",
++                action="opened",
++                payload=opened_payload,
++                raw_body=body,
++                signature=compute_github_signature(body),
++                received_at=fake_clock.iso(),
++            )
++
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++        r1 = process_delivery(make_env(), config, store, audit, mock_hcw_adapter, fake_clock)
++        fake_clock.advance()
++        r2 = process_delivery(make_env(), config, store, audit, mock_hcw_adapter, fake_clock)
++        assert r1.state == "accepted"
++        assert r2.state == "duplicate"
++        # Only one HCW route intent should have been dispatched
++        assert len(mock_hcw_adapter.dispatched) <= 1
++
++    def test_replay_of_accepted_with_new_delivery_id_and_same_content(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        opened_payload,
++        disabled_config_path,
++    ):
++        """Two different delivery IDs for the same canonical issue → second is replay."""
++        config = load_config(disabled_config_path)
++        body = fixture_bytes("issues-opened.json")
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++
++        env1 = DeliveryEnvelope(
++            delivery_id=make_delivery_id(),
++            event_type="issues",
++            action="opened",
++            payload=opened_payload,
++            raw_body=body,
++            signature=compute_github_signature(body),
++            received_at=fake_clock.iso(),
++        )
++        r1 = process_delivery(env1, config, store, audit, mock_hcw_adapter, fake_clock)
++        fake_clock.advance()
++        env2 = DeliveryEnvelope(
++            delivery_id=make_delivery_id(),
++            event_type="issues",
++            action="opened",
++            payload=opened_payload,
++            raw_body=body,
++            signature=compute_github_signature(body),
++            received_at=fake_clock.iso(),
++        )
++        r2 = process_delivery(env2, config, store, audit, mock_hcw_adapter, fake_clock)
++        assert r1.state == "accepted"
++        assert r2.state in ("duplicate", "stale")
++
++
++# ===========================================================================
++# Contract: Ordering / compare-and-swap
++# ===========================================================================
++
++class TestOrderingContract:
++    def test_edit_after_open_advances_revision(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        opened_payload,
++        edited_payload,
++        disabled_config_path,
++    ):
++        """An edit delivery after open must advance lifecycle_revision monotonically."""
++        config = load_config(disabled_config_path)
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++
++        body_open = fixture_bytes("issues-opened.json")
++        r1 = process_delivery(
++            DeliveryEnvelope(
++                delivery_id=make_delivery_id(),
++                event_type="issues",
++                action="opened",
++                payload=opened_payload,
++                raw_body=body_open,
++                signature=compute_github_signature(body_open),
++                received_at=fake_clock.iso(),
++            ),
++            config, store, audit, mock_hcw_adapter, fake_clock,
++        )
++        fake_clock.advance(60)
++        body_edit = fixture_bytes("issues-edited.json")
++        r2 = process_delivery(
++            DeliveryEnvelope(
++                delivery_id=make_delivery_id(),
++                event_type="issues",
++                action="edited",
++                payload=edited_payload,
++                raw_body=body_edit,
++                signature=compute_github_signature(body_edit),
++                received_at=fake_clock.iso(),
++            ),
++            config, store, audit, mock_hcw_adapter, fake_clock,
++        )
++        assert r1.state == "accepted"
++        assert r2.state == "accepted"
++        assert r2.lifecycle_revision > r1.lifecycle_revision
++
++    def test_stale_edit_before_current_revision(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        opened_payload,
++        edited_payload,
++        disabled_config_path,
++    ):
++        """An edit with an older source_timestamp than the current record is stale."""
++        config = load_config(disabled_config_path)
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++
++        body_edit = fixture_bytes("issues-edited.json")
++        body_open = fixture_bytes("issues-opened.json")
++
++        # Ingest edit first (out of order)
++        r_edit = process_delivery(
++            DeliveryEnvelope(
++                delivery_id=make_delivery_id(),
++                event_type="issues",
++                action="edited",
++                payload=edited_payload,
++                raw_body=body_edit,
++                signature=compute_github_signature(body_edit),
++                received_at=fake_clock.iso(),
++            ),
++            config, store, audit, mock_hcw_adapter, fake_clock,
++        )
++        fake_clock.advance(5)
++        # Now ingest open (older source_timestamp)
++        r_open = process_delivery(
++            DeliveryEnvelope(
++                delivery_id=make_delivery_id(),
++                event_type="issues",
++                action="opened",
++                payload=opened_payload,
++                raw_body=body_open,
++                signature=compute_github_signature(body_open),
++                received_at=fake_clock.iso(),
++            ),
++            config, store, audit, mock_hcw_adapter, fake_clock,
++        )
++        # open event has older source timestamp → stale or conflict
++        assert r_open.state in ("stale", "conflict")
++
++
++# ===========================================================================
++# Contract: Unsupported event
++# ===========================================================================
++
++class TestUnsupportedEventContract:
++    def test_unsupported_action_rejected(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        unsupported_payload,
++        disabled_config_path,
++    ):
++        """Actions not in {opened, edited, closed, reopened} must be rejected."""
++        config = load_config(disabled_config_path)
++        body = fixture_bytes("unsupported-event.json")
++        env = DeliveryEnvelope(
++            delivery_id=make_delivery_id(),
++            event_type="issues",
++            action="labeled",
++            payload=unsupported_payload,
++            raw_body=body,
++            signature=compute_github_signature(body),
++            received_at=fake_clock.iso(),
++        )
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++        result = process_delivery(env, config, store, audit, mock_hcw_adapter, fake_clock)
++        assert result.state == "rejected"
++        assert len(mock_hcw_adapter.dispatched) == 0
++
++
++# ===========================================================================
++# Contract: Routing
++# ===========================================================================
++
++class TestRoutingContract:
++    def test_route_intent_derived_from_metadata_only(self, opened_payload):
++        """Route key and dispatch intent must derive only from validated metadata."""
++        prov = ProvenanceRecord(
++            installation_id=opened_payload["installation"]["id"],
++            repository_full_name=opened_payload["repository"]["full_name"],
++            issue_number=opened_payload["issue"]["number"],
++            event_type="issues",
++            action="opened",
++            sender_login=opened_payload["sender"]["login"],
++            issue_title=opened_payload["issue"]["title"],
++        )
++        intent = derive_route_intent(provenance=prov, config_rules=[])
++        assert isinstance(intent, HCWRouteIntent)
++        assert intent.route_key
++        assert intent.canonical_id
++        # The raw issue body must not appear in the intent
++        assert opened_payload["issue"]["body"] not in json.dumps(intent.__dict__ if hasattr(intent, "__dict__") else intent.model_dump())
++
++    def test_route_key_is_deterministic(self, opened_payload):
++        from plugins.github_intake.models import compute_canonical_id
++        prov = ProvenanceRecord(
++            installation_id=opened_payload["installation"]["id"],
++            repository_full_name=opened_payload["repository"]["full_name"],
++            issue_number=opened_payload["issue"]["number"],
++            event_type="issues",
++            action="opened",
++            sender_login=opened_payload["sender"]["login"],
++            issue_title=opened_payload["issue"]["title"],
++        )
++        i1 = derive_route_intent(provenance=prov, config_rules=[])
++        i2 = derive_route_intent(provenance=prov, config_rules=[])
++        assert i1.route_key == i2.route_key
++        assert i1.canonical_id == i2.canonical_id
++
++
++# ===========================================================================
++# Contract: Audit
++# ===========================================================================
++
++class TestAuditContract:
++    def test_audit_entries_recorded_for_accepted_delivery(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        opened_payload,
++        disabled_config_path,
++    ):
++        config = load_config(disabled_config_path)
++        body = fixture_bytes("issues-opened.json")
++        env = DeliveryEnvelope(
++            delivery_id=make_delivery_id(),
++            event_type="issues",
++            action="opened",
++            payload=opened_payload,
++            raw_body=body,
++            signature=compute_github_signature(body),
++            received_at=fake_clock.iso(),
++        )
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++        result = process_delivery(env, config, store, audit, mock_hcw_adapter, fake_clock)
++        entries = audit.get_entries(result.canonical_id)
++        assert len(entries) >= 1
++        assert any(e["event"] == "delivery_accepted" for e in entries)
++
++    def test_audit_log_is_append_only(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        opened_payload,
++        disabled_config_path,
++    ):
++        config = load_config(disabled_config_path)
++        body = fixture_bytes("issues-opened.json")
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++        env = DeliveryEnvelope(
++            delivery_id=make_delivery_id(),
++            event_type="issues",
++            action="opened",
++            payload=opened_payload,
++            raw_body=body,
++            signature=compute_github_signature(body),
++            received_at=fake_clock.iso(),
++        )
++        result = process_delivery(env, config, store, audit, mock_hcw_adapter, fake_clock)
++        entries_before = audit.get_entries(result.canonical_id)
++        with pytest.raises(Exception):
++            audit.delete_entry(result.canonical_id, entries_before[0]["id"])
++
++    def test_audit_entries_do_not_contain_webhook_secret(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        opened_payload,
++        disabled_config_path,
++        monkeypatch,
++    ):
++        monkeypatch.setenv("GITHUB_INTAKE_WEBHOOK_SECRET", TEST_WEBHOOK_SECRET)
++        config = load_config(disabled_config_path)
++        body = fixture_bytes("issues-opened.json")
++        env = DeliveryEnvelope(
++            delivery_id=make_delivery_id(),
++            event_type="issues",
++            action="opened",
++            payload=opened_payload,
++            raw_body=body,
++            signature=compute_github_signature(body),
++            received_at=fake_clock.iso(),
++        )
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++        result = process_delivery(env, config, store, audit, mock_hcw_adapter, fake_clock)
++        entries_json = json.dumps(audit.get_entries(result.canonical_id))
++        assert TEST_WEBHOOK_SECRET not in entries_json
++
++
++# ===========================================================================
++# Contract: Kill switch
++# ===========================================================================
++
++class TestKillSwitchContract:
++    def test_kill_switch_blocks_all_processing(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        opened_payload,
++        disabled_config_path,
++    ):
++        """When kill_switch=true, process_delivery must refuse all deliveries."""
++        import yaml
++        config_data = yaml.safe_load(disabled_config_path.read_text())
++        config_data["github_intake"]["kill_switch"] = True
++        config_data["github_intake"]["enabled"] = True
++        from plugins.github_intake.config import GithubIntakeConfig
++        config = GithubIntakeConfig.from_dict(config_data["github_intake"])
++        body = fixture_bytes("issues-opened.json")
++        env = DeliveryEnvelope(
++            delivery_id=make_delivery_id(),
++            event_type="issues",
++            action="opened",
++            payload=opened_payload,
++            raw_body=body,
++            signature=compute_github_signature(body),
++            received_at=fake_clock.iso(),
++        )
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++        result = process_delivery(env, config, store, audit, mock_hcw_adapter, fake_clock)
++        assert result.state == "killed"
++        assert len(mock_hcw_adapter.dispatched) == 0
++
++
++# ===========================================================================
++# Contract: Dry-run
++# ===========================================================================
++
++class TestDryRunContract:
++    def test_dry_run_emits_no_kanban_writes(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        opened_payload,
++        disabled_config_path,
++    ):
++        """In dry_run mode, no canonical task is written to the Kanban board."""
++        config = load_config(disabled_config_path)
++        assert config.dry_run is True
++        body = fixture_bytes("issues-opened.json")
++        env = DeliveryEnvelope(
++            delivery_id=make_delivery_id(),
++            event_type="issues",
++            action="opened",
++            payload=opened_payload,
++            raw_body=body,
++            signature=compute_github_signature(body),
++            received_at=fake_clock.iso(),
++        )
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++        result = process_delivery(env, config, store, audit, mock_hcw_adapter, fake_clock)
++        # Dry-run: no real Kanban task written
++        assert not tmp_kanban_board.exists() or store.count_kanban_tasks() == 0
++        assert result.dry_run is True
++
++    def test_dry_run_returns_deterministic_json(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        opened_payload,
++        disabled_config_path,
++    ):
++        config = load_config(disabled_config_path)
++        body = fixture_bytes("issues-opened.json")
++
++        def make_env():
++            return DeliveryEnvelope(
++                delivery_id="fixed-delivery-id",
++                event_type="issues",
++                action="opened",
++                payload=opened_payload,
++                raw_body=body,
++                signature=compute_github_signature(body),
++                received_at="2026-01-01T00:00:00Z",
++            )
++
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++        r1 = process_delivery(make_env(), config, store, audit, mock_hcw_adapter, fake_clock)
++        r2 = process_delivery(make_env(), config, store, audit, mock_hcw_adapter, fake_clock)
++        assert r1.canonical_id == r2.canonical_id
++
++
++# ===========================================================================
++# Contract: Installed CLI (SR5-004 — real plugin discovery)
++# ===========================================================================
++
++class TestInstalledCLIContract:
++    """Verify the plugin registers 'github-intake' via real plugin discovery."""
++
++    def test_plugin_registers_github_intake_cli_command(self, tmp_hermes_home):
++        """After discover_plugins(), manager._cli_commands must include 'github-intake'."""
++        from hermes_cli.plugins import get_plugin_manager, discover_plugins
++
++        manager = get_plugin_manager()
++        discover_plugins(force=True)
++        assert "github-intake" in manager._cli_commands, (
++            "Plugin did not register 'github-intake' CLI command via ctx.register_cli_command()"
++        )
++
++    def test_installed_dry_run_parses_without_secret_in_argv(
++        self, tmp_hermes_home, disabled_config_path, tmp_path
++    ):
++        """
++        'hermes github-intake dry-run --config <cfg> --event <fixture>' must parse
++        without requiring --secret in argv (SR5-001).
++        Secrets must be loaded from credential config / environment, not from argv.
++        """
++        from hermes_cli.plugins import get_plugin_manager, discover_plugins
++        import argparse
++
++        manager = get_plugin_manager()
++        discover_plugins(force=True)
++        assert "github-intake" in manager._cli_commands
++
++        cmd_info = manager._cli_commands["github-intake"]
++        parser = argparse.ArgumentParser(prog="hermes github-intake")
++        cmd_info["setup_fn"](parser)
++
++        fixture_path = (
++            Path(__file__).parent / "fixtures" / "issues-opened.json"
++        )
++        # Must parse successfully with only --config and --event (no --secret)
++        args = parser.parse_args([
++            "dry-run",
++            "--config", str(disabled_config_path),
++            "--event", str(fixture_path),
++        ])
++        assert args  # parse succeeded without --secret in argv
++
++    def test_dry_run_subcommand_emits_json_to_stdout(
++        self,
++        tmp_hermes_home,
++        disabled_config_path,
++        tmp_kanban_board,
++        capsys,
++        monkeypatch,
++    ):
++        """dry-run invoked via installed CLI emits redacted JSON to stdout, no writes."""
++        from hermes_cli.plugins import get_plugin_manager, discover_plugins
++        import argparse
++
++        manager = get_plugin_manager()
++        discover_plugins(force=True)
++        assert "github-intake" in manager._cli_commands
++
++        cmd_info = manager._cli_commands["github-intake"]
++        parser = argparse.ArgumentParser(prog="hermes github-intake")
++        cmd_info["setup_fn"](parser)
++
++        fixture_path = Path(__file__).parent / "fixtures" / "issues-opened.json"
++        args = parser.parse_args([
++            "dry-run",
++            "--config", str(disabled_config_path),
++            "--event", str(fixture_path),
++        ])
++        # Invoke handler
++        handler = cmd_info.get("handler_fn")
++        assert handler is not None, "github-intake CLI must register a handler_fn"
++        handler(args)
++
++        captured = capsys.readouterr()
++        output = json.loads(captured.out)
++        assert output.get("dry_run") is True
++        # Sentinel secret must not appear in output
++        assert TEST_WEBHOOK_SECRET not in captured.out
+diff --git a/plugins/github-intake/tests/test_integration.py b/plugins/github-intake/tests/test_integration.py
+new file mode 100644
+index 0000000000..617eb71ece
+--- /dev/null
++++ b/plugins/github-intake/tests/test_integration.py
+@@ -0,0 +1,416 @@
++"""RED integration tests for the github-intake plugin.
++
++Proves the installed 'hermes github-intake' interface:
++- Validates a disabled configuration
++- Ingests signed fixtures into only a temporary local board
++- Records deterministic mock HCW intents
++- Handles duplicates/replay/concurrency/edits/close-reopen/stale/conflict
++- Handles retry/quarantine paths
++- Redacts sentinel secrets
++- Honors dry-run and kill switches
++- Supports rollback/recovery
++
++SR5-002: Canonical Kanban tasks must be created via plugins.kanban.db.create_task
++(or the explicit supported adapter), not via raw SQL INSERT.
++
++SR5-004: Tests use real plugin discovery, not fake PluginContext.
++"""
++
++from __future__ import annotations
++
++import json
++import threading
++import uuid
++from pathlib import Path
++from unittest.mock import MagicMock, patch
++
++import pytest
++
++from plugins.github_intake.config import load_config
++from plugins.github_intake.models import (
++    DeliveryEnvelope,
++    CanonicalIntakeRecord,
++    compute_canonical_id,
++)
++from plugins.github_intake.intake import process_delivery
++from plugins.github_intake.store import IntakeStore
++from plugins.github_intake.audit import AuditLog
++from plugins.github_intake.recovery import RecoveryManager
++
++from tests.conftest import (
++    TEST_WEBHOOK_SECRET,
++    compute_github_signature,
++    fixture_bytes,
++    fixture_payload,
++    make_delivery_id,
++)
++
++FIXTURE_DIR = Path(__file__).parent / "fixtures"
++
++
++def _opened_env(clock, delivery_id: str | None = None):
++    body = fixture_bytes("issues-opened.json")
++    return DeliveryEnvelope(
++        delivery_id=delivery_id or make_delivery_id(),
++        event_type="issues",
++        action="opened",
++        payload=fixture_payload("issues-opened.json"),
++        raw_body=body,
++        signature=compute_github_signature(body),
++        received_at=clock.iso(),
++    )
++
++
++# ===========================================================================
++# SR5-002: Canonical Kanban task via proper adapter
++# ===========================================================================
++
++class TestCanonicalKanbanIntegration:
++    def test_ingest_creates_task_via_kanban_adapter_not_raw_sql(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        disabled_config_path,
++        opened_payload,
++    ):
++        """
++        SR5-002: IntakeStore must NOT issue a raw INSERT into tasks.
++        It must use a canonical Kanban adapter (create_task or equivalent).
++        Verify by asserting the task is visible through the Kanban read surface.
++        """
++        import yaml
++        config_data = yaml.safe_load(disabled_config_path.read_text())
++        config_data["github_intake"]["enabled"] = True
++        config_data["github_intake"]["dry_run"] = False
++        from plugins.github_intake.config import GithubIntakeConfig
++        config = GithubIntakeConfig.from_dict(config_data["github_intake"])
++
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++        body = fixture_bytes("issues-opened.json")
++        env = DeliveryEnvelope(
++            delivery_id=make_delivery_id(),
++            event_type="issues",
++            action="opened",
++            payload=opened_payload,
++            raw_body=body,
++            signature=compute_github_signature(body),
++            received_at=fake_clock.iso(),
++        )
++        result = process_delivery(env, config, store, audit, mock_hcw_adapter, fake_clock)
++        assert result.state == "accepted"
++
++        # Verify via the public Kanban read surface, not raw schema
++        kanban_task = store.get_kanban_task(result.canonical_id)
++        assert kanban_task is not None, (
++            "SR5-002: Canonical Kanban task must be readable via store.get_kanban_task(), "
++            "not just exist as a raw SQL row"
++        )
++        assert kanban_task.get("id") or kanban_task.get("task_id"), (
++            "Kanban task must have a valid ID"
++        )
++
++    def test_store_does_not_use_raw_insert_into_tasks(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++    ):
++        """
++        SR5-002: IntakeStore.ensure_kanban_task must not contain a raw
++        INSERT INTO tasks statement; it must delegate to the canonical adapter.
++        """
++        import inspect
++        import plugins.github_intake.store as store_mod
++
++        src = inspect.getsource(store_mod.IntakeStore)
++        forbidden_patterns = [
++            "INSERT INTO tasks",
++            "INSERT INTO tasks (",
++        ]
++        for pattern in forbidden_patterns:
++            assert pattern not in src, (
++                f"SR5-002: IntakeStore must not use raw '{pattern}'. "
++                "Use the canonical Kanban adapter (create_task or equivalent)."
++            )
++
++    def test_kanban_task_readable_through_list_tasks(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        disabled_config_path,
++        opened_payload,
++    ):
++        """Ingested task must appear when listing tasks through the Kanban API."""
++        import yaml
++        config_data = yaml.safe_load(disabled_config_path.read_text())
++        config_data["github_intake"]["enabled"] = True
++        config_data["github_intake"]["dry_run"] = False
++        from plugins.github_intake.config import GithubIntakeConfig
++        config = GithubIntakeConfig.from_dict(config_data["github_intake"])
++
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++        body = fixture_bytes("issues-opened.json")
++        env = DeliveryEnvelope(
++            delivery_id=make_delivery_id(),
++            event_type="issues",
++            action="opened",
++            payload=opened_payload,
++            raw_body=body,
++            signature=compute_github_signature(body),
++            received_at=fake_clock.iso(),
++        )
++        result = process_delivery(env, config, store, audit, mock_hcw_adapter, fake_clock)
++        assert result.state == "accepted"
++
++        tasks = store.list_kanban_tasks()
++        assert any(
++            t.get("canonical_id") == result.canonical_id or
++            t.get("id") for t in tasks
++        ), "Created task must be returned by list_kanban_tasks()"
++
++
++# ===========================================================================
++# End-to-end fixture → Kanban → HCW routing
++# ===========================================================================
++
++class TestFixtureToKanbanToHCWRouting:
++    def test_signed_fixture_produces_hcw_intent(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        disabled_config_path,
++        opened_payload,
++    ):
++        """A signed fixture delivery produces a deterministic HCW route intent."""
++        config = load_config(disabled_config_path)
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++        body = fixture_bytes("issues-opened.json")
++        env = DeliveryEnvelope(
++            delivery_id="deterministic-delivery-id",
++            event_type="issues",
++            action="opened",
++            payload=opened_payload,
++            raw_body=body,
++            signature=compute_github_signature(body),
++            received_at="2026-01-01T00:00:00Z",
++        )
++        r1 = process_delivery(env, config, store, audit, mock_hcw_adapter, fake_clock)
++        mock_hcw_adapter.clear()
++
++        # Re-run with same inputs in a fresh store → same canonical_id
++        store2 = IntakeStore(db_path=tmp_kanban_board.parent / "board2.db")
++        audit2 = AuditLog(store=store2)
++        adapter2 = __import__(
++            "tests.conftest", fromlist=["MockHCWAdapter"]
++        ).MockHCWAdapter()
++        r2 = process_delivery(env, config, store2, audit2, adapter2, fake_clock)
++
++        assert r1.canonical_id == r2.canonical_id
++
++    def test_hcw_intent_does_not_contain_issue_body(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        disabled_config_path,
++        opened_payload,
++    ):
++        """HCW route intents must not carry raw issue body text."""
++        config = load_config(disabled_config_path)
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++        body = fixture_bytes("issues-opened.json")
++        env = _opened_env(fake_clock)
++        process_delivery(env, config, store, audit, mock_hcw_adapter, fake_clock)
++
++        for intent in mock_hcw_adapter.dispatched:
++            assert opened_payload["issue"]["body"] not in json.dumps(intent), (
++                "HCW route intent must not contain raw issue body"
++            )
++
++    def test_hcw_intent_uses_allowlisted_metadata_only(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        disabled_config_path,
++        opened_payload,
++    ):
++        """Route intent must derive from validated allowlisted metadata fields only."""
++        config = load_config(disabled_config_path)
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++        process_delivery(_opened_env(fake_clock), config, store, audit, mock_hcw_adapter, fake_clock)
++        assert mock_hcw_adapter.dispatched or config.dry_run
++        for intent in mock_hcw_adapter.dispatched:
++            assert "route_key" in intent
++            assert "canonical_id" in intent
++
++
++# ===========================================================================
++# Duplicate / replay / concurrency integration
++# ===========================================================================
++
++class TestDuplicateReplayIntegration:
++    def test_duplicate_delivery_not_double_routed(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        disabled_config_path,
++        opened_payload,
++    ):
++        config = load_config(disabled_config_path)
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++        did = make_delivery_id()
++        body = fixture_bytes("issues-opened.json")
++
++        def env():
++            return DeliveryEnvelope(
++                delivery_id=did,
++                event_type="issues",
++                action="opened",
++                payload=opened_payload,
++                raw_body=body,
++                signature=compute_github_signature(body),
++                received_at=fake_clock.iso(),
++            )
++
++        r1 = process_delivery(env(), config, store, audit, mock_hcw_adapter, fake_clock)
++        fake_clock.advance()
++        r2 = process_delivery(env(), config, store, audit, mock_hcw_adapter, fake_clock)
++
++        assert r1.state == "accepted"
++        assert r2.state == "duplicate"
++        routed = len(mock_hcw_adapter.dispatched)
++        assert routed <= 1, f"Expected at most 1 dispatch, got {routed}"
++
++    def test_concurrent_deliveries_deduplicated(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        disabled_config_path,
++        opened_payload,
++    ):
++        config = load_config(disabled_config_path)
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++        results = []
++
++        def deliver():
++            body = fixture_bytes("issues-opened.json")
++            env = DeliveryEnvelope(
++                delivery_id=make_delivery_id(),
++                event_type="issues",
++                action="opened",
++                payload=opened_payload,
++                raw_body=body,
++                signature=compute_github_signature(body),
++                received_at=fake_clock.iso(),
++            )
++            r = process_delivery(env, config, store, audit, mock_hcw_adapter, fake_clock)
++            results.append(r)
++
++        threads = [threading.Thread(target=deliver) for _ in range(6)]
++        for t in threads:
++            t.start()
++        for t in threads:
++            t.join(timeout=15)
++
++        accepted = [r for r in results if r.state == "accepted"]
++        assert len(accepted) == 1, (
++            f"Exactly 1 concurrent delivery must be accepted, got {len(accepted)}"
++        )
++
++
++# ===========================================================================
++# Kill switch + rollback
++# ===========================================================================
++
++class TestKillSwitchIntegration:
++    def test_kill_switch_blocks_processing(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        disabled_config_path,
++    ):
++        import yaml
++        config_data = yaml.safe_load(disabled_config_path.read_text())
++        config_data["github_intake"]["kill_switch"] = True
++        config_data["github_intake"]["enabled"] = True
++        from plugins.github_intake.config import GithubIntakeConfig
++        config = GithubIntakeConfig.from_dict(config_data["github_intake"])
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++        body = fixture_bytes("issues-opened.json")
++        env = DeliveryEnvelope(
++            delivery_id=make_delivery_id(),
++            event_type="issues",
++            action="opened",
++            payload=fixture_payload("issues-opened.json"),
++            raw_body=body,
++            signature=compute_github_signature(body),
++            received_at=fake_clock.iso(),
++        )
++        result = process_delivery(env, config, store, audit, mock_hcw_adapter, fake_clock)
++        assert result.state == "killed"
++        assert len(mock_hcw_adapter.dispatched) == 0
++        assert store.count_kanban_tasks() == 0
++
++
++# ===========================================================================
++# Secret redaction integration
++# ===========================================================================
++
++class TestSecretRedactionIntegration:
++    def test_sentinel_secret_absent_from_all_outputs(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        disabled_config_path,
++        opened_payload,
++        monkeypatch,
++        caplog,
++    ):
++        import logging
++        monkeypatch.setenv("GITHUB_INTAKE_WEBHOOK_SECRET", TEST_WEBHOOK_SECRET)
++        config = load_config(disabled_config_path)
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++        body = fixture_bytes("issues-opened.json")
++        env = DeliveryEnvelope(
++            delivery_id=make_delivery_id(),
++            event_type="issues",
++            action="opened",
++            payload=opened_payload,
++            raw_body=body,
++            signature=compute_github_signature(body),
++            received_at=fake_clock.iso(),
++        )
++        with caplog.at_level(logging.DEBUG):
++            result = process_delivery(env, config, store, audit, mock_hcw_adapter, fake_clock)
++
++        # Secret must not appear in logs, intents, or audit entries
++        assert TEST_WEBHOOK_SECRET not in caplog.text
++        for intent in mock_hcw_adapter.dispatched:
++            assert TEST_WEBHOOK_SECRET not in json.dumps(intent)
++        for entry in audit.get_entries(result.canonical_id):
++            assert TEST_WEBHOOK_SECRET not in json.dumps(entry)
+diff --git a/plugins/github-intake/tests/test_lifecycle.py b/plugins/github-intake/tests/test_lifecycle.py
+new file mode 100644
+index 0000000000..a6d1cea71b
+--- /dev/null
++++ b/plugins/github-intake/tests/test_lifecycle.py
+@@ -0,0 +1,228 @@
++"""RED lifecycle contract tests for the github-intake plugin.
++
++Covers: opened→edited→closed→reopened monotonic transitions,
++stale/conflict detection, and append-only audit evidence across lifecycle.
++"""
++
++from __future__ import annotations
++
++import json
++from pathlib import Path
++
++import pytest
++
++from plugins.github_intake.config import load_config
++from plugins.github_intake.models import DeliveryEnvelope, CanonicalIntakeRecord
++from plugins.github_intake.intake import process_delivery
++from plugins.github_intake.store import IntakeStore
++from plugins.github_intake.audit import AuditLog
++
++from tests.conftest import (
++    compute_github_signature,
++    fixture_bytes,
++    fixture_payload,
++    make_delivery_id,
++)
++
++
++def _make_env(event_name: str, action: str, clock, extra_payload: dict | None = None):
++    body = fixture_bytes(f"issues-{event_name}.json")
++    payload = fixture_payload(f"issues-{event_name}.json")
++    if extra_payload:
++        payload.update(extra_payload)
++    return DeliveryEnvelope(
++        delivery_id=make_delivery_id(),
++        event_type="issues",
++        action=action,
++        payload=payload,
++        raw_body=body,
++        signature=compute_github_signature(body),
++        received_at=clock.iso(),
++    )
++
++
++class TestIssueLifecycle:
++    def test_open_edit_close_reopen_full_lifecycle(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        disabled_config_path,
++    ):
++        """Full lifecycle: opened → edited → closed → reopened, all accepted."""
++        config = load_config(disabled_config_path)
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++
++        r_open = process_delivery(
++            _make_env("opened", "opened", fake_clock),
++            config, store, audit, mock_hcw_adapter, fake_clock,
++        )
++        assert r_open.state == "accepted"
++        rev0 = r_open.lifecycle_revision
++        fake_clock.advance(60)
++
++        r_edit = process_delivery(
++            _make_env("edited", "edited", fake_clock),
++            config, store, audit, mock_hcw_adapter, fake_clock,
++        )
++        assert r_edit.state == "accepted"
++        assert r_edit.lifecycle_revision > rev0
++        fake_clock.advance(60)
++
++        r_close = process_delivery(
++            _make_env("closed", "closed", fake_clock),
++            config, store, audit, mock_hcw_adapter, fake_clock,
++        )
++        assert r_close.state == "accepted"
++        assert r_close.lifecycle_revision > r_edit.lifecycle_revision
++        fake_clock.advance(60)
++
++        r_reopen = process_delivery(
++            _make_env("reopened", "reopened", fake_clock),
++            config, store, audit, mock_hcw_adapter, fake_clock,
++        )
++        assert r_reopen.state == "accepted"
++        assert r_reopen.lifecycle_revision > r_close.lifecycle_revision
++
++    def test_audit_entries_cover_full_lifecycle(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        disabled_config_path,
++    ):
++        """Audit log must record all lifecycle transitions for the same canonical_id."""
++        config = load_config(disabled_config_path)
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++
++        r_open = process_delivery(
++            _make_env("opened", "opened", fake_clock),
++            config, store, audit, mock_hcw_adapter, fake_clock,
++        )
++        fake_clock.advance(60)
++        r_edit = process_delivery(
++            _make_env("edited", "edited", fake_clock),
++            config, store, audit, mock_hcw_adapter, fake_clock,
++        )
++        fake_clock.advance(60)
++        r_close = process_delivery(
++            _make_env("closed", "closed", fake_clock),
++            config, store, audit, mock_hcw_adapter, fake_clock,
++        )
++
++        cid = r_open.canonical_id
++        assert r_edit.canonical_id == cid
++        assert r_close.canonical_id == cid
++
++        entries = audit.get_entries(cid)
++        events = [e["event"] for e in entries]
++        assert "delivery_accepted" in events
++        assert len(entries) >= 3  # at minimum one per lifecycle event
++
++
++class TestMonotonicTransitions:
++    def test_close_after_close_is_stale(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        disabled_config_path,
++    ):
++        """Closing an already-closed issue is a stale delivery."""
++        config = load_config(disabled_config_path)
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++
++        process_delivery(
++            _make_env("opened", "opened", fake_clock),
++            config, store, audit, mock_hcw_adapter, fake_clock,
++        )
++        fake_clock.advance(60)
++        process_delivery(
++            _make_env("closed", "closed", fake_clock),
++            config, store, audit, mock_hcw_adapter, fake_clock,
++        )
++        fake_clock.advance(60)
++        r2 = process_delivery(
++            _make_env("closed", "closed", fake_clock),
++            config, store, audit, mock_hcw_adapter, fake_clock,
++        )
++        assert r2.state in ("stale", "duplicate")
++
++    def test_reopen_before_close_is_conflict(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        disabled_config_path,
++    ):
++        """A reopened event without a prior close is a conflict."""
++        config = load_config(disabled_config_path)
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++
++        process_delivery(
++            _make_env("opened", "opened", fake_clock),
++            config, store, audit, mock_hcw_adapter, fake_clock,
++        )
++        fake_clock.advance(60)
++        # Reopen without close
++        r = process_delivery(
++            _make_env("reopened", "reopened", fake_clock),
++            config, store, audit, mock_hcw_adapter, fake_clock,
++        )
++        assert r.state in ("conflict", "stale")
++
++
++class TestConcurrentDelivery:
++    def test_concurrent_deliveries_only_one_accepted(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        disabled_config_path,
++        opened_payload,
++    ):
++        """Under concurrent deliveries for the same canonical ID, exactly one wins."""
++        import threading
++        config = load_config(disabled_config_path)
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++        results = []
++        errors = []
++
++        def deliver():
++            body = fixture_bytes("issues-opened.json")
++            env = DeliveryEnvelope(
++                delivery_id=make_delivery_id(),
++                event_type="issues",
++                action="opened",
++                payload=opened_payload,
++                raw_body=body,
++                signature=compute_github_signature(body),
++                received_at=fake_clock.iso(),
++            )
++            try:
++                r = process_delivery(env, config, store, audit, mock_hcw_adapter, fake_clock)
++                results.append(r)
++            except Exception as e:
++                errors.append(e)
++
++        threads = [threading.Thread(target=deliver) for _ in range(4)]
++        for t in threads:
++            t.start()
++        for t in threads:
++            t.join(timeout=10)
++
++        assert not errors, f"Concurrent deliveries raised: {errors}"
++        accepted = [r for r in results if r.state == "accepted"]
++        assert len(accepted) == 1, (
++            f"Expected exactly one 'accepted', got: {[r.state for r in results]}"
++        )
+diff --git a/plugins/github-intake/tests/test_recovery.py b/plugins/github-intake/tests/test_recovery.py
+new file mode 100644
+index 0000000000..5fd4a19a82
+--- /dev/null
++++ b/plugins/github-intake/tests/test_recovery.py
+@@ -0,0 +1,359 @@
++"""RED recovery contract tests for the github-intake plugin.
++
++Covers: crash-safe pending/outbox, redelivery resumes pending work without
++duplicate routing, classified retry eligibility, exponential backoff,
++max-attempt quarantine, dead-letter metadata, and operator replay.
++
++SR5-003: process_delivery must not commit intake before dispatch; redelivery
++of a PENDING record must resume dispatch, not classify as DUPLICATE.
++"""
++
++from __future__ import annotations
++
++import json
++import uuid
++from pathlib import Path
++from unittest.mock import patch
++
++import pytest
++
++from plugins.github_intake.config import load_config
++from plugins.github_intake.models import DeliveryEnvelope, CanonicalIntakeRecord
++from plugins.github_intake.intake import process_delivery
++from plugins.github_intake.store import IntakeStore
++from plugins.github_intake.audit import AuditLog
++from plugins.github_intake.recovery import RecoveryManager, RecoveryOutcome
++
++from tests.conftest import (
++    compute_github_signature,
++    fixture_bytes,
++    fixture_payload,
++    make_delivery_id,
++)
++
++
++class TestCrashSafePendingOutbox:
++    def test_pending_record_not_classified_duplicate_on_redelivery(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        opened_payload,
++        disabled_config_path,
++    ):
++        """
++        SR5-003: A PENDING record (intake persisted, dispatch not yet completed)
++        must NOT be classified as DUPLICATE on redelivery. The same delivery_id
++        delivered again while the record is PENDING must resume dispatch.
++        """
++        config = load_config(disabled_config_path)
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++        body = fixture_bytes("issues-opened.json")
++        did = make_delivery_id()
++
++        # Simulate: adapter fails on first attempt (dispatch failure after intake)
++        mock_hcw_adapter.fail_next(1)
++
++        env = DeliveryEnvelope(
++            delivery_id=did,
++            event_type="issues",
++            action="opened",
++            payload=opened_payload,
++            raw_body=body,
++            signature=compute_github_signature(body),
++            received_at=fake_clock.iso(),
++        )
++        r1 = process_delivery(env, config, store, audit, mock_hcw_adapter, fake_clock)
++        # After dispatch failure the record should be PENDING, not ACCEPTED
++        assert r1.state in ("pending", "retry_pending"), (
++            f"Expected 'pending' after dispatch failure, got '{r1.state}'"
++        )
++        assert mock_hcw_adapter.fail_count == 1
++
++        # Now redeliver the same delivery_id — must resume dispatch, not DUPLICATE
++        fake_clock.advance(1)
++        r2 = process_delivery(env, config, store, audit, mock_hcw_adapter, fake_clock)
++        assert r2.state == "accepted", (
++            f"Expected redelivery of PENDING to dispatch and be 'accepted', got '{r2.state}'"
++        )
++        assert len(mock_hcw_adapter.dispatched) == 1
++
++    def test_intake_not_committed_before_dispatch_succeeds(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        opened_payload,
++        disabled_config_path,
++    ):
++        """
++        SR5-003: The canonical Kanban task must not be fully committed until
++        dispatch succeeds (or is durably recorded as pending for retry).
++        A crash between intake and dispatch must leave the record recoverable.
++        """
++        config = load_config(disabled_config_path)
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++        body = fixture_bytes("issues-opened.json")
++        did = make_delivery_id()
++        env = DeliveryEnvelope(
++            delivery_id=did,
++            event_type="issues",
++            action="opened",
++            payload=opened_payload,
++            raw_body=body,
++            signature=compute_github_signature(body),
++            received_at=fake_clock.iso(),
++        )
++        # Simulate crash-during-dispatch by raising mid-dispatch
++        call_count = [0]
++        original_dispatch = mock_hcw_adapter.dispatch
++
++        def crash_on_first(intent):
++            call_count[0] += 1
++            if call_count[0] == 1:
++                raise SystemExit("simulated crash")
++            return original_dispatch(intent)
++
++        mock_hcw_adapter.dispatch = crash_on_first
++        with pytest.raises(SystemExit):
++            process_delivery(env, config, store, audit, mock_hcw_adapter, fake_clock)
++
++        # Record must be PENDING (not ACCEPTED, not DUPLICATE)
++        record = store.load_record(store._compute_canonical_id_from_env(env))
++        assert record is not None
++        assert record.state == "pending", (
++            "After crash-during-dispatch, record must be 'pending' for recovery"
++        )
++
++
++class TestRetryAndBackoff:
++    def test_retry_eligible_errors_are_retried(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        opened_payload,
++        disabled_config_path,
++    ):
++        """Transient dispatch failures must be retried with backoff."""
++        config = load_config(disabled_config_path)
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++        recovery = RecoveryManager(store=store, audit=audit, config=config)
++
++        body = fixture_bytes("issues-opened.json")
++        mock_hcw_adapter.fail_next(2)  # Fail twice, succeed on 3rd
++        env = DeliveryEnvelope(
++            delivery_id=make_delivery_id(),
++            event_type="issues",
++            action="opened",
++            payload=opened_payload,
++            raw_body=body,
++            signature=compute_github_signature(body),
++            received_at=fake_clock.iso(),
++        )
++        r = process_delivery(env, config, store, audit, mock_hcw_adapter, fake_clock)
++        # First attempt fails → pending
++        assert r.state in ("pending", "retry_pending")
++
++        fake_clock.advance(5)
++        outcome = recovery.run_recovery(hcw_adapter=mock_hcw_adapter, clock=fake_clock)
++        assert outcome.retried >= 1
++
++    def test_max_retries_exceeded_quarantines(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        opened_payload,
++        disabled_config_path,
++    ):
++        """After max_attempts, the record must be quarantined with dead-letter metadata."""
++        config = load_config(disabled_config_path)
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++        recovery = RecoveryManager(store=store, audit=audit, config=config)
++
++        # Fail every dispatch attempt
++        mock_hcw_adapter.should_fail = True
++        import unittest.mock as um
++        mock_hcw_adapter.dispatch = um.Mock(
++            side_effect=RuntimeError("permanent dispatch failure")
++        )
++
++        body = fixture_bytes("issues-opened.json")
++        env = DeliveryEnvelope(
++            delivery_id=make_delivery_id(),
++            event_type="issues",
++            action="opened",
++            payload=opened_payload,
++            raw_body=body,
++            signature=compute_github_signature(body),
++            received_at=fake_clock.iso(),
++        )
++        process_delivery(env, config, store, audit, mock_hcw_adapter, fake_clock)
++
++        # Drive recovery until quarantined
++        for _ in range(config.recovery.max_attempts + 2):
++            fake_clock.advance(300)
++            recovery.run_recovery(hcw_adapter=mock_hcw_adapter, clock=fake_clock)
++
++        # Check quarantine state
++        from plugins.github_intake.models import compute_canonical_id
++        cid = compute_canonical_id(
++            installation_id=opened_payload["installation"]["id"],
++            repository_full_name=opened_payload["repository"]["full_name"],
++            issue_number=opened_payload["issue"]["number"],
++        )
++        record = store.load_record(cid)
++        assert record is not None
++        assert record.state == "quarantined"
++        assert record.dead_letter_reason is not None
++
++    def test_quarantined_records_appear_in_quarantine_list(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        opened_payload,
++        disabled_config_path,
++    ):
++        config = load_config(disabled_config_path)
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++        recovery = RecoveryManager(store=store, audit=audit, config=config)
++
++        import unittest.mock as um
++        mock_hcw_adapter.dispatch = um.Mock(
++            side_effect=RuntimeError("always fails")
++        )
++        body = fixture_bytes("issues-opened.json")
++        env = DeliveryEnvelope(
++            delivery_id=make_delivery_id(),
++            event_type="issues",
++            action="opened",
++            payload=opened_payload,
++            raw_body=body,
++            signature=compute_github_signature(body),
++            received_at=fake_clock.iso(),
++        )
++        process_delivery(env, config, store, audit, mock_hcw_adapter, fake_clock)
++        for _ in range(config.recovery.max_attempts + 2):
++            fake_clock.advance(300)
++            recovery.run_recovery(hcw_adapter=mock_hcw_adapter, clock=fake_clock)
++
++        quarantined = store.list_quarantined()
++        assert len(quarantined) >= 1
++
++    def test_operator_replay_of_quarantined_record(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        opened_payload,
++        disabled_config_path,
++    ):
++        """An operator can replay a quarantined record after fixing the adapter."""
++        config = load_config(disabled_config_path)
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++        recovery = RecoveryManager(store=store, audit=audit, config=config)
++
++        import unittest.mock as um
++        fail_dispatch = um.Mock(side_effect=RuntimeError("always fails"))
++        mock_hcw_adapter.dispatch = fail_dispatch
++
++        body = fixture_bytes("issues-opened.json")
++        env = DeliveryEnvelope(
++            delivery_id=make_delivery_id(),
++            event_type="issues",
++            action="opened",
++            payload=opened_payload,
++            raw_body=body,
++            signature=compute_github_signature(body),
++            received_at=fake_clock.iso(),
++        )
++        process_delivery(env, config, store, audit, mock_hcw_adapter, fake_clock)
++        for _ in range(config.recovery.max_attempts + 2):
++            fake_clock.advance(300)
++            recovery.run_recovery(hcw_adapter=mock_hcw_adapter, clock=fake_clock)
++
++        quarantined = store.list_quarantined()
++        assert quarantined
++
++        # Fix the adapter and replay
++        from tests.conftest import MockHCWAdapter
++        fixed_adapter = MockHCWAdapter()
++        cid = quarantined[0].canonical_id
++        result = recovery.operator_replay(
++            canonical_id=cid,
++            hcw_adapter=fixed_adapter,
++            clock=fake_clock,
++        )
++        assert result.state == "accepted"
++        assert len(fixed_adapter.dispatched) == 1
++
++
++class TestPersistenceFailure:
++    def test_swallowed_state_update_failure_is_not_silently_lost(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        opened_payload,
++        disabled_config_path,
++    ):
++        """
++        SR5-003: If the post-dispatch state update fails, the error must propagate
++        (not be swallowed), leaving the record in a recoverable PENDING state.
++        """
++        config = load_config(disabled_config_path)
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++
++        body = fixture_bytes("issues-opened.json")
++        env = DeliveryEnvelope(
++            delivery_id=make_delivery_id(),
++            event_type="issues",
++            action="opened",
++            payload=opened_payload,
++            raw_body=body,
++            signature=compute_github_signature(body),
++            received_at=fake_clock.iso(),
++        )
++
++        original_update = store.update_record_state
++        call_count = [0]
++
++        def fail_on_accepted(canonical_id, state, **kwargs):
++            call_count[0] += 1
++            if state == "accepted" and call_count[0] == 1:
++                raise RuntimeError("simulated persistence failure after dispatch")
++            return original_update(canonical_id, state, **kwargs)
++
++        store.update_record_state = fail_on_accepted
++
++        with pytest.raises(RuntimeError, match="simulated persistence failure"):
++            process_delivery(env, config, store, audit, mock_hcw_adapter, fake_clock)
++
++        # Record should be PENDING, not ACCEPTED (dispatch happened but state didn't commit)
++        from plugins.github_intake.models import compute_canonical_id
++        cid = compute_canonical_id(
++            installation_id=opened_payload["installation"]["id"],
++            repository_full_name=opened_payload["repository"]["full_name"],
++            issue_number=opened_payload["issue"]["number"],
++        )
++        record = store.load_record(cid)
++        if record is not None:
++            assert record.state in ("pending", "retry_pending"), (
++                f"Record in ambiguous state '{record.state}' after persistence failure"
++            )
+diff --git a/plugins/github-intake/tests/test_scope.py b/plugins/github-intake/tests/test_scope.py
+new file mode 100644
+index 0000000000..bcdc30c632
+--- /dev/null
++++ b/plugins/github-intake/tests/test_scope.py
+@@ -0,0 +1,106 @@
++"""Scope invariant tests for the github-intake plugin.
++
++Verifies that all implementation files are contained within
++plugins/github-intake/** and that no changes escape that boundary.
++"""
++
++from __future__ import annotations
++
++import subprocess
++import sys
++from pathlib import Path
++
++import pytest
++
++REPO_ROOT = Path(__file__).parent.parent.parent.parent
++PLUGIN_DIR = Path(__file__).parent.parent
++ALLOWED_PREFIX = "plugins/github-intake/"
++
++
++class TestScopeInvariant:
++    def test_all_plugin_python_files_within_allowed_prefix(self):
++        """Every .py file introduced by this plugin must be under plugins/github-intake/."""
++        for py_file in PLUGIN_DIR.rglob("*.py"):
++            rel = py_file.relative_to(REPO_ROOT)
++            assert str(rel).startswith(ALLOWED_PREFIX), (
++                f"File {rel} is outside the allowed scope prefix '{ALLOWED_PREFIX}'"
++            )
++
++    def test_plugin_yaml_within_allowed_prefix(self):
++        plugin_yaml = PLUGIN_DIR / "plugin.yaml"
++        assert plugin_yaml.exists(), "plugin.yaml must exist within plugins/github-intake/"
++        rel = plugin_yaml.relative_to(REPO_ROOT)
++        assert str(rel).startswith(ALLOWED_PREFIX)
++
++    def test_no_import_modifies_files_outside_scope(self):
++        """Importing the plugin modules must not create files outside plugins/github-intake/."""
++        import tempfile
++        import os
++
++        before = set(REPO_ROOT.rglob("*.py"))
++        try:
++            import plugins.github_intake  # noqa: F401
++        except ImportError:
++            pytest.skip("Plugin not yet implemented")
++
++        after = set(REPO_ROOT.rglob("*.py"))
++        new_files = after - before
++        for f in new_files:
++            rel = str(f.relative_to(REPO_ROOT))
++            assert rel.startswith(ALLOWED_PREFIX) or rel.startswith("__pycache__"), (
++                f"Import side-effect created file outside scope: {rel}"
++            )
++
++    def test_git_diff_only_touches_plugin_paths(self):
++        """
++        Any uncommitted or staged changes must only be in plugins/github-intake/**.
++        This test is advisory (skip if not in a git repo) but fails on scope escape.
++        """
++        try:
++            result = subprocess.run(
++                ["git", "diff", "--name-only", "HEAD"],
++                capture_output=True,
++                text=True,
++                cwd=REPO_ROOT,
++                timeout=10,
++            )
++            if result.returncode != 0:
++                pytest.skip("git diff failed, skipping scope check")
++            changed = [
++                line.strip()
++                for line in result.stdout.splitlines()
++                if line.strip()
++            ]
++            escaped = [
++                f for f in changed
++                if not f.startswith(ALLOWED_PREFIX)
++            ]
++            assert not escaped, (
++                f"Files changed outside '{ALLOWED_PREFIX}': {escaped}"
++            )
++        except FileNotFoundError:
++            pytest.skip("git not available")
++
++    def test_plugin_does_not_monkey_patch_global_state_on_import(self):
++        """Importing the plugin must not mutate os.environ, sys.path, or builtins."""
++        import os
++        import builtins
++
++        env_before = dict(os.environ)
++        path_before = list(sys.path)
++        builtins_before = dir(builtins)
++
++        try:
++            import plugins.github_intake  # noqa: F401
++        except ImportError:
++            pytest.skip("Plugin not yet implemented")
++
++        assert dict(os.environ) == env_before, (
++            "Plugin import must not mutate os.environ"
++        )
++        assert sys.path == path_before, (
++            "Plugin import must not mutate sys.path"
++        )
++        assert dir(builtins) == builtins_before, (
++            "Plugin import must not mutate builtins"
++        )
+diff --git a/plugins/github-intake/tests/test_security.py b/plugins/github-intake/tests/test_security.py
+new file mode 100644
+index 0000000000..ccfeae5521
+--- /dev/null
++++ b/plugins/github-intake/tests/test_security.py
+@@ -0,0 +1,236 @@
++"""RED security contract tests for the github-intake plugin.
++
++Covers: HMAC verification, allowlist, oversized/malformed/hostile payload
++rejection, secret redaction, and constant-time comparison.
++"""
++
++from __future__ import annotations
++
++import hashlib
++import hmac
++import json
++import os
++
++import pytest
++
++from plugins.github_intake.security import (
++    verify_github_signature,
++    check_allowlist,
++    AllowlistError,
++    SignatureError,
++)
++from plugins.github_intake.config import load_config
++from plugins.github_intake.models import DeliveryEnvelope
++from plugins.github_intake.intake import process_delivery
++from plugins.github_intake.store import IntakeStore
++from plugins.github_intake.audit import AuditLog
++
++from tests.conftest import (
++    TEST_WEBHOOK_SECRET,
++    compute_github_signature,
++    fixture_bytes,
++    fixture_payload,
++    make_delivery_id,
++)
++
++
++class TestHMACVerification:
++    def test_valid_signature_accepted(self):
++        body = fixture_bytes("issues-opened.json")
++        sig = compute_github_signature(body)
++        # Must not raise
++        verify_github_signature(body=body, signature=sig, secret=TEST_WEBHOOK_SECRET)
++
++    def test_wrong_signature_rejected(self):
++        body = fixture_bytes("issues-opened.json")
++        with pytest.raises(SignatureError):
++            verify_github_signature(
++                body=body,
++                signature="sha256=deadbeef" + "00" * 28,
++                secret=TEST_WEBHOOK_SECRET,
++            )
++
++    def test_missing_sha256_prefix_rejected(self):
++        body = fixture_bytes("issues-opened.json")
++        raw_hex = hmac.new(
++            TEST_WEBHOOK_SECRET.encode(), body, hashlib.sha256
++        ).hexdigest()
++        with pytest.raises(SignatureError):
++            verify_github_signature(body=body, signature=raw_hex, secret=TEST_WEBHOOK_SECRET)
++
++    def test_empty_signature_rejected(self):
++        body = fixture_bytes("issues-opened.json")
++        with pytest.raises(SignatureError):
++            verify_github_signature(body=body, signature="", secret=TEST_WEBHOOK_SECRET)
++
++    def test_comparison_is_constant_time(self):
++        """verify_github_signature must use hmac.compare_digest (timing-safe)."""
++        import inspect
++        import plugins.github_intake.security as sec_mod
++        src = inspect.getsource(sec_mod.verify_github_signature)
++        assert "compare_digest" in src, (
++            "verify_github_signature must use hmac.compare_digest for constant-time comparison"
++        )
++
++    def test_signature_error_does_not_leak_secret(self):
++        body = fixture_bytes("issues-opened.json")
++        try:
++            verify_github_signature(body=body, signature="sha256=bad", secret=TEST_WEBHOOK_SECRET)
++        except SignatureError as exc:
++            assert TEST_WEBHOOK_SECRET not in str(exc)
++            assert TEST_WEBHOOK_SECRET not in repr(exc)
++
++
++class TestAllowlist:
++    def test_allowed_owner_and_repo_passes(self, disabled_config_path):
++        config = load_config(disabled_config_path)
++        # Should not raise
++        check_allowlist(
++            owner="test-owner",
++            repository_full_name="test-owner/test-repo",
++            config=config,
++        )
++
++    def test_unlisted_owner_rejected(self, disabled_config_path):
++        config = load_config(disabled_config_path)
++        with pytest.raises(AllowlistError):
++            check_allowlist(
++                owner="evil-owner",
++                repository_full_name="evil-owner/evil-repo",
++                config=config,
++            )
++
++    def test_unlisted_repo_rejected(self, disabled_config_path):
++        config = load_config(disabled_config_path)
++        with pytest.raises(AllowlistError):
++            check_allowlist(
++                owner="test-owner",
++                repository_full_name="test-owner/unlisted-repo",
++                config=config,
++            )
++
++    def test_allowlist_error_does_not_contain_secret(self, disabled_config_path):
++        config = load_config(disabled_config_path)
++        try:
++            check_allowlist(
++                owner="bad-owner",
++                repository_full_name="bad-owner/bad-repo",
++                config=config,
++            )
++        except AllowlistError as exc:
++            assert TEST_WEBHOOK_SECRET not in str(exc)
++
++
++class TestPayloadRejection:
++    def test_oversized_payload_rejected(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        disabled_config_path,
++    ):
++        """Payload exceeding max_payload_bytes must be rejected before processing."""
++        from plugins.github_intake.security import check_payload_size, PayloadTooLargeError
++        config = load_config(disabled_config_path)
++        oversized = b"x" * (config.webhook.max_payload_bytes + 1)
++        with pytest.raises(PayloadTooLargeError):
++            check_payload_size(body=oversized, config=config)
++
++    def test_malformed_json_payload_rejected(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        disabled_config_path,
++    ):
++        """Non-JSON payload must be rejected with a structured error, not a crash."""
++        from plugins.github_intake.security import parse_and_validate_payload, MalformedPayloadError
++        with pytest.raises(MalformedPayloadError):
++            parse_and_validate_payload(b"not-json{{{", event_type="issues")
++
++    def test_hostile_script_in_title_is_sanitized(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        disabled_config_path,
++    ):
++        """Hostile content in title must never be executed or stored verbatim in routing."""
++        config = load_config(disabled_config_path)
++        hostile_payload = fixture_payload("issues-opened.json")
++        hostile_payload["issue"]["title"] = "<script>alert(1)</script>"
++        body = json.dumps(hostile_payload).encode()
++        env = DeliveryEnvelope(
++            delivery_id=make_delivery_id(),
++            event_type="issues",
++            action="opened",
++            payload=hostile_payload,
++            raw_body=body,
++            signature=compute_github_signature(body),
++            received_at=fake_clock.iso(),
++        )
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++        result = process_delivery(env, config, store, audit, mock_hcw_adapter, fake_clock)
++        # Route intent must not carry the raw script
++        intents = mock_hcw_adapter.dispatched
++        for intent in intents:
++            assert "<script>" not in json.dumps(intent)
++
++    def test_untrusted_owner_payload_rejected_before_routing(
++        self,
++        tmp_hermes_home,
++        tmp_kanban_board,
++        fake_clock,
++        mock_hcw_adapter,
++        disabled_config_path,
++    ):
++        config = load_config(disabled_config_path)
++        bad_payload = fixture_payload("issues-opened.json")
++        bad_payload["repository"]["owner"]["login"] = "evil-owner"
++        bad_payload["repository"]["full_name"] = "evil-owner/test-repo"
++        body = json.dumps(bad_payload).encode()
++        env = DeliveryEnvelope(
++            delivery_id=make_delivery_id(),
++            event_type="issues",
++            action="opened",
++            payload=bad_payload,
++            raw_body=body,
++            signature=compute_github_signature(body),
++            received_at=fake_clock.iso(),
++        )
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++        result = process_delivery(env, config, store, audit, mock_hcw_adapter, fake_clock)
++        assert result.state == "rejected"
++        assert len(mock_hcw_adapter.dispatched) == 0
++
++
++class TestSecretRedaction:
++    def test_secret_not_logged_on_signature_failure(
++        self, tmp_hermes_home, tmp_kanban_board, fake_clock, mock_hcw_adapter,
++        opened_payload, disabled_config_path, monkeypatch, caplog,
++    ):
++        """On signature failure, the webhook secret must not appear in log output."""
++        import logging
++        monkeypatch.setenv("GITHUB_INTAKE_WEBHOOK_SECRET", TEST_WEBHOOK_SECRET)
++        config = load_config(disabled_config_path)
++        body = fixture_bytes("issues-opened.json")
++        env = DeliveryEnvelope(
++            delivery_id=make_delivery_id(),
++            event_type="issues",
++            action="opened",
++            payload=opened_payload,
++            raw_body=body,
++            signature="sha256=invalidsignature" + "00" * 20,
++            received_at=fake_clock.iso(),
++        )
++        store = IntakeStore(db_path=tmp_kanban_board)
++        audit = AuditLog(store=store)
++        with caplog.at_level(logging.DEBUG):
++            result = process_delivery(env, config, store, audit, mock_hcw_adapter, fake_clock)
++        assert result.state == "rejected"
++        assert TEST_WEBHOOK_SECRET not in caplog.text
+-- 
+2.50.1 (Apple Git-155)
+

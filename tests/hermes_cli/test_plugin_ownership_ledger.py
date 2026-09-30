@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from pathlib import Path
+from shutil import rmtree
 from threading import Event
 from time import monotonic, sleep
 from types import MethodType
@@ -110,6 +111,34 @@ def _write_profile_probe(hermes_home: Path, marker: str) -> None:
     (hermes_home / "config.yaml").write_text(
         yaml.safe_dump({"plugins": {"enabled": ["profile_probe"]}})
     )
+
+
+def test_reconcile_removed_plugin_disposes_only_missing_registrations(tmp_path, monkeypatch):
+    import hermes_cli.plugins as plugins_mod
+    from hermes_cli.plugins import PluginManager
+    from tools.registry import registry
+
+    home = tmp_path / 'hermes'
+    _write_plugin(home)
+    _write_profile_probe(home, 'kept')
+    (home / 'config.yaml').write_text(yaml.safe_dump({'plugins': {'enabled': ['ledger_probe', 'profile_probe']}}))
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    monkeypatch.setattr(plugins_mod, 'get_bundled_plugins_dir', lambda: tmp_path / 'empty-bundled')
+    monkeypatch.setattr(PluginManager, '_scan_entry_points', lambda self: [])
+
+    manager = PluginManager()
+    manager.discover_and_load()
+    assert registry.get_entry('ledger_probe_tool') is not None
+    retained = registry.get_entry('shared_profile_tool')
+    assert retained is not None
+
+    rmtree(home / 'plugins' / 'ledger_probe')
+    assert manager.reconcile_removed_plugins() == ['ledger_probe']
+    assert registry.get_entry('ledger_probe_tool') is None
+    assert registry.get_entry('shared_profile_tool') is retained
+    assert 'ledger_probe' not in manager._plugins
+    assert manager.reconcile_removed_plugins() == []
+    manager.unload()
 
 
 def test_load_force_reload_and_unload_remove_every_manager_registration(

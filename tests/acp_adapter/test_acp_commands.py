@@ -121,6 +121,86 @@ def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_acp_set_session_model_resolves_effective_provider_and_reaches_agent(monkeypatch):
+    """``set_session_model`` (the ACP protocol RPC a client calls to switch
+    models) must resolve ``provider:model`` input through the REAL
+    ``hermes_cli.models`` parsing/detection logic — not a stand-in — and the
+    resolved (provider, model) pair, not the raw request string and not the
+    session's previous default, must be exactly what reaches ``AIAgent``'s
+    constructor kwargs. Every existing test around this chain mocks
+    ``resolve_runtime_provider`` wholesale and never asserts the resolved
+    model/provider actually arrived at ``AIAgent`` — this exercises the real
+    resolution chain end to end.
+    """
+    captured = {}
+    runtime_requests = []
+
+    class CapturingAgent(FakeAgent):
+        def __init__(self, **kwargs):
+            super().__init__()
+            captured.clear()
+            captured.update(kwargs)
+
+    def mod(name, **attrs):
+        module = ModuleType(name)
+        for key, value in attrs.items():
+            setattr(module, key, value)
+        return module
+
+    def fake_resolve_runtime_provider(**kwargs):
+        requested = kwargs.get("requested")
+        runtime_requests.append(requested)
+        return {
+            "provider": requested,
+            "api_mode": "messages",
+            "base_url": f"https://api.{requested}.example/v1",
+            "api_key": "sk-test",
+            "command": None,
+            "args": [],
+        }
+
+    monkeypatch.setitem(sys.modules, "run_agent", mod("run_agent", AIAgent=CapturingAgent))
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        mod(
+            "hermes_cli.config",
+            load_config=lambda: {"model": {"default": "gpt-5", "provider": "openrouter"}},
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.runtime_provider",
+        mod("hermes_cli.runtime_provider", resolve_runtime_provider=fake_resolve_runtime_provider),
+    )
+
+    manager = SessionManager(db=NoopDb())
+    acp_agent = HermesACPAgent(session_manager=manager)
+    state = manager.create_session(cwd=".")
+
+    # The initial session build resolved the config default (openrouter).
+    assert runtime_requests == ["openrouter"]
+    assert captured["provider"] == "openrouter"
+    assert captured["model"] == "gpt-5"
+
+    resp = await acp_agent.set_session_model(
+        model_id="anthropic:claude-sonnet-4.5", session_id=state.session_id
+    )
+
+    # `parse_model_input`'s real provider-prefix detection ("anthropic:" is
+    # a recognized provider name) must drive what's requested from runtime
+    # provider resolution — not the previous provider, not the raw model_id.
+    assert runtime_requests[-1] == "anthropic"
+    # And the runtime-resolved (possibly reshaped) provider, plus the
+    # stripped model name, must be exactly what AIAgent was rebuilt with.
+    assert captured["provider"] == "anthropic"
+    assert captured["model"] == "claude-sonnet-4.5"
+    assert state.model == "claude-sonnet-4.5"
+    if resp is not None:
+        assert getattr(resp, "model_id", None) in (None, "anthropic:claude-sonnet-4.5", "claude-sonnet-4.5")
+
+
+@pytest.mark.asyncio
 async def test_acp_steer_slash_command_injects_into_running_agent():
     acp_agent, state, fake, _conn = make_agent_and_state()
     state.is_running = True

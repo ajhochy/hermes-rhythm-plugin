@@ -372,6 +372,9 @@ def _(rid, params: dict) -> dict:
             }
             for c in completer.get_completions(doc, None)
         ]
+        session = _sessions.get(params.get("session_id", ""))
+        if session and getattr(session.get("session_policy"), "version", None) == 2:
+            items = [item for item in items if item.get("kind") != "skill"]
 
         # Rank and bound the list (see _rank_slash_completions) while a
         # `/token` is under the cursor — the one stage skills are offered at.
@@ -447,6 +450,9 @@ def _(rid, params: dict) -> dict:
                 item["text"] == extra["text"] for item in items
             ):
                 items.append(extra)
+
+        if session and getattr(session.get("session_policy"), "version", None) == 2:
+            items = [item for item in items if item.get("kind") != "skill"]
 
         details_items = _details_completions(text)
         if details_items is not None:

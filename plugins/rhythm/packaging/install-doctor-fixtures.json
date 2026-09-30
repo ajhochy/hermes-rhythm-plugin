@@ -1,0 +1,19 @@
+{
+  "records": [
+    {
+      "kind": "install-error",
+      "operation": "report",
+      "message": "Rhythm install is opt-in; expected destination is <HERMES_HOME>/plugins/rhythm."
+    },
+    {
+      "kind": "doctor-error",
+      "operation": "validate",
+      "message": "Rhythm package manifest is unavailable; no install, update, or removal was attempted."
+    },
+    {
+      "kind": "update-log",
+      "operation": "report",
+      "message": "Rhythm update check deferred: local deterministic scaffold does not contact a release service."
+    }
+  ]
+}

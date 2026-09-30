@@ -251,6 +251,8 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
     # diagnosable and points at the env_passthrough opt-in escape hatch.
     _dropped_hermes = []
     for k, v in source_env.items():
+        if k.startswith("HERMES_HOST_CAPABILIT"):
+            continue
         if is_passthrough(k):
             resolved = resolve_passthrough_value(k, v)
             if resolved is not None:

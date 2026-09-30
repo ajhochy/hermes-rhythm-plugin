@@ -1,0 +1,38 @@
+{
+  "action": "reopened",
+  "issue": {
+    "number": 42,
+    "title": "Fix login redirect loop (clarified)",
+    "body": "Updated: When the user logs in on Chrome, they get stuck in a redirect loop. Reproducible 100% on version 2.3.1.",
+    "state": "open",
+    "created_at": "2026-08-21T10:00:00Z",
+    "updated_at": "2026-08-21T12:00:00Z",
+    "html_url": "https://github.com/allowed-org/allowed-repo/issues/42",
+    "user": {
+      "login": "reporter-alice",
+      "type": "User"
+    },
+    "labels": [
+      {"name": "bug"},
+      {"name": "priority:high"}
+    ],
+    "assignees": []
+  },
+  "repository": {
+    "id": 100001,
+    "name": "allowed-repo",
+    "full_name": "allowed-org/allowed-repo",
+    "owner": {
+      "login": "allowed-org",
+      "type": "Organization"
+    },
+    "private": false
+  },
+  "sender": {
+    "login": "reporter-alice",
+    "type": "User"
+  },
+  "installation": {
+    "id": 99001
+  }
+}

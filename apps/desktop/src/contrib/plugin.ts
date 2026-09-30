@@ -20,7 +20,7 @@ import { dispatchPluginNativeNotification, type PluginNativeNotificationInput } 
 import { registry } from './registry'
 import type { Contribution } from './types'
 
-export type { PluginRestOptions } from '@/hermes'
+export type { PluginRestOptions, PluginRestRoute } from '@/hermes'
 export type { HermesOpenTarget } from '@/lib/hermes-open-target'
 export type { PluginNativeNotificationInput, PluginNotificationAction } from '@/store/native-notifications'
 
@@ -70,6 +70,10 @@ export interface PluginContext {
    *  that aren't contributions or sockets (store subscriptions, timers). Runs
    *  alongside every other disposer when the plugin deactivates. */
   onDispose: (fn: () => void) => void
+  /** Install CSS owned by this plugin. Identical text is installed once and
+   *  the returned registration cleanup removes it on disable/reload. Runtime
+   *  plugins use this instead of importing a CSS file from their blob URL. */
+  css: (text: string) => void
   /** REST to this plugin's own backend namespace (`/api/plugins/<id>`); `path`
    *  is relative ('/board'). The sanctioned door for a plugin that ships a
    *  `plugin_api.py` — profile-aware, namespace-scoped by construction. Use
@@ -89,6 +93,44 @@ export interface PluginContext {
   /** Plugin-scoped i18n: ship + register locale bundles under this plugin,
    *  resolved against the app's active locale — no core `en.ts` edit. */
   i18n: PluginI18n
+}
+
+const pluginStyles = new Map<string, Map<string, HTMLStyleElement>>()
+
+function installPluginStyle(pluginId: string, text: string): () => void {
+  const css = text.trim()
+
+  if (!css || typeof document === 'undefined') {
+    return () => undefined
+  }
+
+  const styles = pluginStyles.get(pluginId) ?? new Map<string, HTMLStyleElement>()
+  pluginStyles.set(pluginId, styles)
+  const existing = styles.get(css)
+
+  if (existing) {
+    return () => undefined
+  }
+
+  const element = document.createElement('style')
+  element.dataset.hermesPluginStyle = pluginId
+  element.textContent = css
+  document.head.append(element)
+  styles.set(css, element)
+
+  return () => {
+    // A later reload may have installed a replacement; never remove it.
+    if (styles.get(css) !== element) {
+      return
+    }
+
+    styles.delete(css)
+    element.remove()
+
+    if (styles.size === 0) {
+      pluginStyles.delete(pluginId)
+    }
+  }
 }
 
 export interface HermesPlugin {
@@ -176,6 +218,7 @@ export function createPluginContext(pluginId: string, onDispose?: (dispose: () =
     register: c => track(registry.register(scope(c))),
     registerMany: cs => track(registry.registerMany(cs.map(scope))),
     onDispose: fn => void track(fn),
+    css: text => void track(installPluginStyle(pluginId, text)),
     rest: <T>(path: string, opts?: PluginRestOptions) => pluginRest<T>(pluginId, path, opts),
     socket: (path, onMessage) => track(pluginSocket(pluginId, path, onMessage)),
     os: createPluginOs(pluginId),

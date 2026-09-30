@@ -16,6 +16,7 @@ from acp.schema import (
     EnvVariable,
     HttpHeader,
     McpServerHttp,
+    McpServerSse,
     McpServerStdio,
     NewSessionResponse,
     PromptResponse,
@@ -34,9 +35,23 @@ from acp_adapter.tools import build_tool_start
 # ---------------------------------------------------------------------------
 
 
+def _make_mock_agent():
+    """A bare ``MagicMock`` auto-vivifies ``.tools``/``.valid_tool_names``
+    as fresh child mocks rather than the empty list/set a real, already-
+    built ``AIAgent`` always has post-``agent_init``. ``refresh_agent_mcp_tools``
+    (the shared MCP tool-surface rebuild, see ``tools/mcp_tool.py``) reads
+    the *current* snapshot before publishing a new one, so an un-seeded
+    mock breaks that read with a ``TypeError`` instead of exercising the
+    real refresh path — seed the realistic starting shape here instead."""
+    agent = MagicMock(name="MockAIAgent")
+    agent.tools = []
+    agent.valid_tool_names = set()
+    return agent
+
+
 @pytest.fixture()
 def mock_manager():
-    return SessionManager(agent_factory=lambda: MagicMock(name="MockAIAgent"))
+    return SessionManager(agent_factory=_make_mock_agent)
 
 
 @pytest.fixture()
@@ -194,6 +209,121 @@ class TestMcpRegistrationE2E:
         assert update.content[0].type == "content"
         assert "Approval prompt shows the diff" in update.content[0].content.text
 
+
+
+class TestMcpTransportTranslationE2E:
+    """``tools/mcp_tool.py`` only treats a server as SSE when its config
+    dict carries ``transport: "sse"`` (see ``MCPServerTask.start``) —
+    everything else with a ``url`` is Streamable HTTP. The ACP → Hermes
+    config translation in ``_register_session_mcp_servers`` must preserve
+    that distinction for every transport kind (stdio/http/sse), not
+    collapse SSE into the HTTP branch."""
+
+    @pytest.mark.asyncio
+    async def test_sse_server_config_carries_sse_transport_marker(
+        self, acp_agent, mock_manager
+    ):
+        servers = [
+            McpServerSse(
+                name="sse-srv", url="https://sse.example.com/mcp", headers=[]
+            ),
+        ]
+
+        registered_configs = {}
+
+        def mock_register(config_map):
+            registered_configs.update(config_map)
+            return []
+
+        with patch("tools.mcp_tool.register_mcp_servers", side_effect=mock_register), \
+             patch("model_tools.get_tool_definitions", return_value=[]):
+            await acp_agent.new_session(cwd="/tmp", mcp_servers=servers)
+
+        assert "sse-srv" in registered_configs
+        cfg = registered_configs["sse-srv"]
+        assert cfg["url"] == "https://sse.example.com/mcp"
+        assert cfg.get("transport") == "sse", (
+            f"SSE server config must set transport='sse' so "
+            f"MCPServerTask.start() doesn't silently run it as "
+            f"Streamable HTTP; got {cfg!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_http_server_config_has_no_sse_transport_marker(
+        self, acp_agent, mock_manager
+    ):
+        """Regression guard for the other direction: HTTP must not
+        acquire an SSE marker either."""
+        servers = [
+            McpServerHttp(
+                name="http-srv", url="https://http.example.com/mcp", headers=[]
+            ),
+        ]
+
+        registered_configs = {}
+
+        def mock_register(config_map):
+            registered_configs.update(config_map)
+            return []
+
+        with patch("tools.mcp_tool.register_mcp_servers", side_effect=mock_register), \
+             patch("model_tools.get_tool_definitions", return_value=[]):
+            await acp_agent.new_session(cwd="/tmp", mcp_servers=servers)
+
+        cfg = registered_configs["http-srv"]
+        assert cfg.get("transport") != "sse"
+
+
+class TestMcpToolRefreshUsesSharedRebuild:
+    """``refresh_agent_mcp_tools`` (``tools/mcp_tool.py``) is documented as
+    "the single shared rebuild used by every ... caller ... so they can't
+    drift apart again" — it re-injects memory-provider AND context-engine
+    (``lcm_*``) tools after every registry-derived rebuild. A hand-rolled
+    duplicate of the rebuild logic that skips that re-injection silently
+    diverges from every other MCP-tool-affecting caller (the TUI
+    ``reload.mcp`` RPC, gateway reload, the late-binding refresh)."""
+
+    @pytest.mark.asyncio
+    async def test_mcp_registration_refresh_preserves_context_engine_tools(
+        self, acp_agent, mock_manager
+    ):
+        from types import SimpleNamespace
+
+        create_resp = await acp_agent.new_session(cwd="/tmp")
+        sid = create_resp.session_id
+
+        state = mock_manager.get_session(sid)
+        # A non-empty, non-falsy list survives `_register_session_mcp_servers`'
+        # ``getattr(...) or ["hermes-acp"]`` fallback unchanged (unlike
+        # ``None``), so this is the reachable state that actually exercises
+        # the context-engine gate in ``_reinject_post_build_tools``.
+        state.agent.enabled_toolsets = ["hermes-acp", "context_engine"]
+        state.agent.disabled_toolsets = None
+        state.agent.tools = []
+        state.agent.valid_tool_names = set()
+        state.agent.context_compressor = SimpleNamespace(
+            get_tool_schemas=lambda: [
+                {
+                    "name": "lcm_grep",
+                    "description": "search compressed context",
+                    "parameters": {"type": "object", "properties": {}},
+                }
+            ]
+        )
+
+        servers = [McpServerStdio(name="srv3", command="/bin/test3", args=[], env=[])]
+
+        def mock_register(config_map):
+            return []
+
+        with patch("tools.mcp_tool.register_mcp_servers", side_effect=mock_register), \
+             patch("model_tools.get_tool_definitions", return_value=[]):
+            await acp_agent.load_session(cwd="/tmp", session_id=sid, mcp_servers=servers)
+
+        assert "lcm_grep" in state.agent.valid_tool_names, (
+            "context-engine tools must survive the post-MCP-registration "
+            "tool-surface refresh, matching every other refresh caller"
+        )
 
 
 class TestMcpSanitizationE2E:

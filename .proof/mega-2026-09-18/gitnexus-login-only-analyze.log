@@ -1,0 +1,17 @@
+
+  GitNexus Analyzer
+
+[2K  Skipped 12 large files (>512KB, likely generated/vendored)
+[2K  - apps/bootstrap-installer/src-tauri/icons/icon.icns
+[2K  - apps/desktop/assets/icon.icns
+[2K  - apps/desktop/electron/main.ts
+[2K  - cli.py
+[2K  - gateway/run.py
+[2K  ...and 7 more (set GITNEXUS_VERBOSE=1 to list them all)
+[2K  Set GITNEXUS_MAX_FILE_SIZE=<KB> to include files above the default cap.
+
+  Repository indexed successfully (205.6s)
+
+  191,333 nodes | 362,052 edges | 7403 clusters | 300 flows
+  /Users/ajhochhalter/Documents/hermes-rhythm-plugin
+

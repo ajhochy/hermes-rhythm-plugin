@@ -1,0 +1,115 @@
+{
+  "contract": "rhythm-api-operations",
+  "version": 1,
+  "description": "Which Rhythm API operations are permitted at each campaign milestone. Credentials stay server-side; the desktop/renderer side never receives raw Rhythm tokens.",
+  "bridge_operations": [
+    {"op": "catalog.list", "scope": "catalog.read", "method": "GET", "path": "/catalog"},
+    {"op": "catalog.get", "scope": "catalog.read", "method": "GET", "path": "/catalog/{agentId}"},
+    {"op": "runtime.report", "scope": "runtime.report", "method": "POST", "path": "/runtime/report"},
+    {"op": "agent.patch", "scope": "agent.write", "method": "POST", "path": "/agents/{agentId}/patch"},
+    {"op": "agent.patch-status", "scope": "agent.write", "method": "POST", "path": "/agents/{agentId}/patch-status"},
+    {"op": "projection.issue", "scope": "projection.issue", "method": "POST", "path": "/projections"},
+    {"op": "projection.check", "scope": "projection.issue", "method": "POST", "path": "/projections/{projectionId}/check"},
+    {"op": "delegation.dispatch", "scope": "delegation.dispatch", "method": "POST", "path": "/delegations"},
+    {"op": "delegation.status", "scope": "delegation.dispatch", "method": "POST", "path": "/delegations/query"},
+    {"op": "delegation.result", "scope": "delegation.dispatch", "method": "POST", "path": "/delegations/{jobId}/result"},
+    {"op": "delegation.cancel", "scope": "delegation.dispatch", "method": "POST", "path": "/delegations/{jobId}/cancel"},
+    {"op": "delegation.claim", "scope": "delegation.execute", "method": "POST", "path": "/delegations/claim"},
+    {"op": "delegation.report", "scope": "delegation.execute", "method": "POST", "path": "/delegations/{jobId}/report"},
+    {"op": "memory.search", "scope": "memory.search", "method": "POST", "path": "/memory/search"}
+  ],
+  "milestones": {
+    "M0": {
+      "allowed_operations": [],
+      "read_only": true,
+      "notes": "Campaign bootstrap only. No live Rhythm API calls."
+    },
+    "M4a": {
+      "allowed_operations": [
+        {
+          "method": "GET",
+          "path": "/auth/me",
+          "purpose": "validate the connected Rhythm session"
+        },
+        {
+          "method": "GET",
+          "path": "/workspaces/me",
+          "purpose": "sanitized workspace summary for the Dashboard/Tasks slice"
+        },
+        {
+          "method": "GET",
+          "path": "/dashboard/summary",
+          "purpose": "canonical dashboard summary DTO"
+        },
+        {
+          "method": "GET",
+          "path": "/tasks and /tasks/{task_id}",
+          "purpose": "read-only task list and detail DTOs"
+        }
+      ],
+      "read_only": true,
+      "notes": "First hosted slice is read-only per the locked architecture; task completion/rescheduling requires the separate write-readiness gate (M4b)."
+    },
+    "M4b": {
+      "allowed_operations": [
+        {
+          "method": "PATCH",
+          "path": "/tasks/{task_id}",
+          "bodies": [{"status": "done"}, {"scheduledDate": "YYYY-MM-DD"}],
+          "authority": "server_bearer_only",
+          "confirmation": "identity_workspace_bound_single_use",
+          "idempotency": "actor_workspace_task_operation_date_generation_intent_digest",
+          "readback": "200_matching_canonical_or_conflict",
+          "ambiguous": "uncertain_never_success"
+        }
+      ],
+      "read_only": false,
+      "notes": "Readiness is local-runtime verified only; live-upstream evidence is unavailable without an explicit credential. Owner or canonical collaborator authorization is re-read immediately before the sole PATCH."
+    },
+    "M5": {
+      "transport": "bounded_local_rest_to_pinned_upstream_v1",
+      "readiness_contract": "m5-local-contract-v1",
+      "allowed_operations": [
+        {"method": "GET", "path": "/planner/weeks/{week_start}", "upstream_path": "/planner/weeks/{week_start}", "dto": "planner-week-v1", "bounds": "monday_yyyy_mm_dd"},
+        {"method": "GET", "path": "/rhythm-rules", "upstream_path": "/recurring-rules", "dto": "rhythm-rule-list-v1"},
+        {"method": "GET", "path": "/rhythm-rules/{rule_id}", "upstream_path": "/recurring-rules/{rule_id}", "dto": "rhythm-rule-v1"},
+        {"method": "GET", "path": "/project-templates", "upstream_path": "/project-templates", "dto": "project-template-list-v1"},
+        {"method": "GET", "path": "/project-instances", "upstream_path": "/project-instances", "dto": "project-instance-list-v1"},
+        {"method": "GET", "path": "/project-instances/{instance_id}", "upstream_path": "/project-instances/{instance_id}", "dto": "project-instance-v1"}
+      ],
+      "approved_write_operations": [
+        "planner.schedule-task", "planner.update-task", "planner.update-project-step", "planner.schedule-project-step",
+        "rhythms.create-rule", "rhythms.update-rule", "rhythms.delete-rule", "rhythms.create-step", "rhythms.update-step",
+        "projects.create-template", "projects.update-template", "projects.delete-template", "projects.create-instance", "projects.update-step", "projects.update-template-step", "projects.create-step", "projects.delete-step", "projects.create-milestone"
+      ],
+      "write_gate": "server_bearer_profile_workspace_actor_generation_payload_digest_one_use_ttl_intent_lease",
+      "fail_closed": true,
+      "notes": "Hermes exposes only canonical local DTOs and the two local workspace-operation endpoints. The server maps a receipt-bound semantic operation to one exact upstream method/path/body; collaborator and member routes are not represented. Local fixture verification is available; live credential evidence remains unavailable."
+    },
+    "M6": {
+      "transport": "bounded_local_rest_to_pinned_upstream_v1",
+      "allowed_operations": [
+        {"method": "GET", "path": "/messages", "upstream_path": "/message-threads", "dto": "message-thread-list-v1"},
+        {"method": "GET", "path": "/messages/{thread_id}/history", "upstream_path": "/message-threads/{thread_id}/messages", "dto": "message-history-v1"},
+        {"method": "GET", "path": "/directory", "upstream_path": "/users", "dto": "workspace-directory-v1"},
+        {"method": "GET", "path": "/facilities", "upstream_path": "/facilities", "dto": "facility-list-v1"},
+        {"method": "GET", "path": "/facilities/reservations?start={start}&end={end}", "upstream_path": "/facilities/reservations?start={start}&end={end}", "dto": "reservation-list-v1"},
+        {"method": "GET", "path": "/facilities/{facility_id}/series", "upstream_path": "/facilities/{facility_id}/reservation-series", "dto": "reservation-series-v1"}
+      ],
+      "approved_write_operations": [
+        "messages.mark-read", "messages.mark-unread",
+        "facilities.create-facility", "facilities.update-facility", "facilities.delete-facility",
+        "facilities.create-reservation", "facilities.update-reservation", "facilities.delete-reservation",
+        "facilities.update-group", "facilities.delete-group", "facilities.delete-series", "facilities.delete-reservations"
+      ],
+      "write_gate": "server_bearer_profile_workspace_actor_generation_payload_digest_one_use_ttl_intent_lease",
+      "fail_closed": true,
+      "notes": "Message creation, sending, renaming, and deletion have no local route or upstream allowlist entry. Message state and facility operations are exact receipt-bound semantic operations; facility manager or reservation creator authority is re-derived from canonical upstream data before one mutation."
+    }
+  },
+  "forbidden": [
+    "arbitrary_proxying",
+    "renderer_direct_credential_use",
+    "write_operations_before_write_readiness_gate"
+  ]
+}

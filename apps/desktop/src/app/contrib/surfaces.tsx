@@ -120,8 +120,7 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const gateway = useStore($gateway)
   const gatewayState = useStore($gatewayState)
-  useContributions(ROUTES_AREA)
-  const routeContributions = contributedRoutes()
+  const routeContributions = contributedRoutes(useContributions(ROUTES_AREA))
 
   const modelMenuContent = useMemo(
     () =>

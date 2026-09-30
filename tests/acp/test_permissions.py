@@ -2,6 +2,7 @@
 
 import asyncio
 import inspect
+import json
 from concurrent.futures import Future
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,7 +12,7 @@ from acp.schema import (
     RequestPermissionResponse,
 )
 
-from acp_adapter.permissions import make_approval_callback
+from acp_adapter.permissions import _build_permission_tool_call, make_approval_callback
 from tools.approval import prompt_dangerous_approval
 
 
@@ -63,6 +64,23 @@ def _invoke_callback(
 
 
 class TestApprovalBridge:
+    def test_permission_payload_is_redacted_and_bounded_at_every_wire_field(self):
+        """Command approval progress must not bypass ACP's shared safety helpers."""
+        secret = "sk-abcdefghijklmnopqrstuvwx1234567890"
+        filler = "x" * 21000
+
+        tool_call = _build_permission_tool_call(
+            f"curl -H 'Authorization: Bearer {secret}' {filler}",
+            f"deploy {secret} {filler}",
+        )
+        serialized = tool_call.model_dump_json(by_alias=True)
+
+        assert secret not in serialized
+        assert len(tool_call.title) <= 200
+        assert len(tool_call.content[0].content.text) <= 10000
+        assert len(json.dumps(tool_call.raw_input, default=str)) <= 4000
+        assert tool_call.raw_input["description"].startswith("deploy")
+
     def test_bridge_schedules_request_on_the_given_loop(self):
         result, kwargs, scheduled, _, loop = _invoke_callback(
             AllowedOutcome(option_id="allow_once", outcome="selected"),
@@ -95,6 +113,43 @@ class TestApprovalBridge:
             "deny",
             "deny_always",
         ]
+
+    def test_disallowed_permanent_never_offers_persistent_option(self):
+        """``allow_permanent=False`` must never surface allow_always as a
+        selectable option — the caller (Hermes policy) is the only thing
+        that can grant persistent approval; ACP itself never auto-selects it."""
+        result, kwargs, _, _, _ = _invoke_callback(
+            AllowedOutcome(option_id="allow_once", outcome="selected"),
+            allow_permanent=False,
+        )
+
+        option_ids = [option.option_id for option in kwargs["options"]]
+        assert "allow_always" not in option_ids
+        assert option_ids == ["allow_once", "allow_session", "deny", "deny_always"]
+
+    def test_smart_denied_narrows_to_non_persistent_options_only(self):
+        """A smart-denied (automatically risk-classified) request must never
+        offer a persistent grant — only a single-shot allow or deny."""
+        result, kwargs, _, _, _ = _invoke_callback(
+            AllowedOutcome(option_id="allow_once", outcome="selected"),
+            smart_denied=True,
+        )
+
+        option_ids = [option.option_id for option in kwargs["options"]]
+        assert option_ids == ["allow_once", "deny"]
+        assert "allow_session" not in option_ids
+        assert "allow_always" not in option_ids
+        assert "deny_always" not in option_ids
+
+    def test_unknown_option_id_denies_even_if_allowed_outcome(self):
+        """A response outside the offered option set must fail closed —
+        never be interpreted as an implicit persistent grant."""
+        result, _, _, _, _ = _invoke_callback(
+            AllowedOutcome(option_id="allow_always", outcome="selected"),
+            allow_permanent=False,
+        )
+
+        assert result == "deny"
 
     def test_tool_call_ids_are_unique(self):
         _, first_kwargs, _, _, _ = _invoke_callback(

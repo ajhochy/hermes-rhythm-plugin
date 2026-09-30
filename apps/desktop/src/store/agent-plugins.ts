@@ -1,3 +1,4 @@
+import { JsonRpcGatewayError } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { notifyError } from '@/store/notifications'
@@ -72,10 +73,10 @@ const withProfile = (params: Record<string, unknown>, profile?: string | null) =
  *  backend); concurrent callers for the SAME profile share one in-flight
  *  request — a different profile starts fresh so a scope switch can't get a
  *  stale list. */
-export function loadAgentPlugins(request: GatewayRequest, profile?: string | null): Promise<void> {
+export function loadAgentPlugins(request: GatewayRequest, profile?: string | null, force = false): Promise<void> {
   const scope = profile ?? null
 
-  if (inflight && inflightProfile === scope) {
+  if (!force && inflight && inflightProfile === scope) {
     return inflight
   }
 
@@ -88,10 +89,23 @@ export function loadAgentPlugins(request: GatewayRequest, profile?: string | nul
     }
 
     try {
-      const result = await request<{ plugins?: AgentPluginRow[] }>(
-        'plugins.manage',
-        withProfile({ action: 'list' }, scope)
-      )
+      let result: { plugins?: AgentPluginRow[] }
+      try {
+        result = await request<{ plugins?: AgentPluginRow[] }>(
+          'plugins.manage',
+          withProfile({ action: force ? 'reconcile' : 'list' }, scope)
+        )
+      } catch (error) {
+        // Older gateways have no scoped disposal action; still refresh their
+        // inventory instead of leaving the Settings row stale indefinitely.
+        if (!force || !(error instanceof JsonRpcGatewayError) || error.code !== 4017) {
+          throw error
+        }
+        result = await request<{ plugins?: AgentPluginRow[] }>(
+          'plugins.manage',
+          withProfile({ action: 'list' }, scope)
+        )
+      }
 
       if (generation !== loadGeneration) {
         return

@@ -1,0 +1,55 @@
+{
+  "issue": 13,
+  "generated": "2026-08-21",
+  "criteria": [
+    {
+      "criterion_id": "issue-13-c1",
+      "text": "Build a deterministic closed package manifest/content/provenance/license/bundle-drift gate from the integrated Rhythm source.",
+      "mode": "unit",
+      "test_file": "tests/plugins/test_rhythm_packaging_scaffold.py",
+      "test_id": "issue-13-c1: package gate accepts only declared content and one ESM artifact",
+      "status": "pass"
+    },
+    {
+      "criterion_id": "issue-13-c2",
+      "text": "One Desktop ESM artifact with React/react-dom external peers and embedded Lucide, no relative chunks or second React runtime; Python modules/assets/native tools/skill/package data enumerated.",
+      "mode": "unit",
+      "test_file": "tests/plugins/test_rhythm_packaging_scaffold.py",
+      "test_id": "issue-13-c2: bundle drift is rejected",
+      "status": "pass"
+    },
+    {
+      "criterion_id": "issue-13-c3",
+      "text": "Deterministic macOS assertions must build and inspect Hermes.app, app.asar, and app.asar.unpacked; separate live signed/notarized release gate.",
+      "mode": "unit",
+      "test_file": "tests/plugins/test_rhythm_packaging_scaffold.py",
+      "test_id": "issue-13-c3: macOS artifact copies are both inspected",
+      "status": "pass"
+    },
+    {
+      "criterion_id": "issue-13-c4",
+      "text": "Temp-home install/reinstall/upgrade/rollback/uninstall must remain opt-in in the unified <HERMES_HOME>/plugins/rhythm tree, signal backend restart, and doctor must report compatibility, connection, and exactly three native tools with bounded redacted errors.",
+      "mode": "unit",
+      "test_file": "tests/plugins/test_rhythm_packaging_scaffold.py",
+      "test_id": "issue-13-c4: diagnostics are redacted and install plan is non-destructive",
+      "status": "pass"
+    },
+    {
+      "criterion_id": "issue-13-c5",
+      "text": "Validate platform package data where the repository supports a directory plugin package.",
+      "mode": "unit",
+      "test_file": "tests/plugins/test_rhythm_packaging_scaffold.py",
+      "test_id": "issue-13-c5: Nix directory plugin convention accepts closed package",
+      "status": "pass"
+    },
+    {
+      "criterion_id": "issue-13-c6",
+      "text": "Separate live signed/notarized release gate.",
+      "mode": "manual",
+      "status": "pending",
+      "reason": "UNVERIFIED: signing and notarization are intentionally excluded from deterministic local scaffolding."
+    }
+  ],
+  "stack": "python",
+  "not_tested": ["issue-13-c6"]
+}

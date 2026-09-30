@@ -2,11 +2,13 @@
 // from main.ts; the HUD window handle and session-id latch stay injected
 // because main.ts owns the window lifecycle and the close broadcast reads the
 // latch when handing the session back to the app window.
-import { type BrowserWindow, ipcMain } from 'electron'
+import { type BrowserWindow, ipcMain as electronIpcMain } from 'electron'
 
 import { hudFrostFor, type TranslucencyState } from './translucency'
 
 export interface HudIpcDeps {
+  /** An embedded host supplies a sender-scoped registrar. */
+  ipcMain?: Pick<typeof electronIpcMain, 'handle' | 'on'>
   isMac: boolean
   isWindows: boolean
   glassSupported: boolean
@@ -19,6 +21,7 @@ export interface HudIpcDeps {
 }
 
 export function registerHudIpc({
+  ipcMain = electronIpcMain,
   isMac,
   isWindows,
   glassSupported,

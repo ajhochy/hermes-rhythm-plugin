@@ -51,8 +51,8 @@ function RouteTilePane({ path }: { path: string }) {
   const builtin = BUILTIN_PAGES[path]
 
   // Subscribe so a plugin page tile appears the moment its route registers.
-  useContributions(ROUTES_AREA)
-  const contrib = builtin ? null : contributedRoutes().find(r => r.path === path)
+  const routeContributions = useContributions(ROUTES_AREA)
+  const contrib = builtin ? null : contributedRoutes(routeContributions).find(r => r.path === path)
 
   if (builtin) {
     return (
