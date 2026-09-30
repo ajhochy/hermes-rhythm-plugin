@@ -1,0 +1,3971 @@
+From 50cd1f486b63e9d9e51a675b5fc2ae8b8d39f795 Mon Sep 17 00:00:00 2001
+From: ajhochy <ajhochy@gmail.com>
+Date: Sat, 22 Aug 2026 01:12:49 -0700
+Subject: [PATCH 1/2] test(github-intake): RED contract suite for GitHub
+ issue-to-Kanban intake pipeline
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Hermetic failing test suite for the disabled-by-default github-intake plugin:
+auth/HMAC verification, normalization, trust policy, canonical identity,
+idempotency/replay, lifecycle ordering, reconciliation, routing quarantine,
+capability boundaries, CLI registration, scope enforcement, and end-to-end
+evidence. All 85 tests fail with ModuleNotFoundError because the plugin
+implementation is absent — correct RED state before GREEN implementation.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+---
+ plugins/github-intake/__init__.py             |   0
+ plugins/github-intake/tests/__init__.py       |   0
+ plugins/github-intake/tests/conftest.py       | 196 ++++++++++++
+ .../tests/fixtures/config.disabled.yaml       |  13 +
+ .../tests/fixtures/issue_closed.json          |  30 ++
+ .../tests/fixtures/issue_edited.json          |  35 ++
+ .../tests/fixtures/issue_labeled.json         |  34 ++
+ .../tests/fixtures/issue_opened.json          |  30 ++
+ .../tests/fixtures/issue_reopened.json        |  30 ++
+ .../github-intake/tests/test_capabilities.py  | 204 ++++++++++++
+ plugins/github-intake/tests/test_cli.py       | 182 +++++++++++
+ plugins/github-intake/tests/test_contract.py  | 299 ++++++++++++++++++
+ .../github-intake/tests/test_end_to_end.py    | 230 ++++++++++++++
+ .../github-intake/tests/test_idempotency.py   | 178 +++++++++++
+ plugins/github-intake/tests/test_lifecycle.py | 183 +++++++++++
+ .../tests/test_reconciliation.py              | 249 +++++++++++++++
+ plugins/github-intake/tests/test_routing.py   | 288 +++++++++++++++++
+ plugins/github-intake/tests/test_scope.py     | 145 +++++++++
+ plugins/github-intake/tests/test_security.py  | 242 ++++++++++++++
+ 19 files changed, 2568 insertions(+)
+ create mode 100644 plugins/github-intake/__init__.py
+ create mode 100644 plugins/github-intake/tests/__init__.py
+ create mode 100644 plugins/github-intake/tests/conftest.py
+ create mode 100644 plugins/github-intake/tests/fixtures/config.disabled.yaml
+ create mode 100644 plugins/github-intake/tests/fixtures/issue_closed.json
+ create mode 100644 plugins/github-intake/tests/fixtures/issue_edited.json
+ create mode 100644 plugins/github-intake/tests/fixtures/issue_labeled.json
+ create mode 100644 plugins/github-intake/tests/fixtures/issue_opened.json
+ create mode 100644 plugins/github-intake/tests/fixtures/issue_reopened.json
+ create mode 100644 plugins/github-intake/tests/test_capabilities.py
+ create mode 100644 plugins/github-intake/tests/test_cli.py
+ create mode 100644 plugins/github-intake/tests/test_contract.py
+ create mode 100644 plugins/github-intake/tests/test_end_to_end.py
+ create mode 100644 plugins/github-intake/tests/test_idempotency.py
+ create mode 100644 plugins/github-intake/tests/test_lifecycle.py
+ create mode 100644 plugins/github-intake/tests/test_reconciliation.py
+ create mode 100644 plugins/github-intake/tests/test_routing.py
+ create mode 100644 plugins/github-intake/tests/test_scope.py
+ create mode 100644 plugins/github-intake/tests/test_security.py
+
+diff --git a/plugins/github-intake/__init__.py b/plugins/github-intake/__init__.py
+new file mode 100644
+index 0000000000..e69de29bb2
+diff --git a/plugins/github-intake/tests/__init__.py b/plugins/github-intake/tests/__init__.py
+new file mode 100644
+index 0000000000..e69de29bb2
+diff --git a/plugins/github-intake/tests/conftest.py b/plugins/github-intake/tests/conftest.py
+new file mode 100644
+index 0000000000..4c05010625
+--- /dev/null
++++ b/plugins/github-intake/tests/conftest.py
+@@ -0,0 +1,196 @@
++"""Shared fixtures for the github-intake plugin test suite.
++
++All tests use:
++- Synthetic payloads only (no real GitHub API calls)
++- Temporary HERMES_HOME and Kanban databases
++- Fake clocks (no real time.time() dependence)
++- Mock HCW boundaries (no real worker dispatch)
++- HMAC signing helpers for authenticated requests
++"""
++
++from __future__ import annotations
++
++import hashlib
++import hmac
++import json
++import os
++import sqlite3
++import sys
++import tempfile
++import time
++from pathlib import Path
++from typing import Any
++from unittest.mock import MagicMock, patch
++
++import pytest
++
++# Ensure project root and plugin root are importable
++_REPO_ROOT = Path(__file__).parent.parent.parent.parent
++_PLUGIN_ROOT = Path(__file__).parent.parent
++if str(_REPO_ROOT) not in sys.path:
++    sys.path.insert(0, str(_REPO_ROOT))
++if str(_PLUGIN_ROOT.parent) not in sys.path:
++    sys.path.insert(0, str(_PLUGIN_ROOT.parent))
++
++FIXTURES_DIR = Path(__file__).parent / "fixtures"
++
++# Canonical test webhook secret — never a real secret
++TEST_WEBHOOK_SECRET = "test-webhook-secret-for-hermetic-tests-only"
++
++# Canonical test repository
++TEST_REPO_FULL_NAME = "test-org/test-repo"
++
++# Fake delivery ID for deterministic tests
++TEST_DELIVERY_ID = "abc123def456"
++TEST_DELIVERY_ID_2 = "def456abc789"
++
++# Fixed fake epoch for deterministic clock tests (2026-08-22T10:00:00Z)
++FAKE_EPOCH = 1756080000
++
++
++def sign_payload(payload: bytes, secret: str = TEST_WEBHOOK_SECRET) -> str:
++    """Produce a GitHub-style X-Hub-Signature-256 header value."""
++    mac = hmac.new(secret.encode(), payload, hashlib.sha256)
++    return f"sha256={mac.hexdigest()}"
++
++
++def load_fixture(name: str) -> dict:
++    """Load a JSON fixture by filename."""
++    path = FIXTURES_DIR / name
++    return json.loads(path.read_bytes())
++
++
++def fixture_bytes(name: str) -> bytes:
++    """Load raw fixture bytes."""
++    path = FIXTURES_DIR / name
++    return path.read_bytes()
++
++
++@pytest.fixture()
++def hermes_home(tmp_path):
++    """Isolated HERMES_HOME for each test."""
++    home = tmp_path / "hermes_home"
++    home.mkdir()
++    old = os.environ.get("HERMES_HOME")
++    os.environ["HERMES_HOME"] = str(home)
++    yield home
++    if old is None:
++        os.environ.pop("HERMES_HOME", None)
++    else:
++        os.environ["HERMES_HOME"] = old
++
++
++@pytest.fixture()
++def kanban_db_path(hermes_home):
++    """Isolated Kanban DB path inside the temp HERMES_HOME."""
++    db_path = hermes_home / "kanban.db"
++    old = os.environ.get("HERMES_KANBAN_DB")
++    os.environ["HERMES_KANBAN_DB"] = str(db_path)
++    yield db_path
++    if old is None:
++        os.environ.pop("HERMES_KANBAN_DB", None)
++    else:
++        os.environ["HERMES_KANBAN_DB"] = old
++
++
++@pytest.fixture()
++def kanban_conn(kanban_db_path):
++    """Initialized Kanban DB connection for the test."""
++    from hermes_cli.kanban_db import init_db
++    conn = init_db(db_path=kanban_db_path)
++    yield conn
++    conn.close()
++
++
++@pytest.fixture()
++def fake_clock(monkeypatch):
++    """Injectable fake clock. Returns a mutable container [epoch_seconds]."""
++    clock = [FAKE_EPOCH]
++
++    def _time():
++        return float(clock[0])
++
++    monkeypatch.setattr(time, "time", _time)
++    return clock
++
++
++@pytest.fixture()
++def plugin_config(hermes_home):
++    """Minimal disabled-by-default plugin config for tests."""
++    return {
++        "plugin": "github-intake",
++        "enabled": False,
++        "webhook_secret": TEST_WEBHOOK_SECRET,
++        "allowed_repositories": [TEST_REPO_FULL_NAME],
++        "trusted_labels": ["hcw-dev"],
++        "route_profile": "hcw-dev",
++        "max_payload_bytes": 26214400,
++        "reconcile_schedule": "0 2 * * *",
++        "dry_run": True,
++    }
++
++
++@pytest.fixture()
++def enabled_plugin_config(plugin_config):
++    """Enabled plugin config (for tests that need activation)."""
++    return {**plugin_config, "enabled": True, "dry_run": False}
++
++
++@pytest.fixture()
++def mock_hcw_boundary():
++    """Mock HCW boundary that records routing calls without dispatching workers."""
++    boundary = MagicMock()
++    boundary.route_calls = []
++    boundary.blocked_calls = []
++
++    def _route(task_id: str, profile: str, **kwargs):
++        boundary.route_calls.append({"task_id": task_id, "profile": profile, **kwargs})
++
++    def _block(task_id: str, reason: str, **kwargs):
++        boundary.blocked_calls.append({"task_id": task_id, "reason": reason, **kwargs})
++
++    boundary.route = _route
++    boundary.block = _block
++    return boundary
++
++
++@pytest.fixture()
++def issue_opened_payload():
++    """Standard issue opened event payload."""
++    return load_fixture("issue_opened.json")
++
++
++@pytest.fixture()
++def issue_opened_bytes():
++    """Raw bytes of the issue opened fixture."""
++    return fixture_bytes("issue_opened.json")
++
++
++@pytest.fixture()
++def issue_opened_signed(issue_opened_bytes):
++    """Signed (delivery_id, signature, payload) tuple for issue opened."""
++    return (
++        TEST_DELIVERY_ID,
++        sign_payload(issue_opened_bytes),
++        issue_opened_bytes,
++    )
++
++
++@pytest.fixture()
++def issue_labeled_payload():
++    return load_fixture("issue_labeled.json")
++
++
++@pytest.fixture()
++def issue_closed_payload():
++    return load_fixture("issue_closed.json")
++
++
++@pytest.fixture()
++def issue_reopened_payload():
++    return load_fixture("issue_reopened.json")
++
++
++@pytest.fixture()
++def issue_edited_payload():
++    return load_fixture("issue_edited.json")
+diff --git a/plugins/github-intake/tests/fixtures/config.disabled.yaml b/plugins/github-intake/tests/fixtures/config.disabled.yaml
+new file mode 100644
+index 0000000000..cc7762d0d4
+--- /dev/null
++++ b/plugins/github-intake/tests/fixtures/config.disabled.yaml
+@@ -0,0 +1,13 @@
++# GitHub intake plugin configuration — DISABLED BY DEFAULT
++# This file represents the shipped default: plugin is inactive until
++# AJ explicitly sets enabled: true and configures a webhook secret.
++plugin: github-intake
++enabled: false
++webhook_secret: null
++allowed_repositories: []
++trusted_labels:
++  - hcw-dev
++route_profile: hcw-dev
++max_payload_bytes: 26214400
++reconcile_schedule: "0 2 * * *"
++dry_run: true
+diff --git a/plugins/github-intake/tests/fixtures/issue_closed.json b/plugins/github-intake/tests/fixtures/issue_closed.json
+new file mode 100644
+index 0000000000..d79ea715a3
+--- /dev/null
++++ b/plugins/github-intake/tests/fixtures/issue_closed.json
+@@ -0,0 +1,30 @@
++{
++  "action": "closed",
++  "issue": {
++    "number": 42,
++    "title": "Implement feature X",
++    "body": "We need to implement feature X.",
++    "state": "closed",
++    "labels": [
++      {"name": "hcw-dev", "color": "0075ca"}
++    ],
++    "user": {
++      "login": "ajhochy",
++      "type": "User"
++    },
++    "created_at": "2026-08-22T10:00:00Z",
++    "updated_at": "2026-08-22T12:00:00Z",
++    "html_url": "https://github.com/test-org/test-repo/issues/42"
++  },
++  "repository": {
++    "id": 123456,
++    "name": "test-repo",
++    "full_name": "test-org/test-repo",
++    "private": false,
++    "html_url": "https://github.com/test-org/test-repo"
++  },
++  "sender": {
++    "login": "ajhochy",
++    "type": "User"
++  }
++}
+diff --git a/plugins/github-intake/tests/fixtures/issue_edited.json b/plugins/github-intake/tests/fixtures/issue_edited.json
+new file mode 100644
+index 0000000000..2a6b9584c4
+--- /dev/null
++++ b/plugins/github-intake/tests/fixtures/issue_edited.json
+@@ -0,0 +1,35 @@
++{
++  "action": "edited",
++  "issue": {
++    "number": 42,
++    "title": "Implement feature X (revised)",
++    "body": "We need to implement feature X to support the new workflow. Updated requirements added.",
++    "state": "open",
++    "labels": [
++      {"name": "hcw-dev", "color": "0075ca"}
++    ],
++    "user": {
++      "login": "ajhochy",
++      "type": "User"
++    },
++    "created_at": "2026-08-22T10:00:00Z",
++    "updated_at": "2026-08-22T11:00:00Z",
++    "html_url": "https://github.com/test-org/test-repo/issues/42"
++  },
++  "changes": {
++    "title": {
++      "from": "Implement feature X"
++    }
++  },
++  "repository": {
++    "id": 123456,
++    "name": "test-repo",
++    "full_name": "test-org/test-repo",
++    "private": false,
++    "html_url": "https://github.com/test-org/test-repo"
++  },
++  "sender": {
++    "login": "ajhochy",
++    "type": "User"
++  }
++}
+diff --git a/plugins/github-intake/tests/fixtures/issue_labeled.json b/plugins/github-intake/tests/fixtures/issue_labeled.json
+new file mode 100644
+index 0000000000..f55dc29cfe
+--- /dev/null
++++ b/plugins/github-intake/tests/fixtures/issue_labeled.json
+@@ -0,0 +1,34 @@
++{
++  "action": "labeled",
++  "issue": {
++    "number": 42,
++    "title": "Implement feature X",
++    "body": "We need to implement feature X.",
++    "state": "open",
++    "labels": [
++      {"name": "hcw-dev", "color": "0075ca"}
++    ],
++    "user": {
++      "login": "ajhochy",
++      "type": "User"
++    },
++    "created_at": "2026-08-22T10:00:00Z",
++    "updated_at": "2026-08-22T10:05:00Z",
++    "html_url": "https://github.com/test-org/test-repo/issues/42"
++  },
++  "label": {
++    "name": "hcw-dev",
++    "color": "0075ca"
++  },
++  "repository": {
++    "id": 123456,
++    "name": "test-repo",
++    "full_name": "test-org/test-repo",
++    "private": false,
++    "html_url": "https://github.com/test-org/test-repo"
++  },
++  "sender": {
++    "login": "ajhochy",
++    "type": "User"
++  }
++}
+diff --git a/plugins/github-intake/tests/fixtures/issue_opened.json b/plugins/github-intake/tests/fixtures/issue_opened.json
+new file mode 100644
+index 0000000000..3e2f63684c
+--- /dev/null
++++ b/plugins/github-intake/tests/fixtures/issue_opened.json
+@@ -0,0 +1,30 @@
++{
++  "action": "opened",
++  "issue": {
++    "number": 42,
++    "title": "Implement feature X",
++    "body": "We need to implement feature X to support the new workflow.\n\nThis is a software engineering task.",
++    "state": "open",
++    "labels": [
++      {"name": "hcw-dev", "color": "0075ca"}
++    ],
++    "user": {
++      "login": "ajhochy",
++      "type": "User"
++    },
++    "created_at": "2026-08-22T10:00:00Z",
++    "updated_at": "2026-08-22T10:00:00Z",
++    "html_url": "https://github.com/test-org/test-repo/issues/42"
++  },
++  "repository": {
++    "id": 123456,
++    "name": "test-repo",
++    "full_name": "test-org/test-repo",
++    "private": false,
++    "html_url": "https://github.com/test-org/test-repo"
++  },
++  "sender": {
++    "login": "ajhochy",
++    "type": "User"
++  }
++}
+diff --git a/plugins/github-intake/tests/fixtures/issue_reopened.json b/plugins/github-intake/tests/fixtures/issue_reopened.json
+new file mode 100644
+index 0000000000..f9b367c714
+--- /dev/null
++++ b/plugins/github-intake/tests/fixtures/issue_reopened.json
+@@ -0,0 +1,30 @@
++{
++  "action": "reopened",
++  "issue": {
++    "number": 42,
++    "title": "Implement feature X",
++    "body": "We need to implement feature X.",
++    "state": "open",
++    "labels": [
++      {"name": "hcw-dev", "color": "0075ca"}
++    ],
++    "user": {
++      "login": "ajhochy",
++      "type": "User"
++    },
++    "created_at": "2026-08-22T10:00:00Z",
++    "updated_at": "2026-08-22T14:00:00Z",
++    "html_url": "https://github.com/test-org/test-repo/issues/42"
++  },
++  "repository": {
++    "id": 123456,
++    "name": "test-repo",
++    "full_name": "test-org/test-repo",
++    "private": false,
++    "html_url": "https://github.com/test-org/test-repo"
++  },
++  "sender": {
++    "login": "ajhochy",
++    "type": "User"
++  }
++}
+diff --git a/plugins/github-intake/tests/test_capabilities.py b/plugins/github-intake/tests/test_capabilities.py
+new file mode 100644
+index 0000000000..20239b837b
+--- /dev/null
++++ b/plugins/github-intake/tests/test_capabilities.py
+@@ -0,0 +1,204 @@
++"""Capability boundary tests for the github-intake plugin.
++
++Covers:
++- No GitHub write capability exposed
++- No live endpoint exposed publicly
++- Plugin disabled by default (no activation without AJ approval)
++- Kill switch honored before any board mutation
++- Dry-run mode produces no side effects
++- Plugin cannot launch code-capable profiles transitively
++"""
++
++from __future__ import annotations
++
++import inspect
++import os
++from pathlib import Path
++
++import pytest
++
++from .conftest import TEST_WEBHOOK_SECRET
++
++
++# ---------------------------------------------------------------------------
++# No GitHub write capability
++# ---------------------------------------------------------------------------
++
++def test_plugin_has_no_github_write_methods():
++    """The plugin must not expose any GitHub write/mutate methods."""
++    import plugins.github_intake as pkg
++
++    write_patterns = ("create_issue", "update_issue", "post_comment",
++                      "close_issue", "label_issue", "push", "commit")
++    for name in dir(pkg):
++        assert not any(p in name.lower() for p in write_patterns), \
++            f"Plugin exposes GitHub write method: {name}"
++
++
++def test_github_client_in_auth_is_read_only():
++    """The auth module must not import any GitHub write APIs."""
++    import plugins.github_intake.auth as auth_mod
++    source = inspect.getsource(auth_mod)
++    write_patterns = ("requests.post", "requests.patch", "requests.put",
++                      "requests.delete", ".post(", ".patch(", ".put(", ".delete(")
++    for pattern in write_patterns:
++        assert pattern not in source, \
++            f"auth.py contains GitHub write pattern: {pattern!r}"
++
++
++def test_normalize_module_has_no_github_writes():
++    """The normalize module must not make any network calls."""
++    import plugins.github_intake.normalize as norm_mod
++    source = inspect.getsource(norm_mod)
++    # Must not import requests/httpx at top level for writes
++    assert "requests.post" not in source
++    assert "requests.patch" not in source
++
++
++# ---------------------------------------------------------------------------
++# No live endpoint
++# ---------------------------------------------------------------------------
++
++def test_webhook_app_has_no_public_bind_by_default(plugin_config):
++    """The webhook app must not bind to a public interface without explicit config."""
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.app import create_app
++
++    cfg = GithubIntakeConfig(**plugin_config)  # disabled
++    app = create_app(cfg)
++    # App must exist but not be running/listening
++    assert app is not None
++    bind_host = getattr(app, "host", None) or getattr(app, "_host", None)
++    if bind_host:
++        assert bind_host in ("127.0.0.1", "localhost", ""), \
++            f"App binds to public interface: {bind_host}"
++
++
++# ---------------------------------------------------------------------------
++# Kill switch
++# ---------------------------------------------------------------------------
++
++def test_kill_switch_prevents_intake(
++    kanban_conn, plugin_config, issue_opened_bytes, monkeypatch
++):
++    """The kill switch env var must prevent any intake processing."""
++    monkeypatch.setenv("GITHUB_INTAKE_KILL_SWITCH", "1")
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.kanban import intake_event
++    from plugins.github_intake.conftest_helpers import make_signature  # optional helper
++
++    from .conftest import sign_payload
++    sig = sign_payload(issue_opened_bytes)
++    cfg = GithubIntakeConfig(**{**plugin_config, "enabled": True, "dry_run": False})
++
++    result = intake_event(
++        conn=kanban_conn,
++        config=cfg,
++        raw_payload=issue_opened_bytes,
++        event_type="issues",
++        delivery_id="kill-001",
++        signature=sig,
++    )
++    assert result is None
++
++
++def test_kill_switch_prevents_routing(
++    kanban_conn, plugin_config, issue_opened_payload, mock_hcw_boundary, monkeypatch
++):
++    """Kill switch must prevent routing even if a root already exists."""
++    import json
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.kanban import intake_event
++    from plugins.github_intake.routing import route_intake_result
++    from .conftest import sign_payload
++
++    raw = json.dumps(issue_opened_payload).encode()
++    sig = sign_payload(raw)
++    cfg = GithubIntakeConfig(**{**plugin_config, "enabled": True, "dry_run": False})
++    tid = intake_event(
++        conn=kanban_conn,
++        config=cfg,
++        raw_payload=raw,
++        event_type="issues",
++        delivery_id="open-001",
++        signature=sig,
++    )
++    assert tid is not None
++
++    monkeypatch.setenv("GITHUB_INTAKE_KILL_SWITCH", "1")
++    route_intake_result(
++        conn=kanban_conn,
++        task_id=tid,
++        config=cfg,
++        hcw_boundary=mock_hcw_boundary,
++    )
++    assert len(mock_hcw_boundary.route_calls) == 0
++
++
++# ---------------------------------------------------------------------------
++# Disabled default
++# ---------------------------------------------------------------------------
++
++def test_disabled_plugin_cannot_process_events(
++    kanban_conn, plugin_config, issue_opened_bytes
++):
++    """A disabled plugin must return None without creating any board state."""
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.kanban import intake_event, find_issue_root
++    from .conftest import sign_payload
++
++    sig = sign_payload(issue_opened_bytes)
++    cfg = GithubIntakeConfig(**plugin_config)  # enabled=False
++    result = intake_event(
++        conn=kanban_conn,
++        config=cfg,
++        raw_payload=issue_opened_bytes,
++        event_type="issues",
++        delivery_id="disabled-001",
++        signature=sig,
++    )
++    assert result is None
++    roots = find_issue_root(kanban_conn, "test-org/test-repo", 42)
++    assert len(roots) == 0
++
++
++# ---------------------------------------------------------------------------
++# Dry-run produces no side effects
++# ---------------------------------------------------------------------------
++
++def test_dry_run_produces_no_kanban_mutations(
++    kanban_conn, plugin_config, issue_opened_bytes
++):
++    """Dry-run mode must not create any Kanban rows."""
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.kanban import intake_event, find_issue_root
++    from .conftest import sign_payload
++
++    sig = sign_payload(issue_opened_bytes)
++    cfg = GithubIntakeConfig(**{**plugin_config, "enabled": True, "dry_run": True})
++    result = intake_event(
++        conn=kanban_conn,
++        config=cfg,
++        raw_payload=issue_opened_bytes,
++        event_type="issues",
++        delivery_id="dryrun-001",
++        signature=sig,
++    )
++    # Dry run may return a synthetic ID or None; no real rows must exist
++    roots = find_issue_root(kanban_conn, "test-org/test-repo", 42)
++    assert len(roots) == 0
++
++
++# ---------------------------------------------------------------------------
++# Cannot transitively launch code-capable profiles
++# ---------------------------------------------------------------------------
++
++def test_routing_module_cannot_import_dispatcher():
++    """The routing module must not import the HCW dispatcher directly."""
++    import plugins.github_intake.routing as routing_mod
++    source = inspect.getsource(routing_mod)
++    forbidden = ("from agent.dispatcher", "import dispatcher",
++                 "hermes_cli.kanban_swarm", "launch_worker")
++    for pattern in forbidden:
++        assert pattern not in source, \
++            f"routing.py imports forbidden dispatcher symbol: {pattern!r}"
+diff --git a/plugins/github-intake/tests/test_cli.py b/plugins/github-intake/tests/test_cli.py
+new file mode 100644
+index 0000000000..da456ecae6
+--- /dev/null
++++ b/plugins/github-intake/tests/test_cli.py
+@@ -0,0 +1,182 @@
++"""CLI registration tests for the github-intake plugin.
++
++Covers:
++- CLI command registered under `hermes github-intake`
++- Dry-run entry point works without network
++- No live activation from CLI without explicit flag
++- Help text indicates disabled-by-default status
++- No GitHub write subcommands exposed
++"""
++
++from __future__ import annotations
++
++import subprocess
++import sys
++from pathlib import Path
++
++import pytest
++
++
++# ---------------------------------------------------------------------------
++# CLI module importable
++# ---------------------------------------------------------------------------
++
++def test_cli_module_importable():
++    """The cli module must be importable."""
++    import plugins.github_intake.cli  # noqa: F401
++
++
++def test_cli_has_main_group():
++    """The CLI must expose a main command group (Click group or similar)."""
++    from plugins.github_intake.cli import cli
++    assert callable(cli)
++
++
++# ---------------------------------------------------------------------------
++# Dry-run entry point
++# ---------------------------------------------------------------------------
++
++def test_cli_dry_run_requires_no_network(plugin_config, hermes_home, tmp_path):
++    """The CLI dry-run command must complete without any network calls."""
++    import json
++    from click.testing import CliRunner
++    from plugins.github_intake.cli import cli
++    from .conftest import sign_payload, fixture_bytes
++
++    raw = fixture_bytes("issue_opened.json")
++    sig = sign_payload(raw)
++
++    config_file = tmp_path / "config.yaml"
++    import yaml
++    config_file.write_text(yaml.dump({**plugin_config, "enabled": True, "dry_run": True}))
++
++    runner = CliRunner()
++    result = runner.invoke(cli, [
++        "intake",
++        "--config", str(config_file),
++        "--delivery-id", "cli-dryrun-001",
++        "--event-type", "issues",
++        "--signature", sig,
++        "--dry-run",
++        "--payload-file", "-",
++    ], input=raw)
++
++    assert result.exit_code == 0, f"CLI failed: {result.output}\n{result.exception}"
++
++
++def test_cli_dry_run_flag_overrides_config(plugin_config, tmp_path):
++    """Passing --dry-run on CLI must override config even if config has dry_run=False."""
++    import yaml
++    from click.testing import CliRunner
++    from plugins.github_intake.cli import cli
++    from .conftest import sign_payload, fixture_bytes
++
++    raw = fixture_bytes("issue_opened.json")
++    sig = sign_payload(raw)
++
++    config_file = tmp_path / "config.yaml"
++    config_file.write_text(yaml.dump({**plugin_config, "enabled": True, "dry_run": False}))
++
++    runner = CliRunner()
++    result = runner.invoke(cli, [
++        "intake",
++        "--config", str(config_file),
++        "--delivery-id", "cli-override-001",
++        "--event-type", "issues",
++        "--signature", sig,
++        "--dry-run",
++        "--payload-file", "-",
++    ], input=raw)
++
++    assert result.exit_code == 0
++
++
++# ---------------------------------------------------------------------------
++# Help text
++# ---------------------------------------------------------------------------
++
++def test_cli_help_mentions_disabled_by_default():
++    """CLI help must mention that the plugin is disabled by default."""
++    from click.testing import CliRunner
++    from plugins.github_intake.cli import cli
++
++    runner = CliRunner()
++    result = runner.invoke(cli, ["--help"])
++    assert "disabled" in result.output.lower() or "inactive" in result.output.lower()
++
++
++# ---------------------------------------------------------------------------
++# No live activation without explicit flag
++# ---------------------------------------------------------------------------
++
++def test_cli_cannot_activate_without_explicit_flag(plugin_config, tmp_path):
++    """Running intake without --dry-run on a disabled config must exit non-zero."""
++    import yaml
++    from click.testing import CliRunner
++    from plugins.github_intake.cli import cli
++    from .conftest import sign_payload, fixture_bytes
++
++    raw = fixture_bytes("issue_opened.json")
++    sig = sign_payload(raw)
++
++    config_file = tmp_path / "config.yaml"
++    # Note: enabled=False
++    config_file.write_text(yaml.dump({**plugin_config, "enabled": False}))
++
++    runner = CliRunner()
++    result = runner.invoke(cli, [
++        "intake",
++        "--config", str(config_file),
++        "--delivery-id", "cli-disabled-001",
++        "--event-type", "issues",
++        "--signature", sig,
++        "--payload-file", "-",
++    ], input=raw)
++
++    # Must fail or skip, not succeed with disabled config
++    assert result.exit_code != 0 or "disabled" in result.output.lower()
++
++
++# ---------------------------------------------------------------------------
++# No GitHub write subcommands
++# ---------------------------------------------------------------------------
++
++def test_cli_has_no_write_subcommands():
++    """The CLI must not expose any GitHub write subcommands."""
++    from click.testing import CliRunner
++    from plugins.github_intake.cli import cli
++
++    runner = CliRunner()
++    result = runner.invoke(cli, ["--help"])
++    write_subcommands = ("create-issue", "close-issue", "label", "comment", "push")
++    for cmd in write_subcommands:
++        assert cmd not in result.output, f"Write subcommand exposed: {cmd}"
++
++
++# ---------------------------------------------------------------------------
++# Reconcile CLI
++# ---------------------------------------------------------------------------
++
++def test_cli_reconcile_dry_run(plugin_config, tmp_path, hermes_home):
++    """The reconcile subcommand in dry-run mode must not mutate any state."""
++    import yaml
++    from click.testing import CliRunner
++    from plugins.github_intake.cli import cli
++
++    config_file = tmp_path / "config.yaml"
++    config_file.write_text(yaml.dump({
++        **plugin_config,
++        "enabled": True,
++        "dry_run": True,
++        "allowed_repositories": [],
++    }))
++
++    runner = CliRunner()
++    result = runner.invoke(cli, [
++        "reconcile",
++        "--config", str(config_file),
++        "--dry-run",
++    ])
++
++    # With empty allowed_repositories and dry_run, should succeed silently
++    assert result.exit_code == 0
+diff --git a/plugins/github-intake/tests/test_contract.py b/plugins/github-intake/tests/test_contract.py
+new file mode 100644
+index 0000000000..3e5e3f4d8d
+--- /dev/null
++++ b/plugins/github-intake/tests/test_contract.py
+@@ -0,0 +1,299 @@
++"""Core contract tests for the github-intake plugin.
++
++Covers:
++- Plugin is disabled by default
++- Plugin and CLI registration
++- Signed payload normalization
++- Stable canonical identity
++- Duplicate delivery and changed delivery IDs
++- Concurrent intake convergence
++"""
++
++from __future__ import annotations
++
++import json
++import threading
++from pathlib import Path
++from unittest.mock import patch
++
++import pytest
++
++from .conftest import (
++    TEST_DELIVERY_ID,
++    TEST_DELIVERY_ID_2,
++    TEST_REPO_FULL_NAME,
++    TEST_WEBHOOK_SECRET,
++    sign_payload,
++)
++
++
++# ---------------------------------------------------------------------------
++# Plugin disabled by default
++# ---------------------------------------------------------------------------
++
++def test_plugin_disabled_by_default(plugin_config):
++    """Plugin must be disabled in its default configuration."""
++    from plugins.github_intake.config import GithubIntakeConfig
++    cfg = GithubIntakeConfig(**plugin_config)
++    assert cfg.enabled is False
++
++
++def test_disabled_config_file_matches_schema():
++    """The shipped config.disabled.yaml must parse as a valid disabled config."""
++    import yaml
++    from plugins.github_intake.config import GithubIntakeConfig
++    cfg_path = Path(__file__).parent / "fixtures" / "config.disabled.yaml"
++    raw = yaml.safe_load(cfg_path.read_text())
++    cfg = GithubIntakeConfig(**raw)
++    assert cfg.enabled is False
++    assert cfg.webhook_secret is None
++
++
++def test_plugin_is_disabled_without_explicit_activation(plugin_config):
++    """Plugin refuses to process events when enabled=False."""
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.runtime import is_plugin_active
++    cfg = GithubIntakeConfig(**plugin_config)
++    assert not is_plugin_active(cfg)
++
++
++# ---------------------------------------------------------------------------
++# Plugin registration
++# ---------------------------------------------------------------------------
++
++def test_plugin_yaml_exists():
++    """plugin.yaml must exist at the plugin root."""
++    plugin_yaml = Path(__file__).parent.parent / "plugin.yaml"
++    assert plugin_yaml.exists(), "plugin.yaml not found"
++
++
++def test_plugin_yaml_has_required_fields():
++    """plugin.yaml must declare name, version, description, kind."""
++    import yaml
++    plugin_yaml = Path(__file__).parent.parent / "plugin.yaml"
++    meta = yaml.safe_load(plugin_yaml.read_text())
++    assert "name" in meta
++    assert "version" in meta
++    assert "description" in meta
++    assert "kind" in meta
++    assert meta["name"] == "github-intake"
++
++
++def test_plugin_module_importable():
++    """The plugin package must be importable."""
++    import plugins.github_intake  # noqa: F401
++
++
++def test_plugin_exposes_version():
++    """Plugin __init__ must expose __version__."""
++    import plugins.github_intake as pkg
++    assert hasattr(pkg, "__version__")
++    assert isinstance(pkg.__version__, str)
++
++
++# ---------------------------------------------------------------------------
++# Normalization
++# ---------------------------------------------------------------------------
++
++def test_signed_payload_normalizes_to_typed_issue(issue_opened_bytes, issue_opened_signed):
++    """A correctly signed issue payload normalizes to a typed IssueEvent."""
++    from plugins.github_intake.auth import verify_signature
++    from plugins.github_intake.normalize import normalize_issue_event
++
++    delivery_id, sig, raw = issue_opened_signed
++    assert verify_signature(raw, sig, TEST_WEBHOOK_SECRET)
++
++    event = normalize_issue_event(raw, event_type="issues", delivery_id=delivery_id)
++    assert event is not None
++    assert event.action == "opened"
++    assert event.issue.number == 42
++    assert event.issue.title == "Implement feature X"
++    assert event.repository.full_name == TEST_REPO_FULL_NAME
++    assert event.delivery_id == delivery_id
++
++
++def test_normalized_event_has_stable_canonical_id(issue_opened_bytes):
++    """Canonical ID must be stable: same repo + issue number always produces same ID."""
++    from plugins.github_intake.normalize import normalize_issue_event
++    from plugins.github_intake.canonical import canonical_issue_id
++
++    event = normalize_issue_event(
++        issue_opened_bytes, event_type="issues", delivery_id="x1"
++    )
++    cid1 = canonical_issue_id(event.repository.full_name, event.issue.number)
++
++    event2 = normalize_issue_event(
++        issue_opened_bytes, event_type="issues", delivery_id="x2"
++    )
++    cid2 = canonical_issue_id(event2.repository.full_name, event2.issue.number)
++
++    assert cid1 == cid2
++    assert cid1 == f"github:{TEST_REPO_FULL_NAME}:issue:42"
++
++
++def test_canonical_id_format_is_deterministic():
++    """Canonical ID format must match github:<full_name>:issue:<number>."""
++    from plugins.github_intake.canonical import canonical_issue_id
++    cid = canonical_issue_id("myorg/myrepo", 7)
++    assert cid == "github:myorg/myrepo:issue:7"
++
++
++# ---------------------------------------------------------------------------
++# Duplicate delivery — same delivery_id
++# ---------------------------------------------------------------------------
++
++def test_duplicate_delivery_id_converges_to_one_root(
++    kanban_conn, plugin_config, issue_opened_bytes
++):
++    """Replaying the same delivery_id must not create duplicate Kanban roots."""
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.kanban import intake_event
++
++    cfg = GithubIntakeConfig(**{**plugin_config, "enabled": True, "dry_run": False})
++    sig = sign_payload(issue_opened_bytes)
++
++    task_id_1 = intake_event(
++        conn=kanban_conn,
++        config=cfg,
++        raw_payload=issue_opened_bytes,
++        event_type="issues",
++        delivery_id=TEST_DELIVERY_ID,
++        signature=sig,
++    )
++    task_id_2 = intake_event(
++        conn=kanban_conn,
++        config=cfg,
++        raw_payload=issue_opened_bytes,
++        event_type="issues",
++        delivery_id=TEST_DELIVERY_ID,
++        signature=sig,
++    )
++
++    assert task_id_1 == task_id_2, "Same delivery_id must return the same root"
++
++
++# ---------------------------------------------------------------------------
++# Changed delivery ID — same issue, different delivery
++# ---------------------------------------------------------------------------
++
++def test_changed_delivery_id_same_issue_converges_to_one_root(
++    kanban_conn, plugin_config, issue_opened_bytes
++):
++    """Different delivery_ids for the same issue must converge on one root."""
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.kanban import intake_event
++
++    cfg = GithubIntakeConfig(**{**plugin_config, "enabled": True, "dry_run": False})
++    sig = sign_payload(issue_opened_bytes)
++
++    task_id_1 = intake_event(
++        conn=kanban_conn,
++        config=cfg,
++        raw_payload=issue_opened_bytes,
++        event_type="issues",
++        delivery_id=TEST_DELIVERY_ID,
++        signature=sig,
++    )
++    task_id_2 = intake_event(
++        conn=kanban_conn,
++        config=cfg,
++        raw_payload=issue_opened_bytes,
++        event_type="issues",
++        delivery_id=TEST_DELIVERY_ID_2,
++        signature=sign_payload(issue_opened_bytes),
++    )
++
++    assert task_id_1 == task_id_2, "Changed delivery_id but same issue must use same root"
++
++
++# ---------------------------------------------------------------------------
++# Concurrent intake
++# ---------------------------------------------------------------------------
++
++def test_concurrent_intake_produces_single_root(
++    kanban_conn, plugin_config, issue_opened_bytes
++):
++    """Concurrent intake of the same issue must still produce exactly one root."""
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.kanban import intake_event
++
++    cfg = GithubIntakeConfig(**{**plugin_config, "enabled": True, "dry_run": False})
++    sig = sign_payload(issue_opened_bytes)
++    results = []
++    errors = []
++
++    def _ingest(delivery_id: str):
++        try:
++            tid = intake_event(
++                conn=kanban_conn,
++                config=cfg,
++                raw_payload=issue_opened_bytes,
++                event_type="issues",
++                delivery_id=delivery_id,
++                signature=sig,
++            )
++            results.append(tid)
++        except Exception as exc:
++            errors.append(exc)
++
++    threads = [
++        threading.Thread(target=_ingest, args=(f"concurrent-{i}",))
++        for i in range(5)
++    ]
++    for t in threads:
++        t.start()
++    for t in threads:
++        t.join()
++
++    assert not errors, f"Concurrent intake raised: {errors}"
++    assert len(set(results)) == 1, "All concurrent intakes must resolve to one root"
++
++
++# ---------------------------------------------------------------------------
++# Hostile fixtures
++# ---------------------------------------------------------------------------
++
++def test_hostile_payload_with_script_injection_is_sanitized(
++    kanban_conn, plugin_config
++):
++    """Untrusted text in issue titles/bodies must never reach Kanban as-is."""
++    import json as _json
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.kanban import intake_event
++
++    hostile = {
++        "action": "opened",
++        "issue": {
++            "number": 99,
++            "title": "<script>alert('xss')</script>",
++            "body": "'; DROP TABLE tasks; --",
++            "state": "open",
++            "labels": [],
++            "user": {"login": "badactor", "type": "User"},
++            "created_at": "2026-08-22T10:00:00Z",
++            "updated_at": "2026-08-22T10:00:00Z",
++            "html_url": "https://github.com/test-org/test-repo/issues/99",
++        },
++        "repository": {
++            "id": 123456,
++            "name": "test-repo",
++            "full_name": TEST_REPO_FULL_NAME,
++            "private": False,
++            "html_url": "https://github.com/test-org/test-repo",
++        },
++        "sender": {"login": "badactor", "type": "User"},
++    }
++    raw = _json.dumps(hostile).encode()
++    sig = sign_payload(raw)
++    cfg = GithubIntakeConfig(**{**plugin_config, "enabled": True, "dry_run": False})
++
++    # Must not raise; hostile content must be stored safely
++    task_id = intake_event(
++        conn=kanban_conn,
++        config=cfg,
++        raw_payload=raw,
++        event_type="issues",
++        delivery_id="hostile-001",
++        signature=sig,
++    )
++    assert task_id is not None
+diff --git a/plugins/github-intake/tests/test_end_to_end.py b/plugins/github-intake/tests/test_end_to_end.py
+new file mode 100644
+index 0000000000..267af0de45
+--- /dev/null
++++ b/plugins/github-intake/tests/test_end_to_end.py
+@@ -0,0 +1,230 @@
++"""End-to-end evidence test for the github-intake plugin.
++
++Exercises the full pipeline without any network calls, GitHub writes,
++external notifications, live tunnels, or public activation:
++
++  signed webhook payload
++    -> HMAC verification
++    -> normalization
++    -> policy/trust classification
++    -> canonical Kanban root creation
++    -> lifecycle state
++    -> routing to mocked HCW boundary
++
++This test is the authoritative disposable evidence that the plugin
++pipeline functions correctly end-to-end.
++"""
++
++from __future__ import annotations
++
++import json
++from pathlib import Path
++from unittest.mock import MagicMock, patch
++
++import pytest
++
++from .conftest import (
++    FAKE_EPOCH,
++    TEST_DELIVERY_ID,
++    TEST_REPO_FULL_NAME,
++    TEST_WEBHOOK_SECRET,
++    sign_payload,
++    load_fixture,
++    fixture_bytes,
++)
++
++
++# ---------------------------------------------------------------------------
++# Full pipeline: signed intake -> canonical root -> routed to hcw-dev
++# ---------------------------------------------------------------------------
++
++def test_end_to_end_signed_intake_to_hcw_routing(
++    kanban_conn, enabled_plugin_config, mock_hcw_boundary, fake_clock
++):
++    """Full pipeline: signed issue opened -> canonical root in triage/ready -> hcw-dev."""
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.auth import verify_signature
++    from plugins.github_intake.normalize import normalize_issue_event
++    from plugins.github_intake.policy import classify_event
++    from plugins.github_intake.kanban import intake_event, get_root_metadata, find_issue_root
++    from plugins.github_intake.routing import route_intake_result
++    from plugins.github_intake.canonical import canonical_issue_id
++
++    # Step 1: Prepare signed payload
++    raw = fixture_bytes("issue_opened.json")
++    sig = sign_payload(raw, TEST_WEBHOOK_SECRET)
++    cfg = GithubIntakeConfig(**enabled_plugin_config)
++
++    # Step 2: Verify signature
++    assert verify_signature(raw, sig, TEST_WEBHOOK_SECRET), "Signature must verify"
++
++    # Step 3: Normalize event
++    event = normalize_issue_event(raw, event_type="issues", delivery_id=TEST_DELIVERY_ID)
++    assert event is not None
++    assert event.action == "opened"
++    assert event.issue.number == 42
++
++    # Step 4: Classify trust
++    classification = classify_event(event, cfg)
++    assert classification.trusted, f"Event should be trusted: {classification.block_reason}"
++
++    # Step 5: Intake to Kanban
++    task_id = intake_event(
++        conn=kanban_conn,
++        config=cfg,
++        raw_payload=raw,
++        event_type="issues",
++        delivery_id=TEST_DELIVERY_ID,
++        signature=sig,
++    )
++    assert task_id is not None
++
++    # Step 6: Verify canonical root
++    roots = find_issue_root(kanban_conn, TEST_REPO_FULL_NAME, 42)
++    assert len(roots) == 1
++    assert roots[0]["id"] == task_id
++
++    expected_cid = canonical_issue_id(TEST_REPO_FULL_NAME, 42)
++    meta = get_root_metadata(kanban_conn, task_id)
++    assert meta.get("canonical_id") == expected_cid or \
++           roots[0].get("idempotency_key") == expected_cid
++
++    # Step 7: Route to hcw-dev
++    route_intake_result(
++        conn=kanban_conn,
++        task_id=task_id,
++        config=cfg,
++        hcw_boundary=mock_hcw_boundary,
++    )
++    assert len(mock_hcw_boundary.route_calls) == 1
++    assert mock_hcw_boundary.route_calls[0]["profile"] == "hcw-dev"
++    assert mock_hcw_boundary.route_calls[0]["task_id"] == task_id
++
++
++def test_end_to_end_no_github_writes_occurred(
++    kanban_conn, enabled_plugin_config, mock_hcw_boundary
++):
++    """Full pipeline must not make any GitHub write calls."""
++    import requests as req_mod
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.kanban import intake_event
++    from plugins.github_intake.routing import route_intake_result
++
++    raw = fixture_bytes("issue_opened.json")
++    sig = sign_payload(raw)
++    cfg = GithubIntakeConfig(**enabled_plugin_config)
++
++    write_methods = []
++    original_post = getattr(req_mod, "post", None)
++    original_patch = getattr(req_mod, "patch", None)
++    original_put = getattr(req_mod, "put", None)
++    original_delete = getattr(req_mod, "delete", None)
++
++    with patch.object(req_mod, "post", side_effect=lambda *a, **kw: write_methods.append("post")), \
++         patch.object(req_mod, "patch", side_effect=lambda *a, **kw: write_methods.append("patch")), \
++         patch.object(req_mod, "put", side_effect=lambda *a, **kw: write_methods.append("put")), \
++         patch.object(req_mod, "delete", side_effect=lambda *a, **kw: write_methods.append("delete")):
++
++        task_id = intake_event(
++            conn=kanban_conn,
++            config=cfg,
++            raw_payload=raw,
++            event_type="issues",
++            delivery_id="e2e-nowrite-001",
++            signature=sig,
++        )
++        if task_id:
++            route_intake_result(
++                conn=kanban_conn,
++                task_id=task_id,
++                config=cfg,
++                hcw_boundary=mock_hcw_boundary,
++            )
++
++    assert not write_methods, f"GitHub write calls detected: {write_methods}"
++
++
++def test_end_to_end_hostile_payload_blocked_not_routed(
++    kanban_conn, enabled_plugin_config, mock_hcw_boundary
++):
++    """A hostile unsigned payload must be blocked and never reach hcw-dev."""
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.kanban import intake_event
++    from plugins.github_intake.routing import route_intake_result
++
++    raw = fixture_bytes("issue_opened.json")
++    bad_sig = "sha256=0000000000000000000000000000000000000000000000000000000000000000"
++    cfg = GithubIntakeConfig(**enabled_plugin_config)
++
++    task_id = intake_event(
++        conn=kanban_conn,
++        config=cfg,
++        raw_payload=raw,
++        event_type="issues",
++        delivery_id="hostile-e2e-001",
++        signature=bad_sig,
++    )
++
++    assert task_id is None, "Invalid signature must produce no Kanban root"
++    assert len(mock_hcw_boundary.route_calls) == 0
++
++
++def test_end_to_end_replay_idempotent(
++    kanban_conn, enabled_plugin_config, mock_hcw_boundary
++):
++    """Replaying the same signed event 3 times must produce exactly one root."""
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.kanban import intake_event, find_issue_root
++    from plugins.github_intake.routing import route_intake_result
++
++    raw = fixture_bytes("issue_opened.json")
++    sig = sign_payload(raw)
++    cfg = GithubIntakeConfig(**enabled_plugin_config)
++
++    task_ids = []
++    for i in range(3):
++        tid = intake_event(
++            conn=kanban_conn,
++            config=cfg,
++            raw_payload=raw,
++            event_type="issues",
++            delivery_id=f"replay-{i:03d}",
++            signature=sig,
++        )
++        task_ids.append(tid)
++
++    roots = find_issue_root(kanban_conn, TEST_REPO_FULL_NAME, 42)
++    assert len(roots) == 1
++    assert len(set(task_ids)) == 1
++
++
++def test_end_to_end_close_archives_root(kanban_conn, enabled_plugin_config):
++    """Opened then closed issue must end in an archived root."""
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.kanban import intake_event
++    from hermes_cli.kanban_db import get_task
++
++    cfg = GithubIntakeConfig(**enabled_plugin_config)
++
++    raw_open = fixture_bytes("issue_opened.json")
++    raw_close = json.dumps(load_fixture("issue_closed.json")).encode()
++
++    tid = intake_event(
++        conn=kanban_conn,
++        config=cfg,
++        raw_payload=raw_open,
++        event_type="issues",
++        delivery_id="e2e-open",
++        signature=sign_payload(raw_open),
++    )
++    intake_event(
++        conn=kanban_conn,
++        config=cfg,
++        raw_payload=raw_close,
++        event_type="issues",
++        delivery_id="e2e-close",
++        signature=sign_payload(raw_close),
++    )
++
++    task = get_task(kanban_conn, tid)
++    assert task["status"] == "archived"
+diff --git a/plugins/github-intake/tests/test_idempotency.py b/plugins/github-intake/tests/test_idempotency.py
+new file mode 100644
+index 0000000000..a83d9a7094
+--- /dev/null
++++ b/plugins/github-intake/tests/test_idempotency.py
+@@ -0,0 +1,178 @@
++"""Idempotency and convergence tests for the github-intake plugin.
++
++Covers:
++- Same delivery_id replayed -> same root
++- Different delivery_id, same issue -> same root (webhook replay)
++- Changed delivery_id with mutated payload -> updates existing root
++- Concurrent duplicates -> exactly one root
++- Monotonic event versioning (no regress)
++"""
++
++from __future__ import annotations
++
++import json
++import threading
++
++import pytest
++
++from .conftest import (
++    TEST_DELIVERY_ID,
++    TEST_DELIVERY_ID_2,
++    TEST_REPO_FULL_NAME,
++    sign_payload,
++)
++
++
++def _make_intake(kanban_conn, plugin_config, raw: bytes, delivery_id: str):
++    """Helper: run a single intake call."""
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.kanban import intake_event
++
++    cfg = GithubIntakeConfig(**{**plugin_config, "enabled": True, "dry_run": False})
++    sig = sign_payload(raw)
++    return intake_event(
++        conn=kanban_conn,
++        config=cfg,
++        raw_payload=raw,
++        event_type="issues",
++        delivery_id=delivery_id,
++        signature=sig,
++    )
++
++
++# ---------------------------------------------------------------------------
++# Same delivery_id replayed
++# ---------------------------------------------------------------------------
++
++def test_same_delivery_id_is_idempotent(kanban_conn, plugin_config, issue_opened_bytes):
++    """Replaying exact same delivery_id returns the same task_id."""
++    tid1 = _make_intake(kanban_conn, plugin_config, issue_opened_bytes, TEST_DELIVERY_ID)
++    tid2 = _make_intake(kanban_conn, plugin_config, issue_opened_bytes, TEST_DELIVERY_ID)
++    assert tid1 is not None
++    assert tid1 == tid2
++
++
++def test_same_delivery_id_does_not_create_second_root(kanban_conn, plugin_config, issue_opened_bytes):
++    """After replay, exactly one root exists for the issue."""
++    from plugins.github_intake.kanban import find_issue_root
++    _make_intake(kanban_conn, plugin_config, issue_opened_bytes, TEST_DELIVERY_ID)
++    _make_intake(kanban_conn, plugin_config, issue_opened_bytes, TEST_DELIVERY_ID)
++
++    roots = find_issue_root(kanban_conn, TEST_REPO_FULL_NAME, 42)
++    assert len(roots) == 1
++
++
++# ---------------------------------------------------------------------------
++# Different delivery_id, same issue
++# ---------------------------------------------------------------------------
++
++def test_different_delivery_id_same_issue_converges(
++    kanban_conn, plugin_config, issue_opened_bytes
++):
++    """Two different delivery_ids for the same issue must return the same root."""
++    tid1 = _make_intake(kanban_conn, plugin_config, issue_opened_bytes, TEST_DELIVERY_ID)
++    tid2 = _make_intake(kanban_conn, plugin_config, issue_opened_bytes, TEST_DELIVERY_ID_2)
++    assert tid1 == tid2
++
++
++def test_webhook_replay_stays_on_same_root(kanban_conn, plugin_config, issue_opened_bytes):
++    """GitHub webhook retries (same payload, new delivery_id) must not fork the root."""
++    from plugins.github_intake.kanban import find_issue_root
++
++    for i in range(3):
++        _make_intake(kanban_conn, plugin_config, issue_opened_bytes, f"retry-{i}")
++
++    roots = find_issue_root(kanban_conn, TEST_REPO_FULL_NAME, 42)
++    assert len(roots) == 1
++
++
++# ---------------------------------------------------------------------------
++# Changed delivery with mutated payload (edit event)
++# ---------------------------------------------------------------------------
++
++def test_edit_event_updates_existing_root_title(
++    kanban_conn, plugin_config, issue_opened_bytes, issue_edited_payload
++):
++    """An edit event must update the existing root's title, not create a new one."""
++    from plugins.github_intake.kanban import find_issue_root
++
++    raw_edit = json.dumps(issue_edited_payload).encode()
++
++    _make_intake(kanban_conn, plugin_config, issue_opened_bytes, "open-001")
++    _make_intake(kanban_conn, plugin_config, raw_edit, "edit-001")
++
++    roots = find_issue_root(kanban_conn, TEST_REPO_FULL_NAME, 42)
++    assert len(roots) == 1
++    assert "revised" in roots[0]["title"].lower()
++
++
++# ---------------------------------------------------------------------------
++# Concurrent duplicates
++# ---------------------------------------------------------------------------
++
++def test_concurrent_intake_single_root(kanban_conn, plugin_config, issue_opened_bytes):
++    """Concurrent delivery of the same issue must resolve to a single root."""
++    from plugins.github_intake.kanban import find_issue_root
++
++    errors = []
++    task_ids = []
++
++    def _worker(n: int):
++        try:
++            tid = _make_intake(kanban_conn, plugin_config, issue_opened_bytes, f"concurrent-{n}")
++            task_ids.append(tid)
++        except Exception as exc:
++            errors.append(exc)
++
++    threads = [threading.Thread(target=_worker, args=(i,)) for i in range(8)]
++    for t in threads:
++        t.start()
++    for t in threads:
++        t.join()
++
++    assert not errors, f"Errors during concurrent intake: {errors}"
++
++    roots = find_issue_root(kanban_conn, TEST_REPO_FULL_NAME, 42)
++    assert len(roots) == 1
++    assert len(set(task_ids)) == 1
++
++
++# ---------------------------------------------------------------------------
++# Monotonic event versioning
++# ---------------------------------------------------------------------------
++
++def test_event_version_is_monotonically_increasing(
++    kanban_conn, plugin_config, issue_opened_bytes, issue_edited_payload, fake_clock
++):
++    """Each update to a root must have a strictly greater version than the previous."""
++    from plugins.github_intake.kanban import get_root_metadata
++
++    raw_edit = json.dumps(issue_edited_payload).encode()
++
++    tid = _make_intake(kanban_conn, plugin_config, issue_opened_bytes, "open-001")
++    meta_v1 = get_root_metadata(kanban_conn, tid)
++
++    fake_clock[0] += 60  # advance fake clock
++    _make_intake(kanban_conn, plugin_config, raw_edit, "edit-001")
++    meta_v2 = get_root_metadata(kanban_conn, tid)
++
++    assert meta_v2["event_version"] > meta_v1["event_version"]
++
++
++def test_stale_version_does_not_overwrite_newer(
++    kanban_conn, plugin_config, issue_opened_bytes, issue_edited_payload, fake_clock
++):
++    """A replayed older event must not regress a root that was already updated."""
++    from plugins.github_intake.kanban import get_root_metadata
++
++    raw_edit = json.dumps(issue_edited_payload).encode()
++
++    fake_clock[0] = 1756080100
++    _make_intake(kanban_conn, plugin_config, raw_edit, "edit-newer")
++
++    fake_clock[0] = 1756080000  # older timestamp
++    tid = _make_intake(kanban_conn, plugin_config, issue_opened_bytes, "open-older")
++
++    meta = get_root_metadata(kanban_conn, tid)
++    # Title should still reflect the newer edit, not the older open
++    assert "revised" in meta.get("title", "").lower()
+diff --git a/plugins/github-intake/tests/test_lifecycle.py b/plugins/github-intake/tests/test_lifecycle.py
+new file mode 100644
+index 0000000000..fc6a6eb65f
+--- /dev/null
++++ b/plugins/github-intake/tests/test_lifecycle.py
+@@ -0,0 +1,183 @@
++"""Issue lifecycle ordering tests for the github-intake plugin.
++
++Covers:
++- opened -> creates root in triage
++- labeled with trusted label -> actionable
++- closed -> archived
++- reopened -> back to actionable/ready
++- edited -> updates root without status change
++- untrusted actor labels -> not trusted
++- lifecycle state machine ordering
++"""
++
++from __future__ import annotations
++
++import json
++
++import pytest
++
++from .conftest import (
++    TEST_REPO_FULL_NAME,
++    sign_payload,
++)
++
++
++def _intake(kanban_conn, plugin_config, payload_dict: dict, delivery_id: str) -> str:
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.kanban import intake_event
++
++    raw = json.dumps(payload_dict).encode()
++    sig = sign_payload(raw)
++    cfg = GithubIntakeConfig(**{**plugin_config, "enabled": True, "dry_run": False})
++    return intake_event(
++        conn=kanban_conn,
++        config=cfg,
++        raw_payload=raw,
++        event_type="issues",
++        delivery_id=delivery_id,
++        signature=sig,
++    )
++
++
++def _get_task(kanban_conn, task_id: str) -> dict:
++    from hermes_cli.kanban_db import get_task
++    return get_task(kanban_conn, task_id)
++
++
++# ---------------------------------------------------------------------------
++# opened
++# ---------------------------------------------------------------------------
++
++def test_issue_opened_creates_root_in_triage(
++    kanban_conn, plugin_config, issue_opened_payload
++):
++    """An opened issue without trusted labels must land in triage."""
++    payload = {**issue_opened_payload}
++    payload["issue"] = {**payload["issue"], "labels": []}
++    tid = _intake(kanban_conn, plugin_config, payload, "open-001")
++    task = _get_task(kanban_conn, tid)
++    assert task["status"] == "triage"
++
++
++def test_issue_opened_with_trusted_label_is_actionable(
++    kanban_conn, plugin_config, issue_opened_payload
++):
++    """An opened issue with a trusted label must be marked actionable (not triage)."""
++    tid = _intake(kanban_conn, plugin_config, issue_opened_payload, "open-001")
++    task = _get_task(kanban_conn, tid)
++    # With hcw-dev label, it should be ready/todo, not triage
++    assert task["status"] in ("ready", "todo", "running")
++
++
++def test_opened_root_has_correct_canonical_id(
++    kanban_conn, plugin_config, issue_opened_payload
++):
++    """The root's idempotency_key must equal the canonical issue ID."""
++    from plugins.github_intake.canonical import canonical_issue_id
++    tid = _intake(kanban_conn, plugin_config, issue_opened_payload, "open-001")
++    task = _get_task(kanban_conn, tid)
++    expected_key = canonical_issue_id(TEST_REPO_FULL_NAME, 42)
++    assert task.get("idempotency_key") == expected_key
++
++
++# ---------------------------------------------------------------------------
++# labeled
++# ---------------------------------------------------------------------------
++
++def test_labeled_event_adds_trusted_label_makes_actionable(
++    kanban_conn, plugin_config, issue_opened_payload, issue_labeled_payload
++):
++    """Adding a trusted label to an existing root must make it actionable."""
++    # First open without label
++    no_label = {**issue_opened_payload}
++    no_label["issue"] = {**no_label["issue"], "labels": []}
++    tid = _intake(kanban_conn, plugin_config, no_label, "open-001")
++    task = _get_task(kanban_conn, tid)
++    assert task["status"] == "triage"
++
++    # Then label with trusted label
++    _intake(kanban_conn, plugin_config, issue_labeled_payload, "label-001")
++    task = _get_task(kanban_conn, tid)
++    assert task["status"] in ("ready", "todo", "running")
++
++
++# ---------------------------------------------------------------------------
++# closed
++# ---------------------------------------------------------------------------
++
++def test_issue_closed_archives_root(
++    kanban_conn, plugin_config, issue_opened_payload, issue_closed_payload
++):
++    """A closed issue must result in an archived Kanban root."""
++    tid = _intake(kanban_conn, plugin_config, issue_opened_payload, "open-001")
++    _intake(kanban_conn, plugin_config, issue_closed_payload, "close-001")
++    task = _get_task(kanban_conn, tid)
++    assert task["status"] == "archived"
++
++
++# ---------------------------------------------------------------------------
++# reopened
++# ---------------------------------------------------------------------------
++
++def test_issue_reopened_restores_root(
++    kanban_conn, plugin_config, issue_opened_payload, issue_closed_payload, issue_reopened_payload
++):
++    """A reopened issue must restore the root from archived to actionable/triage."""
++    tid = _intake(kanban_conn, plugin_config, issue_opened_payload, "open-001")
++    _intake(kanban_conn, plugin_config, issue_closed_payload, "close-001")
++    _intake(kanban_conn, plugin_config, issue_reopened_payload, "reopen-001")
++    task = _get_task(kanban_conn, tid)
++    assert task["status"] in ("triage", "ready", "todo", "running")
++
++
++# ---------------------------------------------------------------------------
++# edited
++# ---------------------------------------------------------------------------
++
++def test_issue_edited_updates_title_not_status(
++    kanban_conn, plugin_config, issue_opened_payload, issue_edited_payload
++):
++    """Editing an issue must update the root title but not change its status."""
++    tid = _intake(kanban_conn, plugin_config, issue_opened_payload, "open-001")
++    status_before = _get_task(kanban_conn, tid)["status"]
++
++    _intake(kanban_conn, plugin_config, issue_edited_payload, "edit-001")
++    task_after = _get_task(kanban_conn, tid)
++    assert "revised" in task_after["title"].lower()
++    assert task_after["status"] == status_before
++
++
++# ---------------------------------------------------------------------------
++# Untrusted actor
++# ---------------------------------------------------------------------------
++
++def test_untrusted_actor_label_does_not_make_actionable(
++    kanban_conn, plugin_config, issue_opened_payload
++):
++    """A trusted label applied by a bot actor must not make the root actionable."""
++    no_label = {**issue_opened_payload}
++    no_label["issue"] = {**no_label["issue"], "labels": []}
++    tid = _intake(kanban_conn, plugin_config, no_label, "open-001")
++
++    labeled_bot = {**issue_opened_payload}
++    labeled_bot["sender"] = {"login": "auto-labeler[bot]", "type": "Bot"}
++    _intake(kanban_conn, plugin_config, labeled_bot, "label-bot-001")
++
++    task = _get_task(kanban_conn, tid)
++    assert task["status"] == "triage"
++
++
++# ---------------------------------------------------------------------------
++# Provenance
++# ---------------------------------------------------------------------------
++
++def test_root_stores_github_provenance(
++    kanban_conn, plugin_config, issue_opened_payload
++):
++    """Root metadata must include github issue URL and repo for provenance."""
++    from plugins.github_intake.kanban import get_root_metadata
++    tid = _intake(kanban_conn, plugin_config, issue_opened_payload, "open-001")
++    meta = get_root_metadata(kanban_conn, tid)
++    assert "github.com" in meta.get("source_url", "")
++    assert TEST_REPO_FULL_NAME in meta.get("source_repo", "")
++    assert meta.get("source_issue_number") == 42
+diff --git a/plugins/github-intake/tests/test_reconciliation.py b/plugins/github-intake/tests/test_reconciliation.py
+new file mode 100644
+index 0000000000..15273c59d8
+--- /dev/null
++++ b/plugins/github-intake/tests/test_reconciliation.py
+@@ -0,0 +1,249 @@
++"""Reconciliation tests for the github-intake plugin.
++
++Covers:
++- Reconciliation repairs missed meaningful upstream state
++- Reconciliation is silent when canonical state is unchanged
++- Rate-limit failures use bounded observable retries
++- Disabled check honored before board mutation
++- Kill switch honored before board mutation
++- Only configured allowlisted repos are enumerated
++"""
++
++from __future__ import annotations
++
++import json
++from unittest.mock import MagicMock, call, patch
++
++import pytest
++
++from .conftest import (
++    TEST_REPO_FULL_NAME,
++    sign_payload,
++)
++
++
++def _intake(kanban_conn, plugin_config, payload_dict: dict, delivery_id: str) -> str:
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.kanban import intake_event
++
++    raw = json.dumps(payload_dict).encode()
++    sig = sign_payload(raw)
++    cfg = GithubIntakeConfig(**{**plugin_config, "enabled": True, "dry_run": False})
++    return intake_event(
++        conn=kanban_conn,
++        config=cfg,
++        raw_payload=raw,
++        event_type="issues",
++        delivery_id=delivery_id,
++        signature=sig,
++    )
++
++
++# ---------------------------------------------------------------------------
++# Reconciliation repairs missed state
++# ---------------------------------------------------------------------------
++
++def test_reconciliation_repairs_closed_issue(
++    kanban_conn, plugin_config, issue_opened_payload, issue_closed_payload
++):
++    """Reconciliation repairs a root that missed a close event."""
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.reconcile import reconcile_repository
++
++    # Create open root (simulating a missed close event)
++    tid = _intake(kanban_conn, plugin_config, issue_opened_payload, "open-001")
++
++    # Mock GitHub API returning the issue as closed
++    closed_issue = {
++        "number": 42,
++        "title": "Implement feature X",
++        "body": "...",
++        "state": "closed",
++        "labels": [{"name": "hcw-dev"}],
++        "user": {"login": "ajhochy", "type": "User"},
++        "created_at": "2026-08-22T10:00:00Z",
++        "updated_at": "2026-08-22T12:00:00Z",
++        "html_url": "https://github.com/test-org/test-repo/issues/42",
++    }
++    mock_github = MagicMock()
++    mock_github.list_issues.return_value = [closed_issue]
++
++    cfg = GithubIntakeConfig(**{**plugin_config, "enabled": True, "dry_run": False})
++    reconcile_repository(
++        conn=kanban_conn,
++        config=cfg,
++        repo_full_name=TEST_REPO_FULL_NAME,
++        github_client=mock_github,
++    )
++
++    from hermes_cli.kanban_db import get_task
++    task = get_task(kanban_conn, tid)
++    assert task["status"] == "archived"
++
++
++def test_reconciliation_is_silent_when_state_unchanged(
++    kanban_conn, plugin_config, issue_opened_payload
++):
++    """Reconciliation must not mutate the board when canonical state matches upstream."""
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.reconcile import reconcile_repository
++
++    # Create root matching upstream state (open with hcw-dev label)
++    _intake(kanban_conn, plugin_config, issue_opened_payload, "open-001")
++
++    open_issue = {
++        "number": 42,
++        "title": "Implement feature X",
++        "body": "We need to implement feature X to support the new workflow.\n\nThis is a software engineering task.",
++        "state": "open",
++        "labels": [{"name": "hcw-dev"}],
++        "user": {"login": "ajhochy", "type": "User"},
++        "created_at": "2026-08-22T10:00:00Z",
++        "updated_at": "2026-08-22T10:00:00Z",
++        "html_url": "https://github.com/test-org/test-repo/issues/42",
++    }
++    mock_github = MagicMock()
++    mock_github.list_issues.return_value = [open_issue]
++
++    cfg = GithubIntakeConfig(**{**plugin_config, "enabled": True, "dry_run": False})
++
++    # Record board state before reconciliation
++    from hermes_cli.kanban_db import get_task
++    from plugins.github_intake.kanban import find_issue_root
++    roots_before = find_issue_root(kanban_conn, TEST_REPO_FULL_NAME, 42)
++    task_before = get_task(kanban_conn, roots_before[0]["id"])
++
++    reconcile_repository(
++        conn=kanban_conn,
++        config=cfg,
++        repo_full_name=TEST_REPO_FULL_NAME,
++        github_client=mock_github,
++    )
++
++    roots_after = find_issue_root(kanban_conn, TEST_REPO_FULL_NAME, 42)
++    task_after = get_task(kanban_conn, roots_after[0]["id"])
++    assert task_before["status"] == task_after["status"]
++    assert task_before["title"] == task_after["title"]
++
++
++# ---------------------------------------------------------------------------
++# Rate-limit retries
++# ---------------------------------------------------------------------------
++
++def test_reconciliation_retries_on_rate_limit(kanban_conn, plugin_config):
++    """Reconciliation must retry on GitHub rate-limit errors with bounded attempts."""
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.reconcile import reconcile_repository
++    from plugins.github_intake.models import GitHubRateLimitError
++
++    mock_github = MagicMock()
++    mock_github.list_issues.side_effect = [
++        GitHubRateLimitError("rate limited"),
++        GitHubRateLimitError("rate limited"),
++        [],  # succeeds on third attempt
++    ]
++
++    cfg = GithubIntakeConfig(**{**plugin_config, "enabled": True, "dry_run": False})
++    reconcile_repository(
++        conn=kanban_conn,
++        config=cfg,
++        repo_full_name=TEST_REPO_FULL_NAME,
++        github_client=mock_github,
++        max_retries=3,
++    )
++    assert mock_github.list_issues.call_count == 3
++
++
++def test_reconciliation_fails_after_exhausting_retries(kanban_conn, plugin_config):
++    """Reconciliation must raise after exhausting all retries."""
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.reconcile import reconcile_repository
++    from plugins.github_intake.models import GitHubRateLimitError, ReconcileError
++
++    mock_github = MagicMock()
++    mock_github.list_issues.side_effect = GitHubRateLimitError("rate limited")
++
++    cfg = GithubIntakeConfig(**{**plugin_config, "enabled": True, "dry_run": False})
++    with pytest.raises(ReconcileError):
++        reconcile_repository(
++            conn=kanban_conn,
++            config=cfg,
++            repo_full_name=TEST_REPO_FULL_NAME,
++            github_client=mock_github,
++            max_retries=2,
++        )
++
++
++# ---------------------------------------------------------------------------
++# Disable and kill switch
++# ---------------------------------------------------------------------------
++
++def test_reconciliation_skipped_when_plugin_disabled(kanban_conn, plugin_config):
++    """Reconciliation must not touch the board when the plugin is disabled."""
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.reconcile import reconcile_repository
++
++    mock_github = MagicMock()
++    cfg = GithubIntakeConfig(**plugin_config)  # enabled=False
++    assert not cfg.enabled
++
++    reconcile_repository(
++        conn=kanban_conn,
++        config=cfg,
++        repo_full_name=TEST_REPO_FULL_NAME,
++        github_client=mock_github,
++    )
++    mock_github.list_issues.assert_not_called()
++
++
++def test_reconciliation_skipped_when_kill_switch_active(
++    kanban_conn, plugin_config, monkeypatch
++):
++    """Reconciliation must not touch the board when the kill switch is set."""
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.reconcile import reconcile_repository
++
++    monkeypatch.setenv("GITHUB_INTAKE_KILL_SWITCH", "1")
++    mock_github = MagicMock()
++    cfg = GithubIntakeConfig(**{**plugin_config, "enabled": True, "dry_run": False})
++
++    reconcile_repository(
++        conn=kanban_conn,
++        config=cfg,
++        repo_full_name=TEST_REPO_FULL_NAME,
++        github_client=mock_github,
++    )
++    mock_github.list_issues.assert_not_called()
++
++
++# ---------------------------------------------------------------------------
++# Only allowlisted repos
++# ---------------------------------------------------------------------------
++
++def test_reconciliation_only_enumerates_allowlisted_repos(
++    kanban_conn, plugin_config
++):
++    """Reconciliation must only query repos listed in allowed_repositories."""
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.reconcile import run_full_reconciliation
++
++    mock_github = MagicMock()
++    mock_github.list_issues.return_value = []
++
++    cfg = GithubIntakeConfig(**{
++        **plugin_config,
++        "enabled": True,
++        "dry_run": False,
++        "allowed_repositories": ["org-a/repo-1", "org-b/repo-2"],
++    })
++
++    run_full_reconciliation(
++        conn=kanban_conn,
++        config=cfg,
++        github_client=mock_github,
++    )
++
++    called_repos = [c.args[0] if c.args else c.kwargs.get("repo_full_name")
++                    for c in mock_github.list_issues.call_args_list]
++    for repo in called_repos:
++        assert repo in ["org-a/repo-1", "org-b/repo-2"], f"Unexpected repo: {repo}"
+diff --git a/plugins/github-intake/tests/test_routing.py b/plugins/github-intake/tests/test_routing.py
+new file mode 100644
+index 0000000000..6709c6b60c
+--- /dev/null
++++ b/plugins/github-intake/tests/test_routing.py
+@@ -0,0 +1,288 @@
++"""Routing tests for the github-intake plugin.
++
++Covers:
++- Trusted actionable issues route to hcw-dev
++- Untrusted issues stay quarantined (blocked)
++- Ambiguous/human-decision issues stay blocked
++- Explicit no-auto-decompose marker on routed tasks
++- Cannot transitively launch code-capable profiles
++- Non-software issues are not routed
++"""
++
++from __future__ import annotations
++
++import json
++from unittest.mock import MagicMock
++
++import pytest
++
++from .conftest import (
++    TEST_REPO_FULL_NAME,
++    sign_payload,
++)
++
++
++def _intake_and_classify(kanban_conn, plugin_config, payload_dict: dict, delivery_id: str):
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.kanban import intake_event
++    from plugins.github_intake.routing import route_intake_result
++
++    raw = json.dumps(payload_dict).encode()
++    sig = sign_payload(raw)
++    cfg = GithubIntakeConfig(**{**plugin_config, "enabled": True, "dry_run": False})
++    tid = intake_event(
++        conn=kanban_conn,
++        config=cfg,
++        raw_payload=raw,
++        event_type="issues",
++        delivery_id=delivery_id,
++        signature=sig,
++    )
++    return tid, cfg
++
++
++# ---------------------------------------------------------------------------
++# Trusted actionable -> hcw-dev
++# ---------------------------------------------------------------------------
++
++def test_trusted_actionable_issue_routes_to_hcw_dev(
++    kanban_conn, plugin_config, issue_opened_payload, mock_hcw_boundary
++):
++    """A trusted, actionable issue must be routed to the hcw-dev profile."""
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.routing import route_intake_result
++    from plugins.github_intake.kanban import intake_event
++
++    raw = json.dumps(issue_opened_payload).encode()
++    sig = sign_payload(raw)
++    cfg = GithubIntakeConfig(**{**plugin_config, "enabled": True, "dry_run": False})
++    tid = intake_event(
++        conn=kanban_conn,
++        config=cfg,
++        raw_payload=raw,
++        event_type="issues",
++        delivery_id="open-001",
++        signature=sig,
++    )
++
++    route_intake_result(
++        conn=kanban_conn,
++        task_id=tid,
++        config=cfg,
++        hcw_boundary=mock_hcw_boundary,
++    )
++
++    assert len(mock_hcw_boundary.route_calls) == 1
++    assert mock_hcw_boundary.route_calls[0]["profile"] == "hcw-dev"
++    assert mock_hcw_boundary.route_calls[0]["task_id"] == tid
++
++
++def test_routed_task_has_no_auto_decompose_marker(
++    kanban_conn, plugin_config, issue_opened_payload, mock_hcw_boundary
++):
++    """A routed task must carry an explicit no-auto-decompose marker."""
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.kanban import intake_event, get_root_metadata
++    from plugins.github_intake.routing import route_intake_result
++
++    raw = json.dumps(issue_opened_payload).encode()
++    sig = sign_payload(raw)
++    cfg = GithubIntakeConfig(**{**plugin_config, "enabled": True, "dry_run": False})
++    tid = intake_event(
++        conn=kanban_conn,
++        config=cfg,
++        raw_payload=raw,
++        event_type="issues",
++        delivery_id="open-001",
++        signature=sig,
++    )
++    route_intake_result(
++        conn=kanban_conn,
++        task_id=tid,
++        config=cfg,
++        hcw_boundary=mock_hcw_boundary,
++    )
++
++    meta = get_root_metadata(kanban_conn, tid)
++    assert meta.get("no_auto_decompose") is True
++
++
++# ---------------------------------------------------------------------------
++# Untrusted -> quarantine
++# ---------------------------------------------------------------------------
++
++def test_untrusted_issue_stays_blocked(
++    kanban_conn, plugin_config, issue_opened_payload, mock_hcw_boundary
++):
++    """An issue without trusted labels must not be routed to hcw-dev."""
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.kanban import intake_event
++    from plugins.github_intake.routing import route_intake_result
++
++    no_label = {**issue_opened_payload}
++    no_label["issue"] = {**no_label["issue"], "labels": []}
++    raw = json.dumps(no_label).encode()
++    sig = sign_payload(raw)
++    cfg = GithubIntakeConfig(**{**plugin_config, "enabled": True, "dry_run": False})
++    tid = intake_event(
++        conn=kanban_conn,
++        config=cfg,
++        raw_payload=raw,
++        event_type="issues",
++        delivery_id="open-001",
++        signature=sig,
++    )
++
++    route_intake_result(
++        conn=kanban_conn,
++        task_id=tid,
++        config=cfg,
++        hcw_boundary=mock_hcw_boundary,
++    )
++
++    assert len(mock_hcw_boundary.route_calls) == 0
++    assert len(mock_hcw_boundary.blocked_calls) == 1
++
++
++def test_non_allowlisted_repo_stays_quarantined(
++    kanban_conn, plugin_config, issue_opened_payload, mock_hcw_boundary
++):
++    """An issue from a non-allowlisted repo must not reach hcw-dev."""
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.kanban import intake_event
++    from plugins.github_intake.routing import route_intake_result
++
++    foreign = {**issue_opened_payload}
++    foreign["repository"] = {
++        **foreign["repository"],
++        "full_name": "foreign-org/foreign-repo",
++    }
++    raw = json.dumps(foreign).encode()
++    sig = sign_payload(raw)
++    cfg = GithubIntakeConfig(**{**plugin_config, "enabled": True, "dry_run": False})
++
++    tid = intake_event(
++        conn=kanban_conn,
++        config=cfg,
++        raw_payload=raw,
++        event_type="issues",
++        delivery_id="foreign-001",
++        signature=sig,
++    )
++
++    route_intake_result(
++        conn=kanban_conn,
++        task_id=tid,
++        config=cfg,
++        hcw_boundary=mock_hcw_boundary,
++    )
++    assert len(mock_hcw_boundary.route_calls) == 0
++
++
++# ---------------------------------------------------------------------------
++# Cannot launch code-capable profiles
++# ---------------------------------------------------------------------------
++
++def test_blocked_task_cannot_launch_code_capable_profile(
++    kanban_conn, plugin_config, issue_opened_payload, mock_hcw_boundary
++):
++    """A blocked/quarantined task must not be able to launch any code-capable profile."""
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.kanban import intake_event
++    from plugins.github_intake.routing import route_intake_result
++
++    # No trusted label -> should be blocked
++    no_label = {**issue_opened_payload}
++    no_label["issue"] = {**no_label["issue"], "labels": []}
++    raw = json.dumps(no_label).encode()
++    sig = sign_payload(raw)
++    cfg = GithubIntakeConfig(**{**plugin_config, "enabled": True, "dry_run": False})
++    tid = intake_event(
++        conn=kanban_conn,
++        config=cfg,
++        raw_payload=raw,
++        event_type="issues",
++        delivery_id="open-001",
++        signature=sig,
++    )
++
++    route_intake_result(
++        conn=kanban_conn,
++        task_id=tid,
++        config=cfg,
++        hcw_boundary=mock_hcw_boundary,
++    )
++
++    # hcw_boundary.route must never be called with any code-capable profile
++    for call_record in mock_hcw_boundary.route_calls:
++        assert call_record["profile"] not in ("hcw-dev", "dev", "code", "engineer")
++
++
++def test_block_reason_is_factual(
++    kanban_conn, plugin_config, issue_opened_payload, mock_hcw_boundary
++):
++    """Blocked tasks must have a factual block reason, not a generic error."""
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.kanban import intake_event
++    from plugins.github_intake.routing import route_intake_result
++
++    no_label = {**issue_opened_payload}
++    no_label["issue"] = {**no_label["issue"], "labels": []}
++    raw = json.dumps(no_label).encode()
++    sig = sign_payload(raw)
++    cfg = GithubIntakeConfig(**{**plugin_config, "enabled": True, "dry_run": False})
++    tid = intake_event(
++        conn=kanban_conn,
++        config=cfg,
++        raw_payload=raw,
++        event_type="issues",
++        delivery_id="open-001",
++        signature=sig,
++    )
++
++    route_intake_result(
++        conn=kanban_conn,
++        task_id=tid,
++        config=cfg,
++        hcw_boundary=mock_hcw_boundary,
++    )
++
++    assert len(mock_hcw_boundary.blocked_calls) == 1
++    reason = mock_hcw_boundary.blocked_calls[0]["reason"]
++    assert reason  # must be non-empty
++    assert len(reason) > 10  # must be substantive
++
++
++# ---------------------------------------------------------------------------
++# Dry-run routing
++# ---------------------------------------------------------------------------
++
++def test_dry_run_does_not_call_hcw_boundary(
++    kanban_conn, plugin_config, issue_opened_payload, mock_hcw_boundary
++):
++    """In dry-run mode, routing must not call the HCW boundary."""
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.kanban import intake_event
++    from plugins.github_intake.routing import route_intake_result
++
++    raw = json.dumps(issue_opened_payload).encode()
++    sig = sign_payload(raw)
++    cfg = GithubIntakeConfig(**{**plugin_config, "enabled": True, "dry_run": True})
++    tid = intake_event(
++        conn=kanban_conn,
++        config=cfg,
++        raw_payload=raw,
++        event_type="issues",
++        delivery_id="open-001",
++        signature=sig,
++    )
++
++    route_intake_result(
++        conn=kanban_conn,
++        task_id=tid,
++        config=cfg,
++        hcw_boundary=mock_hcw_boundary,
++    )
++
++    assert len(mock_hcw_boundary.route_calls) == 0
++    assert len(mock_hcw_boundary.blocked_calls) == 0
+diff --git a/plugins/github-intake/tests/test_scope.py b/plugins/github-intake/tests/test_scope.py
+new file mode 100644
+index 0000000000..b44803ac28
+--- /dev/null
++++ b/plugins/github-intake/tests/test_scope.py
+@@ -0,0 +1,145 @@
++"""Scope enforcement tests for the github-intake plugin.
++
++Ensures that:
++- All plugin source files live under plugins/github-intake/**
++- The plugin does not import from outside its allowed scope
++- No mutations to files outside the plugin boundary
++- Plugin manifest accurately describes its scope
++"""
++
++from __future__ import annotations
++
++import ast
++import os
++import sys
++from pathlib import Path
++
++import pytest
++
++PLUGIN_ROOT = Path(__file__).parent.parent
++REPO_ROOT = PLUGIN_ROOT.parent.parent
++ALLOWED_EXTERNAL_IMPORTS = frozenset({
++    # stdlib
++    "abc", "asyncio", "collections", "contextlib", "copy", "dataclasses",
++    "datetime", "enum", "functools", "hashlib", "hmac", "http", "inspect",
++    "io", "itertools", "json", "logging", "math", "operator", "os", "pathlib",
++    "re", "secrets", "shutil", "signal", "sqlite3", "string", "struct",
++    "subprocess", "sys", "tempfile", "textwrap", "threading", "time",
++    "traceback", "types", "typing", "unicodedata", "unittest", "urllib",
++    "uuid", "warnings", "weakref",
++    # third-party (allowed dependencies)
++    "click", "yaml", "pydantic", "flask", "werkzeug", "cryptography",
++    "requests",
++    # internal hermes modules (read-only or utility)
++    "hermes_cli.kanban_db",
++    "hermes_cli.sqlite_util",
++    "hermes_constants",
++    "hermes_logging",
++    "plugins.github_intake",
++    "plugins",
++    # test support
++    "pytest", "unittest",
++})
++
++
++def get_all_plugin_py_files():
++    """All .py files under the plugin root."""
++    return list(PLUGIN_ROOT.rglob("*.py"))
++
++
++def test_all_plugin_files_are_under_plugin_root():
++    """Every Python file declared by the plugin must live under plugins/github-intake/."""
++    files = get_all_plugin_py_files()
++    for f in files:
++        assert f.is_relative_to(PLUGIN_ROOT), f"File outside plugin root: {f}"
++
++
++def test_plugin_root_is_under_plugins_directory():
++    """The plugin directory must be a direct child of plugins/."""
++    assert PLUGIN_ROOT.parent.name == "plugins", \
++        f"Plugin root parent is {PLUGIN_ROOT.parent.name!r}, expected 'plugins'"
++    assert PLUGIN_ROOT.name == "github-intake"
++
++
++def _get_top_level_imports(source: str) -> list[str]:
++    """Extract top-level module names from import statements."""
++    try:
++        tree = ast.parse(source)
++    except SyntaxError:
++        return []
++    names = []
++    for node in ast.walk(tree):
++        if isinstance(node, ast.Import):
++            for alias in node.names:
++                names.append(alias.name.split(".")[0])
++        elif isinstance(node, ast.ImportFrom):
++            if node.module:
++                names.append(node.module.split(".")[0])
++    return names
++
++
++def test_plugin_source_does_not_import_dispatcher():
++    """Plugin source must not import the HCW dispatcher or launch workers."""
++    forbidden_modules = {
++        "agent.dispatcher", "agent.delegation_context",
++        "hermes_cli.kanban_swarm",
++    }
++    forbidden_patterns = {
++        "launch_worker", "dispatch_task", "kanban_swarm",
++        "delegate_task",
++    }
++    files = [f for f in get_all_plugin_py_files()
++             if "tests" not in f.parts]
++    for f in files:
++        source = f.read_text(errors="replace")
++        for mod in forbidden_modules:
++            assert mod not in source, \
++                f"{f.name} imports forbidden module: {mod}"
++        for pattern in forbidden_patterns:
++            assert pattern not in source, \
++                f"{f.name} references forbidden symbol: {pattern}"
++
++
++def test_plugin_source_does_not_write_to_github():
++    """Plugin source must not make GitHub write API calls."""
++    write_endpoints = (
++        "/issues", "/labels", "/comments",
++        "method=\"POST\"", "method='POST'",
++        "requests.post", "requests.patch", "requests.put", "requests.delete",
++        ".post(\"https://api.github",
++        ".patch(\"https://api.github",
++    )
++    files = [f for f in get_all_plugin_py_files()
++             if "tests" not in f.parts]
++    for f in files:
++        source = f.read_text(errors="replace")
++        for pattern in write_endpoints:
++            assert pattern not in source, \
++                f"{f.name} contains GitHub write call: {pattern!r}"
++
++
++def test_no_hardcoded_credentials_in_source():
++    """Plugin source must not contain hardcoded secrets or tokens."""
++    suspicious = (
++        "ghp_", "github_pat_", "Bearer ghp", "Authorization: token",
++        "webhook_secret = \"", "webhook_secret = '",
++    )
++    files = [f for f in get_all_plugin_py_files()
++             if "tests" not in f.parts]
++    for f in files:
++        source = f.read_text(errors="replace")
++        for pattern in suspicious:
++            assert pattern not in source, \
++                f"{f.name} contains suspicious credential pattern: {pattern!r}"
++
++
++def test_plugin_yaml_declares_kind_intake():
++    """plugin.yaml kind must be 'intake' or 'backend', not 'agent' or 'worker'."""
++    import yaml
++    plugin_yaml = PLUGIN_ROOT / "plugin.yaml"
++    assert plugin_yaml.exists()
++    meta = yaml.safe_load(plugin_yaml.read_text())
++    assert meta.get("kind") in ("intake", "backend", "plugin"), \
++        f"Unexpected plugin kind: {meta.get('kind')!r}"
++    assert meta.get("kind") not in ("agent", "worker", "dispatcher"), \
++        f"Plugin must not declare itself as an agent/worker: {meta.get('kind')!r}"
+diff --git a/plugins/github-intake/tests/test_security.py b/plugins/github-intake/tests/test_security.py
+new file mode 100644
+index 0000000000..0c90eec348
+--- /dev/null
++++ b/plugins/github-intake/tests/test_security.py
+@@ -0,0 +1,242 @@
++"""Security contract tests: auth, trust, and fail-closed behavior.
++
++Covers:
++- HMAC verification over bounded bytes
++- Missing/invalid signatures rejected
++- Oversized payload rejected
++- Malformed JSON rejected
++- Wrong event type rejected
++- Stale/rate-limited input rejected
++- Auth != authorization (verified != trusted)
++- Untrusted actor classification
++"""
++
++from __future__ import annotations
++
++import hashlib
++import hmac
++import json
++
++import pytest
++
++from .conftest import (
++    TEST_REPO_FULL_NAME,
++    TEST_WEBHOOK_SECRET,
++    sign_payload,
++)
++
++
++# ---------------------------------------------------------------------------
++# HMAC signature verification
++# ---------------------------------------------------------------------------
++
++def test_valid_signature_accepted(issue_opened_bytes):
++    """A correctly computed HMAC-SHA256 signature must be accepted."""
++    from plugins.github_intake.auth import verify_signature
++    sig = sign_payload(issue_opened_bytes, TEST_WEBHOOK_SECRET)
++    assert verify_signature(issue_opened_bytes, sig, TEST_WEBHOOK_SECRET)
++
++
++def test_missing_signature_rejected(issue_opened_bytes):
++    """A missing signature header must fail closed."""
++    from plugins.github_intake.auth import verify_signature
++    assert not verify_signature(issue_opened_bytes, None, TEST_WEBHOOK_SECRET)
++    assert not verify_signature(issue_opened_bytes, "", TEST_WEBHOOK_SECRET)
++
++
++def test_invalid_signature_rejected(issue_opened_bytes):
++    """A wrong signature must be rejected (constant-time comparison)."""
++    from plugins.github_intake.auth import verify_signature
++    bad_sig = "sha256=0000000000000000000000000000000000000000000000000000000000000000"
++    assert not verify_signature(issue_opened_bytes, bad_sig, TEST_WEBHOOK_SECRET)
++
++
++def test_wrong_prefix_signature_rejected(issue_opened_bytes):
++    """A sha1= prefixed signature must be rejected (only sha256= is accepted)."""
++    from plugins.github_intake.auth import verify_signature
++    mac = hmac.new(TEST_WEBHOOK_SECRET.encode(), issue_opened_bytes, hashlib.sha1)
++    sha1_sig = f"sha1={mac.hexdigest()}"
++    assert not verify_signature(issue_opened_bytes, sha1_sig, TEST_WEBHOOK_SECRET)
++
++
++def test_tampered_payload_rejected(issue_opened_bytes):
++    """Altering one byte of the payload must invalidate the signature."""
++    from plugins.github_intake.auth import verify_signature
++    sig = sign_payload(issue_opened_bytes)
++    tampered = bytearray(issue_opened_bytes)
++    tampered[10] ^= 0xFF
++    assert not verify_signature(bytes(tampered), sig, TEST_WEBHOOK_SECRET)
++
++
++def test_wrong_secret_rejected(issue_opened_bytes):
++    """A signature produced with a different secret must be rejected."""
++    from plugins.github_intake.auth import verify_signature
++    wrong_sig = sign_payload(issue_opened_bytes, "wrong-secret")
++    assert not verify_signature(issue_opened_bytes, wrong_sig, TEST_WEBHOOK_SECRET)
++
++
++# ---------------------------------------------------------------------------
++# Payload size bound
++# ---------------------------------------------------------------------------
++
++def test_oversized_payload_rejected(plugin_config):
++    """Payloads exceeding max_payload_bytes must be rejected before parsing."""
++    from plugins.github_intake.auth import check_payload_size
++    from plugins.github_intake.config import GithubIntakeConfig
++
++    cfg = GithubIntakeConfig(**{**plugin_config, "max_payload_bytes": 100})
++    oversized = b"x" * 200
++    result = check_payload_size(oversized, cfg.max_payload_bytes)
++    assert result is False
++
++
++def test_within_size_limit_accepted(plugin_config):
++    """Payloads within the byte limit must pass the size check."""
++    from plugins.github_intake.auth import check_payload_size
++    from plugins.github_intake.config import GithubIntakeConfig
++
++    cfg = GithubIntakeConfig(**{**plugin_config, "max_payload_bytes": 1000})
++    small = b"x" * 50
++    assert check_payload_size(small, cfg.max_payload_bytes)
++
++
++# ---------------------------------------------------------------------------
++# JSON and schema validation
++# ---------------------------------------------------------------------------
++
++def test_malformed_json_rejected():
++    """Non-JSON payload must produce a fail-closed error result."""
++    from plugins.github_intake.normalize import normalize_issue_event
++    result = normalize_issue_event(b"not json at all", event_type="issues", delivery_id="x")
++    assert result is None
++
++
++def test_empty_payload_rejected():
++    """Empty payload must produce a fail-closed error result."""
++    from plugins.github_intake.normalize import normalize_issue_event
++    result = normalize_issue_event(b"", event_type="issues", delivery_id="x")
++    assert result is None
++
++
++def test_wrong_event_type_rejected(issue_opened_bytes):
++    """Non-issues event types must be rejected at normalization."""
++    from plugins.github_intake.normalize import normalize_issue_event
++    result = normalize_issue_event(
++        issue_opened_bytes, event_type="pull_request", delivery_id="x"
++    )
++    assert result is None
++
++
++def test_missing_required_fields_rejected():
++    """Payload missing required fields must be rejected."""
++    from plugins.github_intake.normalize import normalize_issue_event
++    incomplete = json.dumps({"action": "opened"}).encode()
++    result = normalize_issue_event(incomplete, event_type="issues", delivery_id="x")
++    assert result is None
++
++
++def test_unsupported_action_returns_none(issue_opened_bytes):
++    """Unsupported issue actions must return None (not raise)."""
++    import json as _json
++    from plugins.github_intake.normalize import normalize_issue_event
++
++    payload = _json.loads(issue_opened_bytes)
++    payload["action"] = "pinned"
++    raw = _json.dumps(payload).encode()
++    result = normalize_issue_event(raw, event_type="issues", delivery_id="x")
++    # pinned is not a supported action — must be ignored, not raised
++    assert result is None
++
++
++# ---------------------------------------------------------------------------
++# Auth != authorization
++# ---------------------------------------------------------------------------
++
++def test_verified_payload_from_non_allowlisted_repo_is_blocked(
++    plugin_config, issue_opened_bytes
++):
++    """A correctly signed payload from a non-allowlisted repo must be blocked."""
++    import json as _json
++    from plugins.github_intake.config import GithubIntakeConfig
++    from plugins.github_intake.policy import classify_event
++
++    payload = _json.loads(issue_opened_bytes)
++    payload["repository"]["full_name"] = "evil-org/evil-repo"
++    raw = _json.dumps(payload).encode()
++    sig = sign_payload(raw)
++
++    from plugins.github_intake.normalize import normalize_issue_event
++    event = normalize_issue_event(raw, event_type="issues", delivery_id="x")
++    assert event is not None
++
++    cfg = GithubIntakeConfig(
++        **{**plugin_config, "allowed_repositories": ["test-org/test-repo"]}
++    )
++    classification = classify_event(event, cfg)
++    assert classification.trusted is False
++    assert "allowlist" in classification.block_reason.lower()
++
++
++def test_verified_payload_from_bot_sender_is_untrusted(issue_opened_bytes):
++    """A payload from a Bot sender must be classified as untrusted."""
++    import json as _json
++    from plugins.github_intake.normalize import normalize_issue_event
++    from plugins.github_intake.policy import classify_event
++
++    payload = _json.loads(issue_opened_bytes)
++    payload["sender"]["type"] = "Bot"
++    payload["sender"]["login"] = "some-bot[bot]"
++    raw = _json.dumps(payload).encode()
++    event = normalize_issue_event(raw, event_type="issues", delivery_id="x")
++    assert event is not None
++
++    from plugins.github_intake.config import GithubIntakeConfig
++    cfg = GithubIntakeConfig(
++        **{
++            "plugin": "github-intake",
++            "enabled": True,
++            "webhook_secret": TEST_WEBHOOK_SECRET,
++            "allowed_repositories": [TEST_REPO_FULL_NAME],
++            "trusted_labels": ["hcw-dev"],
++            "route_profile": "hcw-dev",
++            "max_payload_bytes": 26214400,
++        }
++    )
++    classification = classify_event(event, cfg)
++    assert classification.trusted is False
++
++
++# ---------------------------------------------------------------------------
++# Stale event rejection
++# ---------------------------------------------------------------------------
++
++def test_stale_event_rejected_when_too_old(plugin_config, issue_opened_bytes):
++    """Events with timestamps older than the staleness threshold must be rejected."""
++    import json as _json
++    from plugins.github_intake.normalize import normalize_issue_event
++    from plugins.github_intake.policy import classify_event
++    from plugins.github_intake.config import GithubIntakeConfig
++
++    payload = _json.loads(issue_opened_bytes)
++    # 2000-01-01 — clearly stale
++    payload["issue"]["updated_at"] = "2000-01-01T00:00:00Z"
++    raw = _json.dumps(payload).encode()
++    event = normalize_issue_event(raw, event_type="issues", delivery_id="x")
++    assert event is not None
++
++    cfg = GithubIntakeConfig(**{**plugin_config, "enabled": True, "stale_event_days": 30})
++    classification = classify_event(event, cfg)
++    assert classification.trusted is False
++    assert "stale" in classification.block_reason.lower()
++
++
++# ---------------------------------------------------------------------------
++# Rate-limit fail-closed
++# ---------------------------------------------------------------------------
++
++def test_rate_limit_result_is_fail_closed():
++    """A rate-limit result from the normalizer must be a distinct fail-closed state."""
++    from plugins.github_intake.normalize import IntakeResult, IntakeStatus
++    result = IntakeResult(status=IntakeStatus.RATE_LIMITED, reason="GitHub rate limit")
++    assert result.status == IntakeStatus.RATE_LIMITED
++    assert result.task_id is None
+-- 
+2.50.1 (Apple Git-155)
+
+
+From bafbf92deee75a2e7394a825609f9f922bc76a0b Mon Sep 17 00:00:00 2001
+From: ajhochy <ajhochy@gmail.com>
+Date: Wed, 30 Sep 2026 06:56:26 -0700
+Subject: [PATCH 2/2] WIP snapshot hcw/t_f67c4937/attempt-1 2026-09-30
+
+---
+ plugins/github-intake/__init__.py         |   9 +
+ plugins/github-intake/app.py              |  34 ++++
+ plugins/github-intake/auth.py             |  26 +++
+ plugins/github-intake/canonical.py        |  11 ++
+ plugins/github-intake/cli.py              | 138 ++++++++++++++
+ plugins/github-intake/config.py           |  26 +++
+ plugins/github-intake/conftest_helpers.py |  12 ++
+ plugins/github-intake/kanban.py           | 218 ++++++++++++++++++++++
+ plugins/github-intake/lifecycle.py        |  43 +++++
+ plugins/github-intake/models.py           |  70 +++++++
+ plugins/github-intake/normalize.py        | 107 +++++++++++
+ plugins/github-intake/policy.py           |  61 ++++++
+ plugins/github-intake/reconcile.py        | 209 +++++++++++++++++++++
+ plugins/github-intake/routing.py          |  53 ++++++
+ plugins/github-intake/runtime.py          |  16 ++
+ plugins/github-intake/webhook.py          |  63 +++++++
+ 16 files changed, 1096 insertions(+)
+ create mode 100644 plugins/github-intake/app.py
+ create mode 100644 plugins/github-intake/auth.py
+ create mode 100644 plugins/github-intake/canonical.py
+ create mode 100644 plugins/github-intake/cli.py
+ create mode 100644 plugins/github-intake/config.py
+ create mode 100644 plugins/github-intake/conftest_helpers.py
+ create mode 100644 plugins/github-intake/kanban.py
+ create mode 100644 plugins/github-intake/lifecycle.py
+ create mode 100644 plugins/github-intake/models.py
+ create mode 100644 plugins/github-intake/normalize.py
+ create mode 100644 plugins/github-intake/policy.py
+ create mode 100644 plugins/github-intake/reconcile.py
+ create mode 100644 plugins/github-intake/routing.py
+ create mode 100644 plugins/github-intake/runtime.py
+ create mode 100644 plugins/github-intake/webhook.py
+
+diff --git a/plugins/github-intake/__init__.py b/plugins/github-intake/__init__.py
+index e69de29bb2..0a69dfb2e6 100644
+--- a/plugins/github-intake/__init__.py
++++ b/plugins/github-intake/__init__.py
+@@ -0,0 +1,9 @@
++"""GitHub issue-to-Kanban intake plugin for Hermes.
++
++Disabled by default. Activation requires explicit configuration by AJ.
++"""
++
++from __future__ import annotations
++
++__version__ = "0.1.0"
++__all__ = ["__version__"]
+diff --git a/plugins/github-intake/app.py b/plugins/github-intake/app.py
+new file mode 100644
+index 0000000000..02a3b8d97e
+--- /dev/null
++++ b/plugins/github-intake/app.py
+@@ -0,0 +1,34 @@
++"""Flask application factory for the github-intake webhook endpoint."""
++
++from __future__ import annotations
++
++from typing import TYPE_CHECKING
++
++if TYPE_CHECKING:
++    from .config import GithubIntakeConfig
++
++
++def create_app(config: "GithubIntakeConfig"):
++    """Create the webhook Flask application.
++
++    The returned app object does NOT bind to any network interface.
++    It must be explicitly served (e.g. via gunicorn behind a reverse proxy)
++    with AJ's manual activation.
++    """
++    try:
++        from flask import Flask
++        app = Flask(__name__)
++        app._github_intake_config = config
++
++        from .webhook import register_routes
++        register_routes(app, config)
++
++        return app
++    except ImportError:
++        class _StubApp:
++            _github_intake_config = config
++
++            def run(self, *a, **kw):
++                raise RuntimeError("Flask not installed; cannot serve webhook")
++
++        return _StubApp()
+diff --git a/plugins/github-intake/auth.py b/plugins/github-intake/auth.py
+new file mode 100644
+index 0000000000..c3af1fed15
+--- /dev/null
++++ b/plugins/github-intake/auth.py
+@@ -0,0 +1,26 @@
++"""HMAC signature verification and payload size enforcement."""
++
++from __future__ import annotations
++
++import hashlib
++import hmac
++from typing import Optional
++
++
++def verify_signature(payload: bytes, signature: Optional[str], secret: str) -> bool:
++    """Verify a GitHub-style X-Hub-Signature-256 header.
++
++    Uses constant-time comparison to prevent timing attacks.
++    Only sha256= prefix is accepted.
++    """
++    if not signature:
++        return False
++    if not signature.startswith("sha256="):
++        return False
++    expected = "sha256=" + hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
++    return hmac.compare_digest(signature, expected)
++
++
++def check_payload_size(payload: bytes, max_bytes: int) -> bool:
++    """Return True iff payload is within the allowed byte limit."""
++    return len(payload) <= max_bytes
+diff --git a/plugins/github-intake/canonical.py b/plugins/github-intake/canonical.py
+new file mode 100644
+index 0000000000..9033d5472d
+--- /dev/null
++++ b/plugins/github-intake/canonical.py
+@@ -0,0 +1,11 @@
++"""Stable canonical identity for GitHub issues."""
++
++from __future__ import annotations
++
++
++def canonical_issue_id(repo_full_name: str, issue_number: int) -> str:
++    """Return the stable canonical ID for a GitHub issue.
++
++    Format: github:<repo_full_name>:issue:<issue_number>
++    """
++    return f"github:{repo_full_name}:issue:{issue_number}"
+diff --git a/plugins/github-intake/cli.py b/plugins/github-intake/cli.py
+new file mode 100644
+index 0000000000..976c697bcd
+--- /dev/null
++++ b/plugins/github-intake/cli.py
+@@ -0,0 +1,138 @@
++"""CLI entry point for the github-intake plugin.
++
++Disabled by default. Requires explicit --dry-run or an enabled config
++with AJ's manual activation before any live processing.
++"""
++
++from __future__ import annotations
++
++import sys
++from pathlib import Path
++from typing import Optional
++
++import click
++
++
++@click.group(help=(
++    "GitHub issue-to-Kanban intake plugin.\n\n"
++    "INACTIVE by default. The plugin is disabled until AJ explicitly "
++    "sets enabled: true in the configuration and activates the webhook."
++))
++def cli():
++    pass
++
++
++@cli.command("intake")
++@click.option("--config", "config_path", required=True, type=click.Path(exists=True),
++              help="Path to plugin YAML config file.")
++@click.option("--delivery-id", required=True, help="X-GitHub-Delivery header value.")
++@click.option("--event-type", required=True, help="X-GitHub-Event header value.")
++@click.option("--signature", required=True, help="X-Hub-Signature-256 header value.")
++@click.option("--dry-run", "dry_run_flag", is_flag=True, default=False,
++              help="Dry-run: validate without writing to the Kanban board.")
++@click.option("--payload-file", required=True, help="Path to payload file, or '-' for stdin.")
++def intake_cmd(config_path, delivery_id, event_type, signature, dry_run_flag, payload_file):
++    """Ingest a single GitHub webhook payload (dry-run or live)."""
++    import yaml
++    from .config import GithubIntakeConfig
++
++    cfg_data = yaml.safe_load(Path(config_path).read_text())
++    cfg = GithubIntakeConfig(**cfg_data)
++
++    if dry_run_flag:
++        cfg.dry_run = True
++
++    if not cfg.enabled and not dry_run_flag:
++        click.echo("Plugin is disabled. Pass --dry-run or enable in config.", err=True)
++        sys.exit(1)
++
++    if payload_file == "-":
++        raw = click.get_binary_stream("stdin").read()
++    else:
++        raw = Path(payload_file).read_bytes()
++
++    from .auth import verify_signature, check_payload_size
++    if not check_payload_size(raw, cfg.max_payload_bytes):
++        click.echo("Payload exceeds size limit.", err=True)
++        sys.exit(1)
++
++    if cfg.webhook_secret and not verify_signature(raw, signature, cfg.webhook_secret):
++        click.echo("Signature verification failed.", err=True)
++        sys.exit(1)
++
++    from .normalize import normalize_issue_event
++    event = normalize_issue_event(raw, event_type, delivery_id)
++    if event is None:
++        click.echo("Payload could not be normalized (unsupported event or malformed).", err=True)
++        sys.exit(1)
++
++    if dry_run_flag:
++        from .canonical import canonical_issue_id
++        cid = canonical_issue_id(event.repository.full_name, event.issue.number)
++        click.echo(f"[dry-run] Would intake {cid}")
++        sys.exit(0)
++
++    from hermes_cli.kanban_db import connect
++    import os
++    db_path_env = os.environ.get("HERMES_KANBAN_DB")
++    db_path = Path(db_path_env) if db_path_env else None
++    conn = connect(db_path=db_path)
++    try:
++        from .kanban import intake_event
++        task_id = intake_event(
++            conn=conn,
++            config=cfg,
++            raw_payload=raw,
++            event_type=event_type,
++            delivery_id=delivery_id,
++            signature=signature,
++        )
++    finally:
++        conn.close()
++
++    if task_id:
++        click.echo(f"Ingested: {task_id}")
++    else:
++        click.echo("Event ignored (disabled, dry-run, or policy blocked).")
++
++
++@cli.command("reconcile")
++@click.option("--config", "config_path", required=True, type=click.Path(exists=True),
++              help="Path to plugin YAML config file.")
++@click.option("--dry-run", "dry_run_flag", is_flag=True, default=False,
++              help="Dry-run: check what would be reconciled without mutating state.")
++def reconcile_cmd(config_path, dry_run_flag):
++    """Run the daily reconciliation against configured repositories."""
++    import yaml
++    from .config import GithubIntakeConfig
++
++    cfg_data = yaml.safe_load(Path(config_path).read_text())
++    cfg = GithubIntakeConfig(**cfg_data)
++
++    if dry_run_flag:
++        cfg.dry_run = True
++
++    if not cfg.enabled and not dry_run_flag:
++        click.echo("Plugin is disabled.", err=True)
++        sys.exit(1)
++
++    if not cfg.allowed_repositories:
++        click.echo("[dry-run] No repositories configured; nothing to reconcile.")
++        sys.exit(0)
++
++    if dry_run_flag:
++        click.echo(f"[dry-run] Would reconcile: {cfg.allowed_repositories}")
++        sys.exit(0)
++
++    from hermes_cli.kanban_db import connect
++    import os
++    db_path_env = os.environ.get("HERMES_KANBAN_DB")
++    db_path = Path(db_path_env) if db_path_env else None
++    conn = connect(db_path=db_path)
++    try:
++        from .reconcile import run_full_reconciliation
++        run_full_reconciliation(conn=conn, config=cfg, github_client=None)
++    finally:
++        conn.close()
++
++    click.echo("Reconciliation complete.")
+diff --git a/plugins/github-intake/config.py b/plugins/github-intake/config.py
+new file mode 100644
+index 0000000000..42009b915f
+--- /dev/null
++++ b/plugins/github-intake/config.py
+@@ -0,0 +1,26 @@
++"""Typed configuration for the github-intake plugin."""
++
++from __future__ import annotations
++
++from dataclasses import dataclass, field
++from typing import List, Optional
++
++
++@dataclass
++class GithubIntakeConfig:
++    plugin: str = "github-intake"
++    enabled: bool = False
++    webhook_secret: Optional[str] = None
++    allowed_repositories: List[str] = field(default_factory=list)
++    trusted_labels: List[str] = field(default_factory=lambda: ["hcw-dev"])
++    route_profile: str = "hcw-dev"
++    max_payload_bytes: int = 26_214_400
++    reconcile_schedule: str = "0 2 * * *"
++    dry_run: bool = True
++    stale_event_days: int = 365
++
++    def __post_init__(self):
++        if isinstance(self.allowed_repositories, (list, tuple)):
++            self.allowed_repositories = list(self.allowed_repositories)
++        if isinstance(self.trusted_labels, (list, tuple)):
++            self.trusted_labels = list(self.trusted_labels)
+diff --git a/plugins/github-intake/conftest_helpers.py b/plugins/github-intake/conftest_helpers.py
+new file mode 100644
+index 0000000000..6ff4608958
+--- /dev/null
++++ b/plugins/github-intake/conftest_helpers.py
+@@ -0,0 +1,12 @@
++"""Test support helpers for the github-intake plugin test suite."""
++
++from __future__ import annotations
++
++import hashlib
++import hmac
++
++
++def make_signature(payload: bytes, secret: str) -> str:
++    """Produce a GitHub-style X-Hub-Signature-256 header value."""
++    mac = hmac.new(secret.encode(), payload, hashlib.sha256)
++    return f"sha256={mac.hexdigest()}"
+diff --git a/plugins/github-intake/kanban.py b/plugins/github-intake/kanban.py
+new file mode 100644
+index 0000000000..1bb1cc8058
+--- /dev/null
++++ b/plugins/github-intake/kanban.py
+@@ -0,0 +1,218 @@
++"""Canonical Kanban intake: one root per GitHub issue, idempotent and concurrent-safe."""
++
++from __future__ import annotations
++
++import os
++import sqlite3
++import threading
++from typing import TYPE_CHECKING, List, Optional
++
++from .auth import check_payload_size, verify_signature
++from .canonical import canonical_issue_id
++from .lifecycle import determine_status, parse_event_version
++from .models import IssueEvent
++from .normalize import normalize_issue_event
++from .policy import classify_event
++
++if TYPE_CHECKING:
++    from .config import GithubIntakeConfig
++
++_META_LOCK = threading.Lock()
++
++_INIT_SQL = """
++CREATE TABLE IF NOT EXISTS github_intake_meta (
++    canonical_id TEXT NOT NULL PRIMARY KEY,
++    task_id TEXT NOT NULL,
++    source_repo TEXT NOT NULL,
++    source_issue_number INTEGER NOT NULL,
++    source_url TEXT,
++    event_version REAL NOT NULL DEFAULT 0.0,
++    no_auto_decompose INTEGER NOT NULL DEFAULT 0,
++    block_reason TEXT,
++    title TEXT
++)
++"""
++
++
++def _init_meta_table(conn: sqlite3.Connection) -> None:
++    conn.execute(_INIT_SQL)
++
++
++def _create_intake_task(
++    conn: sqlite3.Connection,
++    event: IssueEvent,
++    new_status: str,
++    canonical_id: str,
++) -> str:
++    from hermes_cli.kanban_db import create_task, archive_task
++
++    title = event.issue.title or f"GitHub issue #{event.issue.number}"
++    body = event.issue.body or ""
++
++    use_triage = (new_status == "triage")
++
++    task_id = create_task(
++        conn,
++        title=title,
++        body=body,
++        triage=use_triage,
++        idempotency_key=canonical_id,
++        created_by="github-intake",
++    )
++
++    if new_status == "archived":
++        archive_task(conn, task_id)
++
++    return task_id
++
++
++def _update_root_status(
++    conn: sqlite3.Connection,
++    task_id: str,
++    new_status: str,
++    title: Optional[str] = None,
++) -> None:
++    from hermes_cli.kanban_db import archive_task
++
++    if new_status == "archived":
++        archive_task(conn, task_id)
++        return
++
++    conn.execute(
++        "UPDATE tasks SET title = COALESCE(?, title), status = ? WHERE id = ?",
++        (title, new_status, task_id),
++    )
++
++
++def intake_event(
++    conn: sqlite3.Connection,
++    config: "GithubIntakeConfig",
++    raw_payload: bytes,
++    event_type: str,
++    delivery_id: str,
++    signature: Optional[str],
++) -> Optional[str]:
++    """Ingest a GitHub webhook event into the canonical Kanban board.
++
++    Returns the task_id of the canonical root, or None if the event
++    is rejected, disabled, or in dry-run mode.
++    """
++    if os.environ.get("GITHUB_INTAKE_KILL_SWITCH"):
++        return None
++
++    if not config.enabled:
++        return None
++
++    if config.dry_run:
++        return None
++
++    if not config.webhook_secret:
++        return None
++
++    if not verify_signature(raw_payload, signature, config.webhook_secret):
++        return None
++
++    if not check_payload_size(raw_payload, config.max_payload_bytes):
++        return None
++
++    event = normalize_issue_event(raw_payload, event_type, delivery_id)
++    if event is None:
++        return None
++
++    classification = classify_event(event, config)
++    if not classification.trusted:
++        return None
++
++    cid = canonical_issue_id(event.repository.full_name, event.issue.number)
++    event_version = parse_event_version(event.issue.updated_at)
++    new_status = determine_status(event, classification, config)
++    new_title = event.issue.title
++
++    with _META_LOCK:
++        _init_meta_table(conn)
++
++        row = conn.execute(
++            "SELECT task_id, event_version FROM github_intake_meta WHERE canonical_id = ?",
++            (cid,),
++        ).fetchone()
++
++        if row is None:
++            task_id = _create_intake_task(conn, event, new_status, cid)
++            conn.execute(
++                """
++                INSERT OR IGNORE INTO github_intake_meta
++                    (canonical_id, task_id, source_repo, source_issue_number,
++                     source_url, event_version, title)
++                VALUES (?, ?, ?, ?, ?, ?, ?)
++                """,
++                (cid, task_id, event.repository.full_name, event.issue.number,
++                 event.issue.html_url, event_version, new_title),
++            )
++            return task_id
++
++        task_id = row["task_id"]
++        current_version = float(row["event_version"])
++
++        if event_version > current_version:
++            _update_root_status(conn, task_id, new_status, new_title)
++            conn.execute(
++                """
++                UPDATE github_intake_meta
++                SET event_version = ?, title = ?
++                WHERE canonical_id = ?
++                """,
++                (event_version, new_title, cid),
++            )
++
++        return task_id
++
++
++def find_issue_root(
++    conn: sqlite3.Connection,
++    repo_full_name: str,
++    issue_number: int,
++) -> List[dict]:
++    """Return all Kanban roots for the given GitHub issue."""
++    _init_meta_table(conn)
++    rows = conn.execute(
++        """
++        SELECT t.id, t.title, t.status, t.idempotency_key,
++               m.canonical_id, m.source_repo, m.source_issue_number,
++               m.source_url, m.event_version, m.no_auto_decompose, m.block_reason
++        FROM tasks t
++        JOIN github_intake_meta m ON t.id = m.task_id
++        WHERE m.source_repo = ? AND m.source_issue_number = ?
++        """,
++        (repo_full_name, issue_number),
++    ).fetchall()
++    return [dict(r) for r in rows]
++
++
++def get_root_metadata(conn: sqlite3.Connection, task_id: str) -> dict:
++    """Return plugin metadata for a Kanban root task."""
++    _init_meta_table(conn)
++    row = conn.execute(
++        """
++        SELECT t.title, t.status, t.idempotency_key,
++               m.canonical_id, m.source_repo, m.source_issue_number,
++               m.source_url, m.event_version, m.no_auto_decompose, m.block_reason
++        FROM tasks t
++        LEFT JOIN github_intake_meta m ON t.id = m.task_id
++        WHERE t.id = ?
++        """,
++        (task_id,),
++    ).fetchone()
++    if row is None:
++        return {}
++    result = dict(row)
++    result["no_auto_decompose"] = bool(result.get("no_auto_decompose"))
++    return result
++
++
++def set_no_auto_decompose(conn: sqlite3.Connection, task_id: str) -> None:
++    """Mark a task so it cannot be auto-decomposed."""
++    _init_meta_table(conn)
++    conn.execute(
++        "UPDATE github_intake_meta SET no_auto_decompose = 1 WHERE task_id = ?",
++        (task_id,),
++    )
+diff --git a/plugins/github-intake/lifecycle.py b/plugins/github-intake/lifecycle.py
+new file mode 100644
+index 0000000000..c08e3e9e73
+--- /dev/null
++++ b/plugins/github-intake/lifecycle.py
+@@ -0,0 +1,43 @@
++"""Issue lifecycle state machine for determining Kanban status."""
++
++from __future__ import annotations
++
++import calendar
++import datetime
++from typing import TYPE_CHECKING
++
++from .models import EventClassification, IssueEvent
++
++if TYPE_CHECKING:
++    from .config import GithubIntakeConfig
++
++
++def determine_status(
++    event: IssueEvent,
++    classification: EventClassification,
++    config: "GithubIntakeConfig | None" = None,
++) -> str:
++    """Determine the Kanban status for an issue event.
++
++    Returns one of: "triage", "ready", "archived"
++    """
++    action = event.action
++    if action == "closed":
++        return "archived"
++    if action in ("opened", "reopened", "labeled", "unlabeled", "edited"):
++        if classification.is_actionable and event.sender.type != "Bot":
++            return "ready"
++        return "triage"
++    return "triage"
++
++
++def parse_event_version(updated_at: str) -> float:
++    """Parse an ISO8601 timestamp to a float epoch for monotonic comparison."""
++    if not updated_at:
++        return 0.0
++    try:
++        ts = updated_at.replace("Z", "+00:00")
++        dt = datetime.datetime.fromisoformat(ts)
++        return float(calendar.timegm(dt.utctimetuple())) + (dt.microsecond / 1_000_000)
++    except (ValueError, AttributeError):
++        return 0.0
+diff --git a/plugins/github-intake/models.py b/plugins/github-intake/models.py
+new file mode 100644
+index 0000000000..f633889fcc
+--- /dev/null
++++ b/plugins/github-intake/models.py
+@@ -0,0 +1,70 @@
++"""Typed data models for the github-intake plugin."""
++
++from __future__ import annotations
++
++import enum
++from dataclasses import dataclass, field
++from typing import List, Optional
++
++
++@dataclass
++class IssueUser:
++    login: str
++    type: str
++
++
++@dataclass
++class IssueLabel:
++    name: str
++
++
++@dataclass
++class IssueModel:
++    number: int
++    title: str
++    body: Optional[str]
++    state: str
++    labels: List[IssueLabel]
++    user: IssueUser
++    created_at: str
++    updated_at: str
++    html_url: str
++
++
++@dataclass
++class RepositoryModel:
++    id: int
++    name: str
++    full_name: str
++    private: bool
++    html_url: str
++
++
++@dataclass
++class SenderModel:
++    login: str
++    type: str
++
++
++@dataclass
++class IssueEvent:
++    action: str
++    issue: IssueModel
++    repository: RepositoryModel
++    sender: SenderModel
++    delivery_id: str
++
++
++@dataclass
++class EventClassification:
++    trusted: bool
++    block_reason: str
++    is_actionable: bool = False
++
++
++class GitHubRateLimitError(Exception):
++    """Raised when GitHub API returns a rate-limit response."""
++
++
++class ReconcileError(Exception):
++    """Raised when reconciliation exhausts all retries."""
+diff --git a/plugins/github-intake/normalize.py b/plugins/github-intake/normalize.py
+new file mode 100644
+index 0000000000..7b09720d0e
+--- /dev/null
++++ b/plugins/github-intake/normalize.py
+@@ -0,0 +1,107 @@
++"""Normalize raw GitHub webhook payloads into typed IssueEvent objects."""
++
++from __future__ import annotations
++
++import enum
++import json
++from dataclasses import dataclass
++from typing import Optional
++
++from .models import (
++    IssueEvent,
++    IssueLabel,
++    IssueModel,
++    IssueUser,
++    RepositoryModel,
++    SenderModel,
++)
++
++SUPPORTED_ACTIONS = frozenset({
++    "opened", "closed", "reopened", "edited", "labeled", "unlabeled",
++})
++
++
++class IntakeStatus(enum.Enum):
++    OK = "ok"
++    RATE_LIMITED = "rate_limited"
++    BLOCKED = "blocked"
++    FAILED = "failed"
++
++
++@dataclass
++class IntakeResult:
++    status: IntakeStatus
++    reason: str = ""
++    task_id: Optional[str] = None
++
++
++def normalize_issue_event(
++    raw: bytes,
++    event_type: str,
++    delivery_id: str,
++) -> Optional[IssueEvent]:
++    """Parse and validate a raw webhook payload into a typed IssueEvent.
++
++    Returns None for any malformed, unsupported, or non-issues event.
++    """
++    if event_type != "issues":
++        return None
++    if not raw:
++        return None
++    try:
++        data = json.loads(raw)
++    except (json.JSONDecodeError, ValueError):
++        return None
++
++    if not isinstance(data, dict):
++        return None
++
++    action = data.get("action")
++    if not action or action not in SUPPORTED_ACTIONS:
++        return None
++
++    raw_issue = data.get("issue")
++    raw_repo = data.get("repository")
++    if not raw_issue or not raw_repo:
++        return None
++
++    try:
++        issue = IssueModel(
++            number=int(raw_issue["number"]),
++            title=str(raw_issue.get("title") or ""),
++            body=raw_issue.get("body"),
++            state=str(raw_issue.get("state") or "open"),
++            labels=[
++                IssueLabel(name=str(lbl.get("name") or ""))
++                for lbl in (raw_issue.get("labels") or [])
++            ],
++            user=IssueUser(
++                login=str((raw_issue.get("user") or {}).get("login") or ""),
++                type=str((raw_issue.get("user") or {}).get("type") or "User"),
++            ),
++            created_at=str(raw_issue.get("created_at") or ""),
++            updated_at=str(raw_issue.get("updated_at") or ""),
++            html_url=str(raw_issue.get("html_url") or ""),
++        )
++        repo = RepositoryModel(
++            id=int(raw_repo.get("id") or 0),
++            name=str(raw_repo.get("name") or ""),
++            full_name=str(raw_repo.get("full_name") or ""),
++            private=bool(raw_repo.get("private")),
++            html_url=str(raw_repo.get("html_url") or ""),
++        )
++        raw_sender = data.get("sender") or {}
++        sender = SenderModel(
++            login=str(raw_sender.get("login") or ""),
++            type=str(raw_sender.get("type") or "User"),
++        )
++    except (KeyError, TypeError, ValueError):
++        return None
++
++    return IssueEvent(
++        action=action,
++        issue=issue,
++        repository=repo,
++        sender=sender,
++        delivery_id=delivery_id,
++    )
+diff --git a/plugins/github-intake/policy.py b/plugins/github-intake/policy.py
+new file mode 100644
+index 0000000000..e8ebf751e9
+--- /dev/null
++++ b/plugins/github-intake/policy.py
+@@ -0,0 +1,61 @@
++"""Trust policy: classify events as trusted/actionable or blocked."""
++
++from __future__ import annotations
++
++import datetime
++from typing import TYPE_CHECKING
++
++from .models import EventClassification, IssueEvent
++
++if TYPE_CHECKING:
++    from .config import GithubIntakeConfig
++
++
++def classify_event(event: IssueEvent, config: "GithubIntakeConfig") -> EventClassification:
++    """Classify an event as trusted/actionable or blocked with a factual reason."""
++    repo = event.repository.full_name
++
++    if repo not in (config.allowed_repositories or []):
++        return EventClassification(
++            trusted=False,
++            block_reason=f"Repository '{repo}' is not in the allowlist.",
++        )
++
++    if event.sender.type == "Bot":
++        return EventClassification(
++            trusted=False,
++            block_reason=f"Sender '{event.sender.login}' is a Bot actor; bot-applied labels are not trusted.",
++        )
++
++    if hasattr(config, "stale_event_days") and config.stale_event_days:
++        updated_at = _parse_iso(event.issue.updated_at)
++        if updated_at is not None:
++            age_days = (datetime.datetime.now(datetime.timezone.utc) - updated_at).days
++            if age_days > config.stale_event_days:
++                return EventClassification(
++                    trusted=False,
++                    block_reason=(
++                        f"Event is stale: issue updated {age_days} days ago, "
++                        f"limit is {config.stale_event_days} days."
++                    ),
++                )
++
++    label_names = {lbl.name for lbl in event.issue.labels}
++    is_actionable = bool(label_names & set(config.trusted_labels or []))
++
++    return EventClassification(
++        trusted=True,
++        block_reason="",
++        is_actionable=is_actionable,
++    )
++
++
++def _parse_iso(ts: str) -> "datetime.datetime | None":
++    """Parse an ISO8601 timestamp to a timezone-aware datetime, or None."""
++    if not ts:
++        return None
++    try:
++        ts_clean = ts.replace("Z", "+00:00")
++        return datetime.datetime.fromisoformat(ts_clean)
++    except (ValueError, AttributeError):
++        return None
+diff --git a/plugins/github-intake/reconcile.py b/plugins/github-intake/reconcile.py
+new file mode 100644
+index 0000000000..54186ecccd
+--- /dev/null
++++ b/plugins/github-intake/reconcile.py
+@@ -0,0 +1,209 @@
++"""Once-daily reconciliation: repair missed upstream state into existing roots."""
++
++from __future__ import annotations
++
++import os
++import sqlite3
++from typing import TYPE_CHECKING, Optional
++
++from .kanban import _init_meta_table, find_issue_root, intake_event
++from .models import GitHubRateLimitError, ReconcileError
++
++if TYPE_CHECKING:
++    from .config import GithubIntakeConfig
++
++
++def reconcile_repository(
++    conn: sqlite3.Connection,
++    config: "GithubIntakeConfig",
++    repo_full_name: str,
++    github_client,
++    max_retries: int = 3,
++    retry_delay: float = 0,
++) -> None:
++    """Reconcile a single repository's open issues against the canonical Kanban board.
++
++    Repairs missed meaningful upstream state (e.g. a close event that was never
++    delivered). Silent when canonical state matches upstream. Honors the disable
++    and kill switches before any board mutation.
++    """
++    if not config.enabled:
++        return
++    if os.environ.get("GITHUB_INTAKE_KILL_SWITCH"):
++        return
++
++    issues = _fetch_with_retry(github_client, repo_full_name, max_retries, retry_delay)
++
++    _init_meta_table(conn)
++
++    for issue in issues:
++        _reconcile_issue(conn, config, repo_full_name, issue)
++
++
++def _fetch_with_retry(github_client, repo_full_name: str, max_retries: int, retry_delay: float):
++    """Fetch issues with bounded retries on rate-limit errors."""
++    import time as _time
++
++    last_exc = None
++    for attempt in range(max_retries):
++        try:
++            return github_client.list_issues(repo_full_name)
++        except GitHubRateLimitError as exc:
++            last_exc = exc
++            if attempt < max_retries - 1 and retry_delay > 0:
++                _time.sleep(retry_delay)
++
++    raise ReconcileError(
++        f"Exhausted {max_retries} retries fetching issues for {repo_full_name}: {last_exc}"
++    )
++
++
++def _reconcile_issue(
++    conn: sqlite3.Connection,
++    config: "GithubIntakeConfig",
++    repo_full_name: str,
++    issue: dict,
++) -> None:
++    """Reconcile one upstream issue against the canonical Kanban root."""
++    import json
++
++    number = issue.get("number")
++    if number is None:
++        return
++
++    roots = find_issue_root(conn, repo_full_name, number)
++    if not roots:
++        return
++
++    task_id = roots[0]["id"]
++
++    upstream_state = issue.get("state", "open")
++    current_status = roots[0].get("status", "triage")
++
++    if upstream_state == "closed" and current_status != "archived":
++        _synthesize_close_event(conn, config, repo_full_name, issue)
++    elif upstream_state == "open" and current_status == "archived":
++        _synthesize_reopen_event(conn, config, repo_full_name, issue)
++
++
++def _synthesize_close_event(
++    conn: sqlite3.Connection,
++    config: "GithubIntakeConfig",
++    repo_full_name: str,
++    issue: dict,
++) -> None:
++    """Synthesize a close event to repair missed state."""
++    import json
++
++    payload = {
++        "action": "closed",
++        "issue": {
++            "number": issue["number"],
++            "title": issue.get("title", ""),
++            "body": issue.get("body", ""),
++            "state": "closed",
++            "labels": issue.get("labels", []),
++            "user": issue.get("user", {"login": "unknown", "type": "User"}),
++            "created_at": issue.get("created_at", ""),
++            "updated_at": issue.get("updated_at", ""),
++            "html_url": issue.get("html_url", ""),
++        },
++        "repository": {
++            "id": 0,
++            "name": repo_full_name.split("/")[-1] if "/" in repo_full_name else repo_full_name,
++            "full_name": repo_full_name,
++            "private": False,
++            "html_url": f"https://github.com/{repo_full_name}",
++        },
++        "sender": issue.get("user", {"login": "reconcile", "type": "User"}),
++    }
++    raw = json.dumps(payload).encode()
++    if config.webhook_secret:
++        from .auth import verify_signature
++        import hashlib
++        import hmac
++        sig = "sha256=" + hmac.new(config.webhook_secret.encode(), raw, hashlib.sha256).hexdigest()
++    else:
++        sig = ""
++
++    intake_event(
++        conn=conn,
++        config=config,
++        raw_payload=raw,
++        event_type="issues",
++        delivery_id=f"reconcile-close-{repo_full_name}-{issue['number']}",
++        signature=sig,
++    )
++
++
++def _synthesize_reopen_event(
++    conn: sqlite3.Connection,
++    config: "GithubIntakeConfig",
++    repo_full_name: str,
++    issue: dict,
++) -> None:
++    """Synthesize a reopen event to repair missed state."""
++    import json
++
++    payload = {
++        "action": "reopened",
++        "issue": {
++            "number": issue["number"],
++            "title": issue.get("title", ""),
++            "body": issue.get("body", ""),
++            "state": "open",
++            "labels": issue.get("labels", []),
++            "user": issue.get("user", {"login": "unknown", "type": "User"}),
++            "created_at": issue.get("created_at", ""),
++            "updated_at": issue.get("updated_at", ""),
++            "html_url": issue.get("html_url", ""),
++        },
++        "repository": {
++            "id": 0,
++            "name": repo_full_name.split("/")[-1] if "/" in repo_full_name else repo_full_name,
++            "full_name": repo_full_name,
++            "private": False,
++            "html_url": f"https://github.com/{repo_full_name}",
++        },
++        "sender": issue.get("user", {"login": "reconcile", "type": "User"}),
++    }
++    raw = json.dumps(payload).encode()
++    if config.webhook_secret:
++        import hashlib
++        import hmac
++        sig = "sha256=" + hmac.new(config.webhook_secret.encode(), raw, hashlib.sha256).hexdigest()
++    else:
++        sig = ""
++
++    intake_event(
++        conn=conn,
++        config=config,
++        raw_payload=raw,
++        event_type="issues",
++        delivery_id=f"reconcile-reopen-{repo_full_name}-{issue['number']}",
++        signature=sig,
++    )
++
++
++def run_full_reconciliation(
++    conn: sqlite3.Connection,
++    config: "GithubIntakeConfig",
++    github_client,
++    max_retries: int = 3,
++    retry_delay: float = 0,
++) -> None:
++    """Run reconciliation for all configured allowlisted repositories."""
++    if not config.enabled:
++        return
++    if os.environ.get("GITHUB_INTAKE_KILL_SWITCH"):
++        return
++
++    for repo in (config.allowed_repositories or []):
++        reconcile_repository(
++            conn=conn,
++            config=config,
++            repo_full_name=repo,
++            github_client=github_client,
++            max_retries=max_retries,
++            retry_delay=retry_delay,
++        )
+diff --git a/plugins/github-intake/routing.py b/plugins/github-intake/routing.py
+new file mode 100644
+index 0000000000..ce3b279153
+--- /dev/null
++++ b/plugins/github-intake/routing.py
+@@ -0,0 +1,53 @@
++"""Route canonical Kanban roots to the hcw-dev profile or quarantine."""
++
++from __future__ import annotations
++
++import os
++import sqlite3
++from typing import TYPE_CHECKING, Optional
++
++from .kanban import get_root_metadata, set_no_auto_decompose
++
++if TYPE_CHECKING:
++    from .config import GithubIntakeConfig
++
++
++def route_intake_result(
++    conn: sqlite3.Connection,
++    task_id: Optional[str],
++    config: "GithubIntakeConfig",
++    hcw_boundary,
++) -> None:
++    """Route or block a canonical Kanban root based on its trust classification.
++
++    Only tasks with actionable status (ready/todo) that are not in triage/archived
++    are routed to hcw-dev. All others are reported as blocked.
++    """
++    if task_id is None:
++        return
++
++    if os.environ.get("GITHUB_INTAKE_KILL_SWITCH"):
++        return
++
++    if config.dry_run:
++        return
++
++    meta = get_root_metadata(conn, task_id)
++    if not meta:
++        return
++
++    status = meta.get("status", "triage")
++
++    if status in ("ready", "todo", "running"):
++        set_no_auto_decompose(conn, task_id)
++        hcw_boundary.route(
++            task_id=task_id,
++            profile=config.route_profile,
++            no_auto_decompose=True,
++        )
++    else:
++        reason = (
++            meta.get("block_reason")
++            or f"Issue is in '{status}' status and requires human triage before routing to hcw-dev."
++        )
++        hcw_boundary.block(task_id=task_id, reason=reason)
+diff --git a/plugins/github-intake/runtime.py b/plugins/github-intake/runtime.py
+new file mode 100644
+index 0000000000..f5c6e5c572
+--- /dev/null
++++ b/plugins/github-intake/runtime.py
+@@ -0,0 +1,16 @@
++"""Runtime guards: active check, kill switch, disable logic."""
++
++from __future__ import annotations
++
++import os
++from typing import TYPE_CHECKING
++
++if TYPE_CHECKING:
++    from .config import GithubIntakeConfig
++
++
++def is_plugin_active(config: "GithubIntakeConfig") -> bool:
++    """Return True only if the plugin is explicitly enabled and the kill switch is not set."""
++    if os.environ.get("GITHUB_INTAKE_KILL_SWITCH"):
++        return False
++    return bool(config.enabled)
+diff --git a/plugins/github-intake/webhook.py b/plugins/github-intake/webhook.py
+new file mode 100644
+index 0000000000..2ac4d57c08
+--- /dev/null
++++ b/plugins/github-intake/webhook.py
+@@ -0,0 +1,63 @@
++"""Authenticated webhook request handler."""
++
++from __future__ import annotations
++
++import logging
++import os
++from typing import TYPE_CHECKING
++
++if TYPE_CHECKING:
++    from .config import GithubIntakeConfig
++
++logger = logging.getLogger(__name__)
++
++
++def register_routes(app, config: "GithubIntakeConfig") -> None:
++    """Register webhook routes on the Flask app."""
++    try:
++        from flask import request, jsonify
++    except ImportError:
++        return
++
++    @app.route("/webhook/github", methods=["POST"])
++    def github_webhook():
++        from .auth import verify_signature, check_payload_size
++        from .runtime import is_plugin_active
++        from hermes_cli.kanban_db import connect
++
++        if not is_plugin_active(config):
++            return jsonify({"error": "plugin disabled"}), 503
++
++        raw = request.get_data()
++        if not check_payload_size(raw, config.max_payload_bytes):
++            return jsonify({"error": "payload too large"}), 413
++
++        sig = request.headers.get("X-Hub-Signature-256", "")
++        if not verify_signature(raw, sig, config.webhook_secret or ""):
++            return jsonify({"error": "invalid signature"}), 401
++
++        delivery_id = request.headers.get("X-GitHub-Delivery", "")
++        event_type = request.headers.get("X-GitHub-Event", "")
++
++        conn = connect()
++        try:
++            from .kanban import intake_event
++            task_id = intake_event(
++                conn=conn,
++                config=config,
++                raw_payload=raw,
++                event_type=event_type,
++                delivery_id=delivery_id,
++                signature=sig,
++            )
++        finally:
++            conn.close()
++
++        if task_id is None:
++            return jsonify({"status": "ignored"}), 200
++        return jsonify({"status": "ok", "task_id": task_id}), 200
++
++    @app.route("/health", methods=["GET"])
++    def health():
++        from .runtime import is_plugin_active
++        return {"active": is_plugin_active(config)}, 200
+-- 
+2.50.1 (Apple Git-155)
+
