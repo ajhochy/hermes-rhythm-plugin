@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from plugins.rhythm.dashboard import plugin_api
 from plugins.rhythm.packaging.cutover import (
     APPROVED_DESTINATIONS,
     POLICY_DISABLED_ACTIONS,
@@ -49,6 +50,54 @@ def test_issue_14_c2_ledger_rejects_missing_proof_secret_leaks_or_unapproved_wri
     ledger = run_fixture_cutover(REPO_ROOT, tmp_path / "hermes-home" / "profiles" / "m10c")
     ledger["modules"][0]["allowed_write_confirmation"] = {"operation": "messages.send"}
     with pytest.raises(CutoverError, match="unapproved or unexecuted"):
+        validate_cutover_ledger(ledger)
+
+
+def test_issue_14_c2_ledger_exhaustively_attributes_every_receipt_gated_write_to_its_module(tmp_path):
+    """Regression: one representative write per screen hid accepted receipt-gated operations."""
+    ledger = run_fixture_cutover(REPO_ROOT, tmp_path / "hermes-home" / "profiles" / "m10")
+    writes = {
+        row["module"]: set(row["allowed_write_confirmations"]["operations"])
+        for row in ledger["modules"]
+    }
+    workspace_schema_operations = set(
+        plugin_api.WorkspaceOperation.model_json_schema()["properties"]["operation"]["enum"]
+    )
+    ledger_workspace_operations = set().union(
+        *(operations for module, operations in writes.items() if module != "tasks")
+    )
+
+    assert writes["tasks"] == {"tasks.complete", "tasks.reschedule"}
+    assert (
+        workspace_schema_operations
+        == set(plugin_api._M5_UPSTREAM)
+        == ledger_workspace_operations
+    )
+    assert all(
+        operation.split(".", 1)[0] == module
+        for module, operations in writes.items()
+        if module != "tasks"
+        for operation in operations
+    )
+    assert writes["planner"] == {
+        "planner.schedule-task", "planner.update-task",
+        "planner.update-project-step", "planner.schedule-project-step",
+    }
+    assert {"messages.mark-read", "messages.mark-unread"} == writes["messages"]
+    assert not any(
+        operation.startswith(("messages.create", "messages.send"))
+        for operation in writes["messages"]
+    )
+    assert "facilities.delete-series" in writes["facilities"]
+
+    ledger["modules"][1]["allowed_write_confirmations"]["operations"].pop()
+    with pytest.raises(CutoverError, match="write receipt evidence"):
+        validate_cutover_ledger(ledger)
+
+    ledger = run_fixture_cutover(REPO_ROOT, tmp_path / "hermes-home" / "profiles" / "m10b")
+    planner = next(row for row in ledger["modules"] if row["module"] == "planner")
+    planner["allowed_write_confirmations"]["operations"].append("messages.mark-read")
+    with pytest.raises(CutoverError, match="write receipt evidence"):
         validate_cutover_ledger(ledger)
 
 

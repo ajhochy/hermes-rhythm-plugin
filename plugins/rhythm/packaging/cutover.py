@@ -63,6 +63,69 @@ _ALLOWED_WRITE_CONFIRMATIONS: dict[str, dict[str, Any]] = {
     "messages": {"operation": "messages.mark-read", "evidence": {"suite": "shared-react18-react19", "test_file": "tests/messages.screen.test.ts", "test": "opens a thread, marks it read, and shows the transcript and participants", "result": "pass"}},
     "facilities": {"operation": "facilities.update-reservation", "evidence": {"suite": "shared-react18-react19", "test_file": "tests/facilities.screen.test.ts", "test": "binds facility writes to the exact foreground confirmation payload before mutation", "result": "pass"}},
 }
+
+
+def _accepted_write_receipts() -> dict[str, dict[str, Any]]:
+    """Introspect the real closed server models and their upstream mapping.
+
+    The ledger must neither narrow the accepted surface nor invent a write the
+    receipt endpoint cannot execute.  This avoids a fragile source-text scan.
+    """
+    from ..dashboard import plugin_api
+
+    workspace_operations = set(
+        plugin_api.WorkspaceOperation.model_json_schema()["properties"]["operation"]["enum"]
+    )
+    upstream_operations = set(plugin_api._M5_UPSTREAM)
+    if workspace_operations != upstream_operations:
+        raise CutoverError("workspace receipt surface is not exact")
+    task_operations = set(plugin_api.TaskOperation.model_json_schema()["properties"]["operation"]["enum"])
+    if task_operations != {"complete", "reschedule"}:
+        raise CutoverError("task receipt surface is not exact")
+
+    workspace_evidence = {
+        "suite": "receipt-contract",
+        "test_file": "tests/plugins/test_rhythm_m5_contract.py",
+        "tests": [
+            "test_m5_operation_requires_bound_confirmation_and_exact_payload",
+            "test_m5_duplicate_receipts_allow_exactly_one_mutation",
+        ],
+        "result": "pass",
+    }
+    receipts = {
+        module: {
+            "operations": [],
+            "confirmation_endpoint": "/workspace-operations/confirmation",
+            "evidence": workspace_evidence,
+        }
+        for module in APPROVED_DESTINATIONS
+    }
+    for operation in sorted(workspace_operations):
+        module = operation.split(".", 1)[0]
+        if module not in receipts:
+            raise CutoverError("workspace operation has no approved module attribution")
+        receipts[module]["operations"].append(operation)
+    flattened_workspace_operations = {
+        operation
+        for module, receipt in receipts.items()
+        if module != "tasks"
+        for operation in receipt["operations"]
+    }
+    if flattened_workspace_operations != workspace_operations:
+        raise CutoverError("workspace receipt attribution is not exact")
+    receipts["tasks"] = {
+        "operations": [f"tasks.{operation}" for operation in sorted(task_operations)],
+        "confirmation_endpoint": "/tasks/{task_id}/confirmation",
+        "evidence": {
+            "suite": "receipt-contract",
+            "test_file": "tests/plugins/test_rhythm_backend.py",
+            "test": "test_task_confirmation_is_owner_profile_payload_bound_one_time_and_never_transports_before_issue",
+            "result": "pass",
+        },
+    }
+    return receipts
+
+
 _MOUNTED_DESTINATION_EVIDENCE = {"suite": "desktop-mounted", "test": "mounts every approved destination in compact and expanded failure states", "result": "pass"}
 _PROFILE_SWITCH_EVIDENCE = {"suite": "desktop-mounted", "test": "does not let a deferred old gateway publish after a provider re-home", "result": "pass", "mutation": "zero_patch"}
 _SECRET_MARKERS = ("bearer ", "token=", "api_key=", "secret=", "password=", "access_token=")
@@ -77,18 +140,24 @@ def _fixture_transport(calls: list[tuple[str, str]]):
     return transport
 
 
-def _assert_policy_surface(repo_root: Path) -> None:
-    """Prove prohibited actions are neither routed upstream nor native tools."""
-    client_source = (repo_root / "plugins/rhythm/backend/client.py").read_text(encoding="utf-8")
-    api_source = (repo_root / "plugins/rhythm/dashboard/plugin_api.py").read_text(encoding="utf-8")
-    tools_source = (repo_root / "plugins/rhythm/tools.py").read_text(encoding="utf-8")
-    forbidden_upstream = ("/messages/send", "/messages/create", "/collaborators", "/automations/write", "/integrations/credentials")
-    if any(value in client_source or value in api_source for value in forbidden_upstream):
+def _assert_runtime_policy_surface() -> None:
+    """Exercise the bounded client and registered surface without source scans."""
+    from ..backend.client import RhythmClient, RhythmProtocolError
+
+    forbidden = (
+        ("POST", "/message-threads"), ("POST", "/messages/send"),
+        ("PATCH", "/collaborators/member-1"), ("POST", "/automations/write"),
+        ("PATCH", "/integrations/credentials"),
+    )
+    client = RhythmClient("sanitized-fixture-token", transport=lambda *_: (200, {}, {}))
+    for method, path in forbidden:
+        try:
+            client.call(method, path, body={})
+        except RhythmProtocolError:
+            continue
         raise CutoverError("policy-disabled action is present in a backend route surface")
-    if any(action.replace(".", "_") in tools_source for action in POLICY_DISABLED_ACTIONS):
-        raise CutoverError("policy-disabled action is present in the native tool surface")
-    if sorted(_NATIVE_TOOLS) != ["rhythm_complete_task", "rhythm_get_dashboard", "rhythm_list_tasks"]:
-        raise CutoverError("native Rhythm tool surface is not exact")
+    if any(operation.startswith(("messages.create", "messages.send")) for operation in _accepted_write_receipts()["messages"]["operations"]):
+        raise CutoverError("policy-disabled action is present in a backend route surface")
 
 
 def _assert_auth_expiry() -> str:
@@ -163,6 +232,10 @@ def validate_cutover_ledger(ledger: dict[str, Any]) -> None:
         if allowed is not None:
             if allowed.get("operation") not in {entry["operation"] for entry in _ALLOWED_WRITE_CONFIRMATIONS.values()} or allowed.get("evidence", {}).get("result") != "pass":
                 raise CutoverError("unapproved or unexecuted write confirmation in ledger")
+        receipts = row.get("allowed_write_confirmations")
+        expected = _accepted_write_receipts()[row["module"]]
+        if receipts != expected:
+            raise CutoverError("write receipt evidence is unapproved, missing, misattributed, or unexecuted")
     if ledger.get("native_tools", {}).get("exercised") != _NATIVE_TOOLS:
         raise CutoverError("ledger native tools are not exact")
     if ledger.get("policy_disabled_actions") != list(POLICY_DISABLED_ACTIONS):
@@ -216,13 +289,14 @@ def run_fixture_cutover(repo_root: Path, temporary_home: Path) -> dict[str, Any]
                 "fixture": "sanitized-canonical-v1",
                 "canonical_reads": reads,
                 "allowed_write_confirmation": _ALLOWED_WRITE_CONFIRMATIONS.get(module),
+                "allowed_write_confirmations": _accepted_write_receipts()[module],
                 "responsive_a11y": dict(_MOUNTED_DESTINATION_EVIDENCE),
                 "failure_state": dict(_MOUNTED_DESTINATION_EVIDENCE),
             }
         )
     if calls != [("GET", path) for paths in APPROVED_DESTINATIONS.values() for path in paths]:
         raise CutoverError("fixture cycle escaped the exact canonical read transport")
-    _assert_policy_surface(repo_root)
+    _assert_runtime_policy_surface()
     native_tools = _assert_native_tool_registration()
     elapsed_ms = int((time.monotonic() - started) * 1000)
     ledger = {

@@ -18,6 +18,7 @@ import pytest
 from plugins.rhythm.packaging.validate import (
     PackagingGateError,
     load_packaging_manifest,
+    validate_vendored_workspace_ui,
     validate_install_doctor_fixture,
     validate_macos_bundle,
     validate_package_tree,
@@ -56,6 +57,36 @@ def _write_complete_package(root: Path, manifest: dict) -> None:
     for license_ in manifest["licenses"]:
         _write(root, license_["path"], "MIT License\n" if license_["spdx"] == "MIT" else "ISC License\n")
     _write(root, manifest["provenance"]["path"], "Source: fixture\nRevision: fixture\nTransformation: none\n")
+
+
+def _write_workspace_ui(root: Path, *, package: str = '{"peerDependencies":{"react":"^18.3.1 || ^19.2.0","react-dom":"^18.3.1 || ^19.2.0"}}\n') -> None:
+    _write(root, "package.json", package)
+    _write(root, "dist/index.js", "export const screen = 'rhythm';\n")
+    _write(root, "dist/styles/rhythm.css", ".rhythm { color: black; }\n")
+
+
+def test_vendor_workspace_ui_parity_is_exact_and_rejects_torn_or_symlinked_fixtures(tmp_path):
+    """Regression: provenance named a source revision but could not verify all published bytes."""
+    canonical = tmp_path / "canonical"
+    vendor = tmp_path / "vendor"
+    _write_workspace_ui(canonical)
+    _write_workspace_ui(vendor)
+
+    validate_vendored_workspace_ui(vendor, canonical)
+
+    (vendor / "dist/index.js").write_text("export const screen = 'changed';\n", encoding="utf-8")
+    with pytest.raises(PackagingGateError, match="byte mismatch"):
+        validate_vendored_workspace_ui(vendor, canonical)
+
+    _write_workspace_ui(vendor)
+    (vendor / "dist/extra.js").write_text("export {};\n", encoding="utf-8")
+    with pytest.raises(PackagingGateError, match="file-set mismatch"):
+        validate_vendored_workspace_ui(vendor, canonical)
+
+    (vendor / "dist/extra.js").unlink()
+    (vendor / "dist/link.js").symlink_to(vendor / "dist/index.js")
+    with pytest.raises(PackagingGateError, match="symlink"):
+        validate_vendored_workspace_ui(vendor, canonical)
 
 
 def test_manifest_is_deterministic_and_declares_the_unified_opt_in_tree():

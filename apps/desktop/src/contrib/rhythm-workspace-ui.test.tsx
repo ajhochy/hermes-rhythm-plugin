@@ -2,7 +2,7 @@ import { host as hermesHost } from '@hermes/plugin-sdk'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { askHermes, confirmationKey, createGateway, gatewayError, RhythmWorkspace, workspaceKey } from '../../../../plugins/rhythm/desktop/src/plugin'
+import rhythmPlugin, { askHermes, confirmationKey, createGateway, gatewayError, RhythmWorkspace, workspaceKey } from '../../../../plugins/rhythm/desktop/src/plugin'
 import {
   DashboardScreen,
   ArtifactsScreen,
@@ -52,9 +52,18 @@ function restFor(value: unknown | Error) {
   return request as unknown as Parameters<typeof createGateway>[0]
 }
 
+function currentPlannerWeekStart() {
+  const current = new Date()
+  const monday = new Date(current)
+  monday.setUTCDate(current.getUTCDate() - ((current.getUTCDay() + 6) % 7))
+  return monday.toISOString().slice(0, 10)
+}
+
+const plannerWeekStart = currentPlannerWeekStart()
+const plannerWeekPath = `/planner/weeks/${plannerWeekStart}`
 const plannerWeek = {
-  weekLabel: 'Aug 17 – Aug 23', weekStart: '2026-08-17', backlog: [],
-  days: [{ date: '2026-08-17', label: 'Monday', tasks: [{ id: 'planner-task-1', title: 'Plan launch', notes: '', status: 'open', source: 'task', scheduledOrder: 0, collaborators: [], readonly: false }], events: [] }],
+  weekLabel: 'Current week', weekStart: plannerWeekStart, backlog: [],
+  days: [{ date: plannerWeekStart, label: 'Monday', tasks: [{ id: 'planner-task-1', title: 'Plan launch', notes: '', status: 'open', source: 'task', scheduledOrder: 0, collaborators: [], readonly: false }], events: [] }],
 }
 
 const rhythmRules = [{
@@ -68,7 +77,7 @@ const projectInstances = [{ id: 'project-1', templateId: 'template-1', name: 'Au
 
 function m5Rest() {
   return vi.fn(async (path: string) => {
-    if (path === '/planner/weeks/2026-08-17') return plannerWeek
+    if (path === plannerWeekPath) return plannerWeek
     if (path === '/rhythm-rules') return { items: rhythmRules }
     if (path === '/project-templates') return { items: projectTemplates }
     if (path === '/project-instances') return { items: projectInstances }
@@ -116,6 +125,22 @@ describe('accepted Rhythm workspace package', () => {
     expect(openExternal).not.toHaveBeenCalled()
   })
 
+  it('mounts the registered page against the actual Hermes host-state contract', async () => {
+    const contributions: Array<{ id: string; render?: () => React.ReactNode }> = []
+    const summaryRest = restFor(summary)
+    // The mounted page gates on GET /connection, so the fixture answers it as connected.
+    const rest = vi.fn(async (path: string, opts?: unknown) => (path === '/connection' ? { connected: true } : (summaryRest as unknown as (p: string, o?: unknown) => Promise<unknown>)(path, opts)))
+    rhythmPlugin.register({
+      rest,
+      os: { openExternal: vi.fn() },
+      registerMany: (items: Array<{ id: string; render?: () => React.ReactNode }>) => contributions.push(...items),
+    } as never)
+    const page = contributions.find(item => item.id === 'page')
+    expect(page?.render).toBeTypeOf('function')
+    render(page!.render!())
+    expect(await screen.findByTestId('rhythm-dashboard-screen')).not.toBeNull()
+  })
+
   it('issue-10-c1: messages use only pinned reads and receipt-bound state operations; creation stays unavailable', async () => {
     const rest = vi.fn(async (path: string) => {
       if (path === '/messages') return []
@@ -157,7 +182,7 @@ describe('accepted Rhythm workspace package', () => {
   })
 
   it.each([
-    ['Planner', PlannerScreen, 'rhythm-planner-screen', 'Plan launch', '/planner/weeks/2026-08-17'],
+    ['Planner', PlannerScreen, 'rhythm-planner-screen', 'Plan launch', plannerWeekPath],
     ['Rhythms', RhythmsScreen, 'rhythm-rhythms-screen', 'Weekly review', '/rhythm-rules'],
     ['Projects', ProjectsScreen, 'rhythm-projects-screen', 'August launch', '/project-templates'],
   ])('mounts %s with canonical M5 content and its exact pinned GET paths', async (_name, Screen, testId, content, expectedPath) => {
@@ -405,7 +430,7 @@ describe('accepted Rhythm workspace package', () => {
   it('mounts Planner: the visible confirmation and operation carry one identical generation', async () => {
     const confirmations = new Map<string, string | { receipt: string, generation: string }>()
     const rest = vi.fn(async (path: string, init?: { method: string, body: unknown }) => {
-      if (path === '/planner/weeks/2026-08-17') return plannerWeek
+      if (path === plannerWeekPath) return plannerWeek
       if (path === '/workspace-operations/confirmation') return { confirmation: 'workspace-receipt-secret' }
       if (path === '/workspace-operations') return { id: 'planner-task-1', status: 'done' }
       throw new Error(`unexpected route ${path}`)
@@ -424,7 +449,7 @@ describe('accepted Rhythm workspace package', () => {
     await screen.findByTestId('planner-complete-planner-task-1')
     fireEvent.click(screen.getByTestId('planner-complete-planner-task-1'))
     fireEvent.click(await screen.findByTestId('planner-operation-confirm'))
-    await waitFor(() => expect(rest.mock.calls.map(([path]) => path)).toEqual(['/planner/weeks/2026-08-17', '/workspace-operations/confirmation', '/workspace-operations']))
+    await waitFor(() => expect(rest.mock.calls.map(([path]) => path)).toEqual([plannerWeekPath, '/workspace-operations/confirmation', '/workspace-operations']))
     const confirm = rest.mock.calls[1][1]?.body as { generation: string, operation: string, entityId: string, payload: unknown }
     const mutate = rest.mock.calls[2][1]?.body as { generation: string, confirmation: string, operation: string, entityId: string, payload: unknown }
     expect(mutate).toMatchObject({ operation: confirm.operation, entityId: confirm.entityId, payload: confirm.payload, generation: confirm.generation, confirmation: 'workspace-receipt-secret' })
