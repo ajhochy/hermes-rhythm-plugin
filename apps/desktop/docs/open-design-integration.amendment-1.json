@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "amendmentId": "hermes-desktop-open-design-v1-a1",
+  "contractId": "hermes-desktop-open-design-v1",
+  "status": "frozen",
+  "createdAt": "2026-08-20T08:27:03.000Z",
+  "title": "Use the official signed Open Design app as the bundled headless owner",
+  "supersedes": {
+    "assumption": "The Open Design Resources tree can be launched by passing app/main.cjs to the packaged Hermes Electron executable.",
+    "scope": "Packaging and top-level headless launch mechanism only"
+  },
+  "evidence": [
+    {
+      "id": "A1-E1",
+      "result": "fail",
+      "description": "Launching the packaged Hermes executable with Open Design app/main.cjs and --headless booted Hermes itself, emitted the Hermes install stamp, exited without an Open Design identity, and never served Open Design."
+    },
+    {
+      "id": "A1-E2",
+      "result": "fail",
+      "description": "The checksum-pinned Open Design 0.20.0 macOS release Resources tree contains no plain-Node headless bundle that can preserve the official packaged lifecycle under ELECTRON_RUN_AS_NODE."
+    },
+    {
+      "id": "A1-E3",
+      "result": "pass",
+      "description": "The checksum-pinned signed Open Design 0.20.0 executable launched with --headless in a disposable namespace, returned /api/health version 0.20.0, exposed Hermes as available with 73 models, created no BrowserWindow, and removed owned parent and child processes on SIGTERM."
+    }
+  ],
+  "decision": {
+    "bundle": "Stage the complete official signed Open Design.app on macOS under open-design-runtime/Open Design.app. Stage the equivalent official installed application payload on Windows.",
+    "launch": "Spawn the bundled or compatible installed Open Design executable with the single --headless argument and a Hermes-generated no-telemetry config in an allowlisted environment.",
+    "ownership": "Open Design remains the top-level owner of its daemon and web sidecars; Hermes owns only the headless application process it spawned.",
+    "gitPolicy": "No Open Design installer or application bytes are committed to Git. The official checksum-pinned asset is staged only during packaging into ignored build output.",
+    "sizeImpact": {
+      "darwinArm64Uncompressed": "approximately 912 MB",
+      "darwinArm64OfficialDmg": "approximately 383 MB"
+    }
+  },
+  "unchangedInvariants": [
+    "Open Design 0.20.0 tag, commit, asset name, and SHA-256 remain pinned.",
+    "No provider credential is copied into Open Design configuration or IPC.",
+    "HERMES_BIN and profile-scoped HERMES_HOME are the only Hermes credential/model handoff.",
+    "The headless runtime uses a Hermes-owned profile namespace and data root.",
+    "OD-02 through OD-13 acceptance behavior remains unchanged.",
+    "A packaged Hermes smoke must pass after the external /Applications/Open Design.app is temporarily moved out of discovery scope."
+  ],
+  "rejectedAlternative": {
+    "name": "Reimplement Open Design sidecar lifecycle from daemon-sidecar.mjs and web-sidecar.mjs",
+    "reason": "It would duplicate Open Design's IPC ownership, stale-instance retirement, restart, update, and shutdown semantics and create a larger long-term compatibility surface than staging the official signed headless owner."
+  }
+}
