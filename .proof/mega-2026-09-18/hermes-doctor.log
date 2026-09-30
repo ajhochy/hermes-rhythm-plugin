@@ -1,0 +1,168 @@
+
+┌─────────────────────────────────────────────────────────┐
+│                 🩺 Hermes Doctor                        │
+└─────────────────────────────────────────────────────────┘
+
+◆ Security Advisories
+  ✓ No active security advisories
+
+◆ MCP Server Security
+  ✓ No suspicious MCP stdio commands
+
+◆ Python Environment
+  ✓ Python 3.11.15
+  ✓ SQLite 3.53.1
+    → SQLite source id: 2026-05-05 10:34:17 c88b22011a54b4f6fbd149e9f8e4…
+    → state.db: WAL journal mode (1.5 GB)
+    → cron/executions.db: WAL journal mode (168.0 KB)
+    → projects.db: WAL journal mode (44.0 KB)
+    → verification_evidence.db: WAL journal mode (536.0 KB)
+    → kanban.db: WAL journal mode (1.5 MB)
+    → kanban/boards/hcw-live-tracer-1787210374/kanban.db: WAL journal mode (152.0 KB)
+  ✓ Virtual environment active
+  ✓ macOS Full Disk Access granted (no per-folder permission prompts will occur)
+  ✓ Version files consistent (0.20.5)
+  ✓ macOS TCC signing identity is stable (identifier-pinned DR; grants survive rebuilds — for the strongest anchor, see `hermes desktop --setup-tcc-identity`)
+    → If macOS still re-prompts for permissions (toggle shows ON): the stored grant is stale — run `tccutil reset ScreenCapture com.nousresearch.hermes` (repeat per affected service), toggle it ON in System Settings, then fully quit & relaunch Hermes once.
+
+◆ SSL / CA Certificates
+  ✓ SSL CA certificate bundle is valid
+
+◆ Required Packages
+  ✓ OpenAI SDK
+  ✓ Rich (terminal UI)
+  ✓ python-dotenv
+  ✓ PyYAML
+  ✓ HTTPX
+  ✓ Croniter (cron expressions) (optional)
+  ⚠ python-telegram-bot (optional, not installed)
+  ✓ discord.py (optional)
+
+◆ Configuration Files
+  ✓ ~/.hermes/.env file exists
+  ✓ API key or custom endpoint configured
+  ✓ ~/.hermes/config.yaml exists
+  ✓ Config version up to date (v39)
+  ⚠ Deprecated: display.tool_progress_overrides (use display.platforms instead)
+    → Replace display.tool_progress_overrides → display.platforms (warn-only; not auto-migrated here)
+
+◆ xAI Model Retirement (May 15, 2026)
+  ✓ No retired xAI models in config
+
+◆ Auth Providers
+  ⚠ Nous Portal auth (not logged in)
+  ✓ OpenAI Codex auth (logged in)
+  ⚠ MiniMax OAuth (not logged in)
+  ⚠ xAI OAuth (not logged in)
+    → No xAI OAuth credentials stored. Select xAI Grok OAuth (SuperGrok / Premium+) in `hermes model`.
+
+◆ Directory Structure
+  ✓ ~/.hermes directory exists
+  ✓ ~/.hermes/cron/ exists
+  ✓ ~/.hermes/sessions/ exists
+  ✓ ~/.hermes/logs/ exists
+  ✓ ~/.hermes/skills/ exists
+  ✓ ~/.hermes/memories/ exists
+  ✓ ~/.hermes/SOUL.md exists (persona configured)
+  ✓ ~/.hermes/memories/ directory exists
+  ✓ MEMORY.md exists (1993 chars)
+  ✓ USER.md exists (1293 chars)
+  ✓ ~/.hermes/state.db exists (1103 sessions)
+    → state.db logical size 1.5 GB, 383,289 pages, 25 free, WAL 289.7 KB
+    → 84,312 messages, 1,103 sessions, journal_mode=wal
+    → FTS tables: messages_fts, messages_fts_trigram
+  ⚠ state.db is large (1.5 GB) (consider enabling sessions.auto_prune in config.yaml to bound growth; run 'hermes sessions optimize-storage' offline (with the gateway stopped) to compact FTS storage)
+
+◆ Command Installation
+  ✓ Venv entry point exists (venv/bin/hermes)
+  ✓ ~/.local/bin/hermes exists (non-symlink)
+
+◆ External Tools
+  ✓ git
+  ✓ ripgrep (rg) (faster file search)
+  ✓ docker (optional)
+  ✓ Node.js
+  ✓ agent-browser (browser automation)
+  ⚠ Browser tools (agent-browser) deps (0 critical, 1 high, 1 moderate — run: cd /Users/ajhochhalter/.hermes/hermes-agent && npm audit fix --workspaces=false)
+  ⚠ web workspace deps (0 critical, 4 high, 5 moderate — build-tool advisory; clears via lockfile bump)
+    →   ^ build-time tooling (not runtime); if manual npm remediation errors with an arborist crash it's a known npm bug — clears via a lockfile bump
+  ⚠ ui-tui workspace deps (0 critical, 3 high, 2 moderate — build-tool advisory; clears via lockfile bump)
+    →   ^ build-time tooling (not runtime); if manual npm remediation errors with an arborist crash it's a known npm bug — clears via a lockfile bump
+
+◆ API Connectivity
+  Running 34 connectivity checks in parallel…                                                                        ✓ OpenRouter API
+  ✓ gemini              
+
+◆ Tool Availability
+  ✓ a2a
+  ✓ browser-use
+  ✓ clarify
+  ✓ code_execution
+  ✓ computer_use
+  ✓ cronjob
+  ✓ delegation
+  ✓ desktop_ui
+  ✓ discord
+  ✓ discord_admin
+  ✓ file
+  ✓ memory
+  ✓ project
+  ✓ rhythm
+  ✓ session_search
+  ✓ skills
+  ✓ terminal
+  ✓ todo
+  ✓ video
+  ✓ vision
+  ✓ kanban (runtime-gated; loaded only for dispatcher-spawned workers)
+  ✓ web search (firecrawl)
+  ✓ web extract (firecrawl)
+  ⚠ browser (system dependency not met)
+  ⚠ browser-cdp (system dependency not met)
+  ⚠ feishu_doc (system dependency not met)
+  ⚠ feishu_drive (system dependency not met)
+  ⚠ hermes-yuanbao (system dependency not met)
+  ⚠ homeassistant (system dependency not met)
+  ⚠ image_gen (system dependency not met)
+  ⚠ spotify (system dependency not met)
+  ⚠ tts (system dependency not met)
+  ⚠ video_gen (system dependency not met)
+  ⚠ x_search (missing XAI_API_KEY)
+
+◆ Skills Hub
+  ✓ Skills Hub directory exists
+  ✓ Lock file OK (0 hub-installed skill(s))
+  ⚠ No GITHUB_TOKEN (60 req/hr rate limit — set in ~/.hermes/.env for better rates)
+
+◆ Memory Provider
+  ⚠ Honcho config not found run: hermes memory setup
+
+◆ Profiles
+  ✓ 16 profile(s) found
+  ✓   church-admin: claude-sonnet-4-6
+  ✓   claude-acp: claude-sonnet-4-6
+  ✓   dev: claude-sonnet-4-6
+  ✓   dev-builder: gpt-5.6-sol, no alias
+  ✓   dev-contract: gpt-5.6-sol, no alias
+  ✓   dev-planner: gpt-5.6-sol, no alias
+  ✓   dev-quality-reviewer: gpt-5.6-sol, no alias
+  ✓   dev-recorder: gpt-5.6-sol, no alias
+  ✓   dev-spec-reviewer: gpt-5.6-sol, no alias
+  ✓   dev-verifier: gpt-5.6-terra, no alias
+  ✓   ffb: claude-sonnet-4-6
+  ✓   hcw-dev: gpt-5.6-sol, no alias
+  ✓   memory-dashboard: gemini-2.5-flash
+  ✓   ministry: claude-sonnet-4-6
+  ✓   production: claude-sonnet-4-6
+  ✓   research: claude-sonnet-4-6
+
+────────────────────────────────────────────────────────────
+  Found 4 issue(s) to address:
+
+  1. state.db is large — enable sessions.auto_prune in config.yaml and run 'hermes sessions optimize-storage' offline (gateway stopped)
+  2. Browser tools (agent-browser) has 2 npm vulnerabilities
+  3. web workspace has 9 npm vulnerabilities
+  4. ui-tui workspace has 5 npm vulnerabilities
+
+  Tip: run 'hermes doctor --fix' to auto-fix what's possible.
+

@@ -1,0 +1,151 @@
+▶ skipping venv without pytest: /Users/ajhochhalter/Documents/hermes-rhythm-plugin/.venv
+▶ running per-file parallel test suite via run_tests_parallel.py
+  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)
+▶ pre-compiling bytecode cache
+▶ launching test runner
+Discovered 1 test files (~25 tests) under ['tests/plugins/rhythm/test_rhythm_packaging_scaffold.py']; running with -j 24
+[100.0% |    25/~25 | ✓61 | ✗ 1] ✗ tests/plugins/rhythm/test_rhythm_packaging_scaffold.py (61✓ 1✗, 3.7s)
+
+  ╔╍ Failed: tests/plugins/rhythm/test_rhythm_packaging_scaffold.py ╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍
+  ║       return new SyntheticModule(names[specifier], function () {
+  ║         for (const name of names[specifier]) this.setExport(name, values[specifier][name]);
+  ║       }, { context });
+  ║     });
+  ║     await module.evaluate();
+  ║     const contributions = [];
+  ║     module.namespace.default.register({ registerMany: entries => contributions.push(...entries) });
+  ║     const route = contributions.find(entry => entry.area === 'routes' && entry.data?.path === '/rhythm');
+  ║     assert.ok(route, 'Rhythm page route must be registered');
+  ║     const element = route.render();
+  ║     assert.equal(typeof element.type, 'function');
+  ║     assert.equal(elements.length, 1);
+  ║     } catch (error) {
+  ║       console.error('VM_PROBE_ERROR:', error.name, error.message);
+  ║       process.exit(1);
+  ║     }
+  ║     """
+  ║         result = subprocess.run(
+  ║             ["node", "--no-warnings", "--experimental-vm-modules", "--input-type=module", "-", str(bundle)],
+  ║             input=probe, text=True, capture_output=True, check=False,
+  ║         )
+  ║ >       assert result.returncode == 0, f"node exit {result.returncode}: {result.stderr[-400:]!r}"
+  ║ E       AssertionError: node exit 1: "VM_PROBE_ERROR: TypeError Cannot read properties of undefined (reading 'openExternal')\n"
+  ║ E       assert 1 == 0
+  ║ E        +  where 1 = CompletedProcess(args=['node', '--no-warnings', '--experimental-vm-modules', '--input-type=module', '-', '/private/tmp...rncode=1, stdout='', stderr="VM_PROBE_ERROR: TypeError Cannot read properties of undefined (reading 'openExternal')\n").returncode
+  ║ 
+  ║ tests/plugins/rhythm/test_rhythm_packaging_scaffold.py:171: AssertionError
+  ║ =========================== short test summary info ============================
+  ║ FAILED tests/plugins/rhythm/test_rhythm_packaging_scaffold.py::test_desktop_route_renders_with_host_react_when_jsx_runtime_is_unavailable
+  ║ ========================= 1 failed, 61 passed in 3.39s =========================
+  ║
+  ║  Repro: python -m pytest tests/plugins/rhythm/test_rhythm_packaging_scaffold.py
+  ╚╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍
+
+
+=== Summary: 1 files, 61 tests passed, 1 failed (100% complete) in 3.7s (24 workers) ===
+  Durations cached to test_durations.json (1 files)
+
+=== Per-file subprocess time distribution ===
+  Files:   1
+  Total subprocess CPU-wall: 3.7s  (runner wall: 3.7s, parallelism: 24x)
+  P50: 3.67s  P90: 3.67s  P95: 3.67s  P99: 3.67s  Max: 3.67s
+  <1s: 0 files (0%)  <2s: 0 files (0%)
+  Top 10 slowest:
+      3.67s  tests/plugins/rhythm/test_rhythm_packaging_scaffold.py
+
+=== Failure output ===
+
+--- tests/plugins/rhythm/test_rhythm_packaging_scaffold.py ---
+============================= test session starts ==============================
+platform darwin -- Python 3.11.15, pytest-9.1.1, pluggy-1.6.0
+rootdir: /Users/ajhochhalter/Documents/hermes-rhythm-plugin
+configfile: pyproject.toml
+plugins: anyio-4.12.1, asyncio-1.3.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 62 items
+
+tests/plugins/rhythm/test_rhythm_packaging_scaffold.py ..F.............. [ 27%]
+.............................................                            [100%]
+
+=================================== FAILURES ===================================
+__ test_desktop_route_renders_with_host_react_when_jsx_runtime_is_unavailable __
+
+tmp_path = PosixPath('/private/tmp/pytest-of-ajhochhalter/pytest-93/test_desktop_route_renders_wit0')
+
+    def test_desktop_route_renders_with_host_react_when_jsx_runtime_is_unavailable(tmp_path):
+        """The installed Desktop can expose a non-callable JSX shim while React itself works."""
+        package = build_feature_pack(REPO_ROOT, tmp_path / "package")
+        bundle = package / "desktop/dist/rhythm.mjs"
+        probe = r"""
+    import assert from 'node:assert/strict';
+    import { readFileSync } from 'node:fs';
+    import { SourceTextModule, SyntheticModule, createContext } from 'node:vm';
+    
+    const source = readFileSync(process.argv[2], 'utf8');
+    const context = createContext({ URLSearchParams, console });
+    const elements = [];
+    const createElement = (type, props) => {
+      const element = { type, props };
+      elements.push(element);
+      return element;
+    };
+    const react = new Proxy({}, { get: (_target, name) => {
+      if (name === 'createElement') return createElement;
+      if (name === 'createContext') return () => ({ Provider: () => null });
+      if (name === 'forwardRef' || name === 'memo') return value => value;
+      if (name === 'Fragment') return Symbol.for('react.fragment');
+      return () => undefined;
+    } });
+    const sdk = {
+      ROUTES_AREA: 'routes', SIDEBAR_NAV_AREA: 'sidebar.nav', PALETTE_AREA: 'command-palette',
+      host: {}, useValue: () => undefined,
+    };
+    const values = {
+      react,
+      'react/jsx-runtime': { jsx: undefined, jsxs: undefined, Fragment: Symbol.for('react.fragment') },
+      '@hermes/plugin-sdk': sdk,
+    };
+    const names = {
+      react: ['createContext', 'forwardRef', 'createElement', 'useContext', 'useState', 'useRef', 'useEffect', 'useLayoutEffect', 'useMemo', 'useId', 'useCallback', 'useSyncExternalStore', 'memo', 'Fragment', 'lazy'],
+      'react/jsx-runtime': ['jsx', 'jsxs', 'Fragment'],
+      '@hermes/plugin-sdk': Object.keys(sdk),
+    };
+    let module;
+    try { module = new SourceTextModule(source, { context }); }
+    catch (error) { console.error('VM_COMPILE_ERROR:', error.message); process.exit(2); }
+    try {
+    await module.link(specifier => {
+      assert.ok(specifier in values, `unexpected import: ${specifier}`);
+      return new SyntheticModule(names[specifier], function () {
+        for (const name of names[specifier]) this.setExport(name, values[specifier][name]);
+      }, { context });
+    });
+    await module.evaluate();
+    const contributions = [];
+    module.namespace.default.register({ registerMany: entries => contributions.push(...entries) });
+    const route = contributions.find(entry => entry.area === 'routes' && entry.data?.path === '/rhythm');
+    assert.ok(route, 'Rhythm page route must be registered');
+    const element = route.render();
+    assert.equal(typeof element.type, 'function');
+    assert.equal(elements.length, 1);
+    } catch (error) {
+      console.error('VM_PROBE_ERROR:', error.name, error.message);
+      process.exit(1);
+    }
+    """
+        result = subprocess.run(
+            ["node", "--no-warnings", "--experimental-vm-modules", "--input-type=module", "-", str(bundle)],
+            input=probe, text=True, capture_output=True, check=False,
+        )
+>       assert result.returncode == 0, f"node exit {result.returncode}: {result.stderr[-400:]!r}"
+E       AssertionError: node exit 1: "VM_PROBE_ERROR: TypeError Cannot read properties of undefined (reading 'openExternal')\n"
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['node', '--no-warnings', '--experimental-vm-modules', '--input-type=module', '-', '/private/tmp...rncode=1, stdout='', stderr="VM_PROBE_ERROR: TypeError Cannot read properties of undefined (reading 'openExternal')\n").returncode
+
+tests/plugins/rhythm/test_rhythm_packaging_scaffold.py:171: AssertionError
+=========================== short test summary info ============================
+FAILED tests/plugins/rhythm/test_rhythm_packaging_scaffold.py::test_desktop_route_renders_with_host_react_when_jsx_runtime_is_unavailable
+========================= 1 failed, 61 passed in 3.39s =========================
+
+=== 1 file with test failures (1 test failed) ===
+  tests/plugins/rhythm/test_rhythm_packaging_scaffold.py  (1 test failed)
