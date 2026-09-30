@@ -1,0 +1,666 @@
+From 82d584bc0fb1a3ca4fd375f72c035b8872b69184 Mon Sep 17 00:00:00 2001
+From: ajhochy <ajhochy@gmail.com>
+Date: Wed, 30 Sep 2026 06:56:26 -0700
+Subject: [PATCH] WIP snapshot hcw/t_383d1c64/attempt-1 2026-09-30
+
+---
+ .../src/contrib/rhythm-workspace-ui.test.tsx  | 647 ++++++++++++++++++
+ 1 file changed, 647 insertions(+)
+ create mode 100644 apps/desktop/src/contrib/rhythm-workspace-ui.test.tsx
+
+diff --git a/apps/desktop/src/contrib/rhythm-workspace-ui.test.tsx b/apps/desktop/src/contrib/rhythm-workspace-ui.test.tsx
+new file mode 100644
+index 0000000000..b74508fa97
+--- /dev/null
++++ b/apps/desktop/src/contrib/rhythm-workspace-ui.test.tsx
+@@ -0,0 +1,647 @@
++/**
++ * Regression contracts for the Rhythm workspace plugin page.
++ *
++ * RED stage — all tests fail because @/plugins/rhythm/plugin does not exist
++ * yet. The import error is the primary RED evidence for the
++ * undefined-state/useValue crash described in T1. T2–T4 contracts define the
++ * required authentication state machine, generation-race safety, and OAuth
++ * boundary semantics that a passing (GREEN) implementation must satisfy.
++ *
++ * Do NOT edit production code to make these tests pass — that is the GREEN
++ * stage's job.
++ */
++
++import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
++import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
++
++import { createPluginContext } from '@/contrib/plugin'
++import { registry } from '@/contrib/registry'
++import { $activeGatewayProfile } from '@/store/profile'
++import { $activeSessionId, $currentCwd, $currentModel, $gatewayState } from '@/store/session'
++
++// RED: this module does not exist — every test in this file fails with a
++// module-resolution error until the Rhythm plugin is implemented.
++import rhythmPlugin from '@/plugins/rhythm/plugin'
++
++// ---------------------------------------------------------------------------
++// Mocks
++// ---------------------------------------------------------------------------
++
++const pluginRestMock = vi.fn()
++const openExternalMock = vi.fn()
++
++vi.mock('@/hermes', async importActual => {
++  const actual = await importActual<typeof import('@/hermes')>()
++
++  return {
++    ...actual,
++    pluginRest: (...args: unknown[]) => pluginRestMock(...args)
++  }
++})
++
++vi.mock('@/store/native-notifications', () => ({
++  dispatchPluginNativeNotification: vi.fn()
++}))
++
++// ---------------------------------------------------------------------------
++// Helpers
++// ---------------------------------------------------------------------------
++
++function makeClient() {
++  return new QueryClient({ defaultOptions: { queries: { retry: false } } })
++}
++
++/** Seed the SDK host-state atoms to a stable, deterministic value.
++ *  connectionId is intentionally absent from this set — it is not part of
++ *  the @hermes/plugin-sdk host.state surface — so a plugin that calls
++ *  useValue(undefinedAtom) crashes immediately. */
++function seedHostState() {
++  $activeSessionId.set('sess-test-01')
++  $currentCwd.set('/workspace/project')
++  $gatewayState.set('open')
++  $currentModel.set('claude-sonnet-5')
++  $activeGatewayProfile.set('default')
++}
++
++function resetHostState() {
++  $activeSessionId.set(null)
++  $currentCwd.set('')
++  $gatewayState.set('idle')
++  $currentModel.set('')
++  $activeGatewayProfile.set('default')
++}
++
++// ---------------------------------------------------------------------------
++// T1 — host crash contract
++// ---------------------------------------------------------------------------
++
++describe('T1: Rhythm workspace page — host crash contract (connectionId undefined)', () => {
++  const disposers: Array<() => void> = []
++
++  beforeEach(() => {
++    seedHostState()
++    pluginRestMock.mockReset()
++    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
++      api: vi.fn(),
++      openExternal: openExternalMock
++    }
++
++    const ctx = createPluginContext(rhythmPlugin.id, d => disposers.push(d))
++    rhythmPlugin.register(ctx)
++  })
++
++  afterEach(() => {
++    disposers.splice(0).forEach(d => d())
++    cleanup()
++    resetHostState()
++    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
++    vi.clearAllMocks()
++  })
++
++  it('renders the registered Rhythm workspace page contribution without crashing', () => {
++    // The plugin must register a pane contribution in the 'panes' area.
++    const contributions = registry.getArea('panes')
++    const page = contributions.find(c => c.id === `${rhythmPlugin.id}:workspace`)
++
++    expect(page, 'rhythm workspace contribution must be registered in the panes area').toBeDefined()
++    expect(typeof page!.render, 'workspace contribution must have a render function').toBe('function')
++
++    const client = makeClient()
++
++    // Rendering the page with all SDK host state atoms set (activeSessionId,
++    // cwd, gateway, model, profile, viewport) but without connectionId must
++    // NOT throw. The current implementation crashes because it calls
++    // useValue(connectionIdAtom) where connectionIdAtom is undefined.
++    expect(() =>
++      render(
++        <QueryClientProvider client={client}>{page!.render!()}</QueryClientProvider>
++      )
++    ).not.toThrow()
++  })
++
++  it('page renders a loading indicator before the first /connection response', async () => {
++    // Gate: the page must show a loading state before ctx.rest resolves.
++    pluginRestMock.mockReturnValue(new Promise(() => undefined))
++
++    const contributions = registry.getArea('panes')
++    const page = contributions.find(c => c.id === `${rhythmPlugin.id}:workspace`)!
++    const client = makeClient()
++
++    render(<QueryClientProvider client={client}>{page.render!()}</QueryClientProvider>)
++
++    await screen.findByRole('status')
++  })
++})
++
++// ---------------------------------------------------------------------------
++// T2 — authentication state machine contracts
++// ---------------------------------------------------------------------------
++
++describe('T2: Rhythm workspace authentication state machine', () => {
++  const disposers: Array<() => void> = []
++
++  function setupPlugin() {
++    const ctx = createPluginContext(rhythmPlugin.id, d => disposers.push(d))
++    rhythmPlugin.register(ctx)
++
++    const contributions = registry.getArea('panes')
++    const page = contributions.find(c => c.id === `${rhythmPlugin.id}:workspace`)
++
++    if (!page?.render) {
++      throw new Error('Rhythm workspace page contribution not registered')
++    }
++
++    const client = makeClient()
++
++    const utils = render(
++      <QueryClientProvider client={client}>{page.render()}</QueryClientProvider>
++    )
++
++    return utils
++  }
++
++  beforeEach(() => {
++    seedHostState()
++    pluginRestMock.mockReset()
++    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
++      api: vi.fn(),
++      openExternal: openExternalMock
++    }
++  })
++
++  afterEach(() => {
++    disposers.splice(0).forEach(d => d())
++    cleanup()
++    resetHostState()
++    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
++    vi.clearAllMocks()
++  })
++
++  it('shows a loading indicator while GET /connection is in flight', async () => {
++    pluginRestMock.mockReturnValue(new Promise(() => undefined))
++
++    setupPlugin()
++
++    await screen.findByRole('status')
++  })
++
++  it('shows a connect UI when /connection returns disconnected status', async () => {
++    pluginRestMock.mockResolvedValue({ status: 'disconnected' })
++
++    setupPlugin()
++
++    await screen.findByRole('button', { name: /connect/i })
++    expect(screen.queryByRole('status')).toBeNull()
++  })
++
++  it('shows an OAuth-pending UI after the user clicks connect and /oauth/start resolves', async () => {
++    let resolveConnection!: (v: unknown) => void
++    let resolveOAuth!: (v: unknown) => void
++
++    pluginRestMock.mockImplementation((pluginId: string, path: string) => {
++      if (path === '/connection') {
++        return new Promise(res => { resolveConnection = res })
++      }
++
++      if (path === '/oauth/start') {
++        return new Promise(res => { resolveOAuth = res })
++      }
++
++      return Promise.reject(new Error(`unexpected rest call: ${path}`))
++    })
++
++    setupPlugin()
++
++    await act(async () => {
++      resolveConnection({ status: 'disconnected' })
++    })
++
++    const connectBtn = await screen.findByRole('button', { name: /connect/i })
++
++    await act(async () => {
++      connectBtn.click()
++    })
++
++    await act(async () => {
++      resolveOAuth({
++        authorization_url: 'https://rhythm.example.com/oauth/authorize?client_id=x'
++      })
++    })
++
++    // The page must show an OAuth-pending state (e.g. "Waiting for authorization…")
++    await screen.findByText(/waiting|authorization|pending/i)
++    // The connect button must no longer be the primary CTA
++    expect(screen.queryByRole('button', { name: /^connect$/i })).toBeNull()
++  })
++
++  it('shows a recovery UI when /connection returns backend_unavailable', async () => {
++    pluginRestMock.mockResolvedValue({ status: 'backend_unavailable' })
++
++    setupPlugin()
++
++    await screen.findByText(/unavailable|retry|error/i)
++    expect(screen.queryByRole('button', { name: /connect/i })).toBeNull()
++  })
++
++  it('mounts the workspace and shows currentUser when connected', async () => {
++    pluginRestMock.mockResolvedValue({
++      status: 'connected',
++      identity: { user_id: 'u-abc', display_name: 'Ada Lovelace', email: 'ada@rhythm.example.com' }
++    })
++
++    setupPlugin()
++
++    await screen.findByText(/Ada Lovelace/)
++    expect(screen.queryByRole('button', { name: /connect/i })).toBeNull()
++  })
++})
++
++// ---------------------------------------------------------------------------
++// T3 — generation-race contracts
++// ---------------------------------------------------------------------------
++
++describe('T3: generation-race — stale /connection response cannot pollute current generation', () => {
++  const disposers: Array<() => void> = []
++
++  function setupPlugin() {
++    const ctx = createPluginContext(rhythmPlugin.id, d => disposers.push(d))
++    rhythmPlugin.register(ctx)
++
++    const contributions = registry.getArea('panes')
++    const page = contributions.find(c => c.id === `${rhythmPlugin.id}:workspace`)
++
++    if (!page?.render) {
++      throw new Error('Rhythm workspace page contribution not registered')
++    }
++
++    const client = makeClient()
++
++    const utils = render(
++      <QueryClientProvider client={client}>{page.render()}</QueryClientProvider>
++    )
++
++    return utils
++  }
++
++  beforeEach(() => {
++    seedHostState()
++    pluginRestMock.mockReset()
++    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
++      api: vi.fn(),
++      openExternal: openExternalMock
++    }
++  })
++
++  afterEach(() => {
++    disposers.splice(0).forEach(d => d())
++    cleanup()
++    resetHostState()
++    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
++    vi.clearAllMocks()
++  })
++
++  it('clears projected identity immediately when the profile generation changes', async () => {
++    // Gen-0: connected with Ada.
++    pluginRestMock.mockResolvedValue({
++      status: 'connected',
++      identity: { user_id: 'u-abc', display_name: 'Ada Lovelace', email: 'ada@rhythm.example.com' }
++    })
++
++    setupPlugin()
++    await screen.findByText(/Ada Lovelace/)
++
++    // Profile switch: gen-0 identity must be cleared BEFORE the new /connection
++    // response arrives (i.e. cleared synchronously on generation change, not
++    // asynchronously on response arrival).
++    let resolveNewConnection!: (v: unknown) => void
++
++    pluginRestMock.mockImplementation(() => new Promise(res => { resolveNewConnection = res }))
++
++    await act(async () => {
++      $activeGatewayProfile.set('secondary')
++    })
++
++    // Ada must be gone before the new connection resolves.
++    expect(screen.queryByText(/Ada Lovelace/)).toBeNull()
++
++    // Now resolve the new-generation connection — it must NOT re-introduce Ada.
++    await act(async () => {
++      resolveNewConnection({
++        status: 'connected',
++        identity: { user_id: 'u-xyz', display_name: 'Grace Hopper', email: 'grace@rhythm.example.com' }
++      })
++    })
++
++    await screen.findByText(/Grace Hopper/)
++    expect(screen.queryByText(/Ada Lovelace/)).toBeNull()
++  })
++
++  it('ignores a stale /connection response that arrives after a profile switch', async () => {
++    // Gen-0: connection request is deferred (simulates slow network).
++    let resolveGen0!: (v: unknown) => void
++
++    pluginRestMock.mockImplementationOnce(
++      () => new Promise(res => { resolveGen0 = res })
++    )
++
++    // Gen-1 (after switch): immediate disconnected.
++    pluginRestMock.mockResolvedValue({ status: 'disconnected' })
++
++    setupPlugin()
++
++    // Trigger a profile switch while gen-0 is still in flight.
++    await act(async () => {
++      $activeGatewayProfile.set('secondary')
++    })
++
++    // Resolve the stale gen-0 response — it carries connected+identity from
++    // the OLD profile.  The page must NOT apply it to the current gen-1 state.
++    await act(async () => {
++      resolveGen0({
++        status: 'connected',
++        identity: { user_id: 'u-stale', display_name: 'Stale User', email: 'stale@old.example.com' }
++      })
++    })
++
++    // The gen-1 disconnected state must be what is rendered.
++    await screen.findByRole('button', { name: /connect/i })
++    expect(screen.queryByText(/Stale User/)).toBeNull()
++  })
++
++  it('ignores a stale /connection response after the gateway atom changes', async () => {
++    let resolveStale!: (v: unknown) => void
++
++    pluginRestMock.mockImplementationOnce(
++      () => new Promise(res => { resolveStale = res })
++    )
++
++    pluginRestMock.mockResolvedValue({ status: 'disconnected' })
++
++    setupPlugin()
++
++    await act(async () => {
++      $gatewayState.set('connecting')
++    })
++
++    await act(async () => {
++      resolveStale({
++        status: 'connected',
++        identity: { user_id: 'u-stale', display_name: 'Stale Gateway User', email: 'stale@gw.example.com' }
++      })
++    })
++
++    expect(screen.queryByText(/Stale Gateway User/)).toBeNull()
++  })
++})
++
++// ---------------------------------------------------------------------------
++// T4 — OAuth boundary contracts
++// ---------------------------------------------------------------------------
++
++describe('T4: OAuth boundary — token isolation and URL provenance', () => {
++  const disposers: Array<() => void> = []
++
++  function setupPlugin() {
++    const ctx = createPluginContext(rhythmPlugin.id, d => disposers.push(d))
++    rhythmPlugin.register(ctx)
++
++    const contributions = registry.getArea('panes')
++    const page = contributions.find(c => c.id === `${rhythmPlugin.id}:workspace`)
++
++    if (!page?.render) {
++      throw new Error('Rhythm workspace page contribution not registered')
++    }
++
++    const client = makeClient()
++
++    const utils = render(
++      <QueryClientProvider client={client}>{page.render()}</QueryClientProvider>
++    )
++
++    return utils
++  }
++
++  beforeEach(() => {
++    seedHostState()
++    pluginRestMock.mockReset()
++    openExternalMock.mockReset()
++    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
++      api: vi.fn(),
++      openExternal: openExternalMock
++    }
++  })
++
++  afterEach(() => {
++    disposers.splice(0).forEach(d => d())
++    cleanup()
++    resetHostState()
++    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
++    vi.clearAllMocks()
++  })
++
++  it('connect button invokes ctx.rest("/oauth/start", …) — not any other endpoint', async () => {
++    let resolveConnection!: (v: unknown) => void
++
++    pluginRestMock.mockImplementation((_id: string, path: string) => {
++      if (path === '/connection') {
++        return new Promise(res => { resolveConnection = res })
++      }
++
++      if (path === '/oauth/start') {
++        return Promise.resolve({
++          authorization_url: 'https://rhythm.example.com/oauth/authorize?client_id=safe'
++        })
++      }
++
++      return Promise.reject(new Error(`unexpected: ${path}`))
++    })
++
++    setupPlugin()
++
++    await act(async () => {
++      resolveConnection({ status: 'disconnected' })
++    })
++
++    const connectBtn = await screen.findByRole('button', { name: /connect/i })
++
++    await act(async () => {
++      connectBtn.click()
++    })
++
++    // pluginRest must have been called with '/oauth/start'.
++    expect(pluginRestMock).toHaveBeenCalledWith(
++      rhythmPlugin.id,
++      '/oauth/start',
++      expect.anything()
++    )
++  })
++
++  it('opens only the backend-returned authorization_url via the OS external-link capability', async () => {
++    const backendUrl = 'https://rhythm.example.com/oauth/authorize?client_id=safe'
++    let resolveConnection!: (v: unknown) => void
++
++    pluginRestMock.mockImplementation((_id: string, path: string) => {
++      if (path === '/connection') {
++        return new Promise(res => { resolveConnection = res })
++      }
++
++      if (path === '/oauth/start') {
++        return Promise.resolve({ authorization_url: backendUrl })
++      }
++
++      return Promise.reject(new Error(`unexpected: ${path}`))
++    })
++
++    setupPlugin()
++
++    await act(async () => {
++      resolveConnection({ status: 'disconnected' })
++    })
++
++    const connectBtn = await screen.findByRole('button', { name: /connect/i })
++
++    await act(async () => {
++      connectBtn.click()
++    })
++
++    await waitFor(() => expect(openExternalMock).toHaveBeenCalled())
++
++    // Only the exact backend-returned URL must have been opened.
++    expect(openExternalMock).toHaveBeenCalledWith(backendUrl)
++    expect(openExternalMock).toHaveBeenCalledTimes(1)
++  })
++
++  it('openExternal input contains no OAuth token', async () => {
++    const backendUrl = 'https://rhythm.example.com/oauth/authorize?client_id=safe'
++    let resolveConnection!: (v: unknown) => void
++
++    pluginRestMock.mockImplementation((_id: string, path: string) => {
++      if (path === '/connection') {
++        return new Promise(res => { resolveConnection = res })
++      }
++
++      if (path === '/oauth/start') {
++        return Promise.resolve({ authorization_url: backendUrl })
++      }
++
++      return Promise.reject(new Error(`unexpected: ${path}`))
++    })
++
++    setupPlugin()
++
++    await act(async () => {
++      resolveConnection({ status: 'disconnected' })
++    })
++
++    const connectBtn = await screen.findByRole('button', { name: /connect/i })
++
++    await act(async () => {
++      connectBtn.click()
++    })
++
++    await waitFor(() => expect(openExternalMock).toHaveBeenCalled())
++
++    const openedUrl: string = openExternalMock.mock.calls[0][0]
++
++    // The URL opened externally must not contain an access_token, id_token, or
++    // client_secret — only the backend-validated authorization_url.
++    expect(openedUrl).not.toMatch(/access_token|id_token|client_secret/i)
++    expect(openedUrl).toBe(backendUrl)
++  })
++
++  it('OAuth completion triggers a fresh GET /connection before mounting the workspace', async () => {
++    let resolveConnection!: (v: unknown) => void
++    let resolveOAuth!: (v: unknown) => void
++
++    let connectionCallCount = 0
++
++    pluginRestMock.mockImplementation((_id: string, path: string) => {
++      if (path === '/connection') {
++        connectionCallCount++
++
++        if (connectionCallCount === 1) {
++          return new Promise(res => { resolveConnection = res })
++        }
++
++        // Second call (post-OAuth) → connected.
++        return Promise.resolve({
++          status: 'connected',
++          identity: { user_id: 'u-post-oauth', display_name: 'OAuth User', email: 'oauth@rhythm.example.com' }
++        })
++      }
++
++      if (path === '/oauth/start') {
++        return new Promise(res => { resolveOAuth = res })
++      }
++
++      if (path === '/oauth/complete' || path.startsWith('/oauth/poll')) {
++        return Promise.resolve({ status: 'completed' })
++      }
++
++      return Promise.reject(new Error(`unexpected: ${path}`))
++    })
++
++    setupPlugin()
++
++    await act(async () => {
++      resolveConnection({ status: 'disconnected' })
++    })
++
++    const connectBtn = await screen.findByRole('button', { name: /connect/i })
++
++    await act(async () => {
++      connectBtn.click()
++    })
++
++    await act(async () => {
++      resolveOAuth({
++        authorization_url: 'https://rhythm.example.com/oauth/authorize?client_id=safe'
++      })
++    })
++
++    // Simulate OAuth completion callback from the OS (the app receives the
++    // redirect via deep-link or polling).  The page must issue a fresh
++    // GET /connection before publishing the connected workspace.
++    const connectionCallsBeforeOAuth = connectionCallCount
++
++    await waitFor(() => expect(connectionCallCount).toBeGreaterThan(connectionCallsBeforeOAuth))
++
++    // The workspace must be mounted with the backend-projected identity.
++    await screen.findByText(/OAuth User/)
++  })
++
++  it('currentUser comes from backend-projected identity, not from the OAuth token', async () => {
++    // The page renders identity from the /connection response only — it must
++    // never parse a JWT or decode an OAuth token client-side.
++    pluginRestMock.mockResolvedValue({
++      status: 'connected',
++      identity: { user_id: 'u-backend', display_name: 'Backend User', email: 'backend@rhythm.example.com' }
++    })
++
++    setupPlugin()
++
++    await screen.findByText(/Backend User/)
++
++    // Nothing in the rendered output should look like a decoded JWT payload or
++    // raw token string.
++    const bodyText = document.body.textContent ?? ''
++
++    expect(bodyText).not.toMatch(/eyJ[A-Za-z0-9_-]{10,}/)
++  })
++
++  it('no mutation endpoint is called during the initial render or auth flow', async () => {
++    pluginRestMock.mockResolvedValue({ status: 'disconnected' })
++
++    setupPlugin()
++
++    await screen.findByRole('button', { name: /connect/i })
++
++    // Only /connection (GET) should have been called — no POST/mutation paths.
++    const calledPaths = pluginRestMock.mock.calls.map((args: unknown[]) => args[1] as string)
++
++    for (const path of calledPaths) {
++      expect(path, `mutation endpoint ${path} must not be called during initial render`).toBe('/connection')
++    }
++  })
++})
+-- 
+2.50.1 (Apple Git-155)
+
