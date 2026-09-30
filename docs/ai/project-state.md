@@ -42,3 +42,11 @@ Nine `hcw/t_*/attempt-1` WIP snapshot commits (abandoned Hermes Coding Workflow 
 - `codex/sa-s3` 42dceebab4: tree identical to mega commit cd345ca2cd.
 - `feat/hermes-coding-workflow` 975e0759fe (local and origin): empty diff against `origin/main`, whose b47054e036 is the squashed #1.
 - Not candidates: `upstream/*` (1576+ mirrored NousResearch refs; the cleanup script narrows the fetch refspec to `upstream/main`), tags.
+
+### Addendum 2026-09-30 — `~/.hermes/hermes-agent` folded in
+The second clone of this GitHub repo (`~/.hermes/hermes-agent`, the checkout the Hermes gateway runs from; 47 worktrees, 33 local branches) was consolidated into this branch. Bundle: `~/Documents/.consolidation-backups/hermes-agent-2026-09-30.bundle` (110 heads, verified).
+- Merged (`--no-ff`): `agent-stack/opendesign-minimal` 64a6224658 (= `opendesign-webview`), `agent-stack/opendesign-preferences-s4a` 3ea834dfc5, `hcw/t_81f59d6c/attempt-1` a72aeced70.
+- Preserved as patches under `consolidation/unmerged/hermes-agent/` (add/add conflicts between sibling slices): `opendesign-theme-s3` e71305a9b7, `opendesign-theme-s3-final` 4ca699984e, `opendesign-secure-s2` 24c87403f8 (incl. WIP), `opendesign-runtime-s1` ee7ef02fc1, `hcw/t_81f59d6c/attempt-{2,3,4,5,6,7,8,9,10}`, `hcw/t_f67c4937/attempt-1` bafbf92dee (incl. WIP), `hcw/t_383d1c64/attempt-1` 82d584bc0f (WIP), and the main checkout's two local commits (68518c1f9 + WIP d0b51728b).
+- Already here: `fix/kanban-recursion-guard`, `stash-backup/0-2026-09-29`, all `wt/t_*` and `hcw/t_{7dc7edd1,c36c7f81,f5856b60}/attempt-1` (tip b3aef15a65).
+- Not merged: `wt/t_b6f33593` e49793c7ea is an upstream-sync snapshot (NousResearch main @ 2026-08-24, 14k-file diff vs this fork); its two discord commits are already on this branch via the autostash. Kept as local tag `archive/hermes-agent-wt-t_b6f33593-2026-09-30` and in the bundle.
+- `~/.hermes/hermes-agent` `main` (68518c1f9, tracks NousResearch main, 3,735 behind) was left as-is because the gateway runs from it; its worktrees and other branches were removed.
