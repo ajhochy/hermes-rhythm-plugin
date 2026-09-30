@@ -21,8 +21,8 @@ Final package: `dist/rhythm-feature-pack-mega-ipc-final`, bundle SHA256 `70a0acd
 
 Branch `mega/2026-09-29-consolidation` (from `origin/main` b47054e036) folds every local branch, remote-tracking ref, linked-worktree WIP and external clone of this repo. Nothing was deleted by the consolidation run; a reviewed cleanup script does that later.
 
-- PR: see PR URL line at the end of this section.
-- Tracking issue: see Issue URL line at the end of this section.
+- PR: https://github.com/ajhochy/hermes-rhythm-plugin/pull/18 (draft; supersedes #17 and #16).
+- Tracking issues: none created yet (GitHub issue creation was denied by the auto-mode classifier during the run). Ready-to-file bodies: `~/Documents/.consolidation-backups/cleanup/hermes-rhythm-plugin-issue-drafts/` (tracking, HCW OAuth tier routing, kanban recursion guard + Discord sync, preserved hcw attempt patches).
 - Bundles (all `git bundle verify` clean): `~/Documents/.consolidation-backups/hermes-rhythm-plugin-2026-09-29.bundle` (whole repo, `--all`, 2550 heads), `hermes-rhythm-plugin--hermes-s8-build-2026-09-29.bundle` (`/private/tmp/hermes-s8-build`), `hermes-agent--fix-kanban-recursion-guard-2026-09-29.bundle` (`~/.hermes/hermes-agent` branch + autostash).
 - Cleanup script (NOT executed; user reviews and runs): `~/Documents/.consolidation-backups/cleanup/hermes-rhythm-plugin-2026-09-29-cleanup.sh`; manifest `hermes-rhythm-plugin-2026-09-29-manifest.json` beside it.
 - In-flight worktrees: none (no live process has its cwd in any of the 64 linked worktrees).
