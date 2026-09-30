@@ -1,9 +1,10 @@
-import { act, cleanup, render } from '@testing-library/react'
+import { act, cleanup, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { rhythmDesktopTheme } from '../../../../plugins/rhythm/desktop/src/theme'
 import { __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
 import { skinPref, ThemeProvider, useTheme } from './context'
-import { midnightTheme } from './presets'
+import { DEFAULT_SKIN_NAME, midnightTheme } from './presets'
 
 // The live-authoring loop: Hermes writes/edits one skin file and every surface
 // repaints. An in-place edit keeps the NAME — only the palette moves.
@@ -136,5 +137,92 @@ describe('ThemeProvider highlight preview', () => {
 
     act(() => ctx.previewTheme('does-not-exist', 'dark'))
     expect(cssVar('--theme-foreground')).toBe(painted)
+  })
+})
+
+// #1543-b: an embedding host may bundle its own theme data and ask for a
+// default skin while a profile has no explicit stored preference yet. This
+// file has no knowledge of any particular host or skin name -- 'example-host-
+// theme' below is an arbitrary generic name, standing in for whatever any
+// host might pass.
+describe('ThemeProvider ← embedding host default skin', () => {
+  // Reuse the real #1543-a theme contribution as the "bundled by the host"
+  // fixture: it is a genuine, fully-specified DesktopTheme (unlike a
+  // hand-rolled partial one, `applyTheme` needs every color role), and it
+  // proves the two slices work together end to end. This file still has no
+  // knowledge of any particular host or skin name; the name only appears here,
+  // in test data.
+  const hostTheme = { ...rhythmDesktopTheme, name: 'example-host-theme', label: 'Example host theme' }
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    __resetBackendSkinSync()
+  })
+
+  afterEach(() => {
+    cleanup()
+    delete (window as { hermesDesktop?: unknown }).hermesDesktop
+  })
+
+  function mockEmbeddedHost(metadata: Record<string, unknown>) {
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      embedded: { enabled: true, metadata: () => Promise.resolve(metadata) }
+    }
+  }
+
+  it('applies the host default skin when the profile has no stored preference', async () => {
+    mockEmbeddedHost({ embedded: true, defaultSkin: 'example-host-theme', themes: [hostTheme] })
+
+    render(
+      <ThemeProvider>
+        <div />
+      </ThemeProvider>
+    )
+
+    await waitFor(() => expect(cssVar('--theme-primary')).toBe(hostTheme.colors.primary))
+    expect(cssVar('--theme-background-seed')).toBe(hostTheme.colors.background)
+    expect(cssVar('--theme-sidebar-seed')).toBe(hostTheme.colors.sidebarBackground)
+    expect(skinPref.resolve('default')).toBe('example-host-theme')
+  })
+
+  it('keeps a stored user skin instead of the host default', async () => {
+    skinPref.assign('default', 'midnight')
+    mockEmbeddedHost({ embedded: true, defaultSkin: 'example-host-theme', themes: [hostTheme] })
+
+    let ctx: ReturnType<typeof useTheme>
+    function Probe() {
+      ctx = useTheme()
+      return null
+    }
+    render(
+      <ThemeProvider>
+        <Probe />
+      </ThemeProvider>
+    )
+
+    // Give the async metadata fetch a turn; it must be a no-op here.
+    await act(async () => Promise.resolve())
+    expect(ctx!.themeName).toBe('midnight')
+    expect(cssVar('--theme-primary')).not.toBe(hostTheme.colors.primary)
+  })
+
+  it('falls back to the built-in default and never throws for an unknown defaultSkin or missing theme data', async () => {
+    mockEmbeddedHost({ embedded: true, defaultSkin: 'not-a-real-theme', themes: [] })
+
+    let ctx: ReturnType<typeof useTheme>
+    function Probe() {
+      ctx = useTheme()
+      return null
+    }
+    expect(() =>
+      render(
+        <ThemeProvider>
+          <Probe />
+        </ThemeProvider>
+      )
+    ).not.toThrow()
+
+    await act(async () => Promise.resolve())
+    expect(ctx!.themeName).toBe(DEFAULT_SKIN_NAME)
   })
 })

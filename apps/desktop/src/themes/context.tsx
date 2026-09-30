@@ -12,7 +12,7 @@
 import { useStore } from '@nanostores/react'
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 
-import { $registryVersion } from '@/contrib/registry'
+import { $registryVersion, registry } from '@/contrib/registry'
 import { matchesQuery, useMediaQuery } from '@/hooks/use-media-query'
 import { persistString, persistStringRecord, storedString, storedStringRecord } from '@/lib/storage'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
@@ -21,7 +21,7 @@ import { $backendThemes, $pendingSkinApply } from './backend-sync'
 import { hexToRgb, mix, readableOn } from './color'
 import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme } from './presets'
 import type { DesktopTheme, DesktopThemeColors } from './types'
-import { $userThemes, listAllThemes, resolveTheme } from './user-themes'
+import { $userThemes, listAllThemes, resolveTheme, THEMES_AREA } from './user-themes'
 
 // Legacy global skin (pre per-profile themes). Still the inheritance fallback
 // for any profile without its own assignment, so single-profile users and old
@@ -63,7 +63,13 @@ const profilePref = <T extends string>(record: string, legacy: string, normalize
     } else {
       persistStringRecord(record, { ...storedStringRecord(record), [profile]: value })
     }
-  }
+  },
+  /** True once this profile (or the legacy global slot) has an explicit
+   *  stored value — as opposed to `resolve` having fallen back to a default.
+   *  The embedded host-provided default skin only applies while this is
+   *  false, so an explicit user pick always wins. */
+  hasStored: (profile: string): boolean =>
+    storedStringRecord(record)[profile] !== undefined || storedString(legacy) !== null
 })
 
 export const skinPref = profilePref(PROFILE_SKINS_KEY, SKIN_KEY, normalizeSkin)
@@ -447,6 +453,45 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       $pendingSkinApply.set(null)
     }
   }, [pendingSkin, setTheme])
+
+  // Embedding host isolation (#1543-b): when this renderer is embedded in a
+  // host app, it may bundle its own theme data and ask for a default skin.
+  // Themes are contributed generically through THEMES_AREA, same as any
+  // plugin -- this file has no knowledge of any particular host or skin name.
+  // The default only wins the FIRST time (no explicit stored pick yet); once
+  // applied, it persists like any other choice, and every later boot resolves
+  // it through the normal per-profile preference path above.
+  useEffect(() => {
+    const embedded = window.hermesDesktop?.embedded
+    if (!embedded?.enabled) return
+
+    let cancelled = false
+    let dispose: (() => void) | undefined
+
+    embedded
+      .metadata()
+      .then(meta => {
+        if (cancelled) return
+        const themes = Array.isArray((meta as { themes?: unknown }).themes) ? (meta as { themes: unknown[] }).themes : []
+        if (themes.length) {
+          dispose = registry.registerMany(
+            themes.map((theme, index) => ({ area: THEMES_AREA, data: theme, id: `host-provided:${index}`, source: 'embedded-host' }))
+          )
+        }
+        const defaultSkin = (meta as { defaultSkin?: unknown }).defaultSkin
+        if (typeof defaultSkin === 'string' && resolveTheme(defaultSkin) && !skinPref.hasStored(profileKey)) {
+          setTheme(defaultSkin)
+        }
+      })
+      .catch(() => {
+        // Missing/unreachable metadata: keep painting Hermes' own default.
+      })
+
+    return () => {
+      cancelled = true
+      dispose?.()
+    }
+  }, [profileKey, setTheme])
 
   // The light/dark toggle (Shift+X by default) is owned by the keybind runtime
   // (`appearance.toggleMode`) so it shows up in the hotkey map and is rebindable.

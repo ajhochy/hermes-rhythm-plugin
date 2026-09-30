@@ -18,7 +18,19 @@ declare global {
       /** Present for the Rhythm-owned renderer; app-window controls stay host-owned. */
       embedded?: {
         enabled: boolean
-        metadata: () => Promise<{ embedded: boolean; host?: string; schemaVersion?: number }>
+        metadata: () => Promise<{
+          embedded: boolean
+          host?: string
+          schemaVersion?: number
+          /** Skin name the embedding host would like applied when this
+           *  profile has no explicit stored preference yet. Generic: this
+           *  file has no knowledge of what names are valid. */
+          defaultSkin?: string
+          /** Theme JSON bundled into the embedded artifact, contributed
+           *  through THEMES_AREA so `defaultSkin` (and the palette/settings
+           *  grid) can resolve them without the host's own plugin. */
+          themes?: unknown[]
+        }>
         onIntent: (
           callback: (intent: EmbeddedHermesIntent) => void
         ) => () => void

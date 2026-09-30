@@ -33,14 +33,14 @@ def test_rhythm_theme_contains_required_light_and_dark_tokens():
     css = (PLUGIN_ROOT / THEME_RELATIVE).read_text(encoding="utf-8")
 
     for token in (
-        "#4F6AF5",
-        "#F8F9FA",
-        "#E5E7EB",
-        "#111827",
-        "#6B7280",
-        "#9CA3AF",
-        "#EF4444",
-        "#10B981",
+        "#007760",
+        "#D8EEE5",
+        "#C0D7D1",
+        "#03201D",
+        "#19403A",
+        "#2E5951",
+        "#AC1730",
+        "#00631B",
         "--color-primary",
         "--component-sidebar-background",
         "--color-border",
@@ -105,6 +105,39 @@ def test_dashboard_theme_declaration_rejects_external_and_traversal_css(tmp_path
     assert _normalise_dashboard_plugin_theme(
         "../theme.css", plugin_name="example", dashboard_dir=dashboard
     ) is None
+
+
+def test_theme_generator_matches_committed_output():
+    """RED first: tokens.json is the single source of truth. Regenerating from
+    it must reproduce every committed generated theme file
+    byte-for-byte."""
+    from plugins.rhythm.theme import generate
+
+    tokens = generate.load_tokens()
+    assert generate.render_css(tokens) == generate.CSS_PATH.read_text(encoding="utf-8")
+    assert generate.render_desktop_theme_ts(tokens) == generate.DESKTOP_THEME_PATH.read_text(encoding="utf-8")
+    assert generate.render_embedded_theme_json(tokens) == generate.EMBEDDED_THEME_PATH.read_text(encoding="utf-8")
+
+
+def test_theme_generator_check_fails_on_one_hex_drift(tmp_path, monkeypatch):
+    """A single-hex drift in either committed file must fail `--check`."""
+    from plugins.rhythm.theme import generate
+
+    drifted_css = tmp_path / "rhythm.css"
+    unchanged_ts = tmp_path / "theme.ts"
+    drifted_css.write_text(
+        generate.CSS_PATH.read_text(encoding="utf-8").replace("#007760", "#000000", 1), encoding="utf-8"
+    )
+    unchanged_ts.write_text(generate.DESKTOP_THEME_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+
+    monkeypatch.setattr(generate, "CSS_PATH", drifted_css)
+    monkeypatch.setattr(generate, "DESKTOP_THEME_PATH", unchanged_ts)
+
+    assert generate.main(["--check"]) == 1
+
+    generate.main(["--write"])
+    assert drifted_css.read_text(encoding="utf-8") == generate.render_css(generate.load_tokens())
+    assert generate.main(["--check"]) == 0
 
 
 def test_feature_pack_build_contains_theme(tmp_path):

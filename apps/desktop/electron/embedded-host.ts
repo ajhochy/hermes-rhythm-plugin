@@ -18,6 +18,18 @@ import { waitForDashboardPortAnnouncement } from './backend-ready'
 import type { DesktopRuntimeWindowAdapter } from './desktop-native-runtime'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 
+/**
+ * Bumped whenever this module's exported surface for an embedding host --
+ * `createEmbeddedHermesHost`'s options shape, its returned host methods, or
+ * the IPC channel contract it registers -- changes in a way the embedding
+ * host must know about. The embedded artifact builder (#1570-b) reads this
+ * constant directly from the compiled bytes it packages and writes it into
+ * manifest.hostApiVersion, so the value shipped can never drift from what
+ * this module actually implements. Rhythm gates on it before importing an
+ * installed (updated) artifact.
+ */
+export const EMBEDDED_HOST_API_VERSION = 1
+
 export interface EmbeddedWebContents {
   id?: number
   mainFrame?: unknown
@@ -54,6 +66,11 @@ export interface EmbeddedHermesHostOptions {
   mediaConsent?: (request: EmbeddedPermissionRequest) => Promise<boolean> | boolean
   /** Rhythm's narrowly supplied external-browser action (usually shell.openExternal). */
   openExternal?: (url: string) => Promise<void> | void
+  /** Skin name the embedding host would like applied while the renderer's own
+   *  profile has no explicit stored preference yet (#1543-b). Generic: this
+   *  module has no built-in notion of what names are valid -- the renderer's
+   *  theme registry decides, and any host may pass any name. */
+  defaultSkin?: string
 }
 
 export type BrokeredKeyName = 'OPENROUTER_API_KEY' | 'ANTHROPIC_API_KEY' | 'OPENAI_API_KEY' | 'GOOGLE_API_KEY'
@@ -158,6 +175,41 @@ const EMBEDDED_RUNTIME_MANIFEST = 'embedded-runtime.json'
 
 function logLine(log: EmbeddedHermesHostOptions['log'], line: string) {
   log?.(`[embedded-host] ${line}`)
+}
+
+const THEMES_SUBDIR = 'themes'
+
+/**
+ * Reads bundled theme JSON files from the embedded artifact (#1543-b), so the
+ * renderer's generic theme registry can resolve a host-requested default skin
+ * offline, without the host's own plugin/marketplace being installed. This
+ * module has no opinion on their contents beyond "valid JSON object" -- the
+ * artifact's own integrity check is what guards these bytes; a missing
+ * `themes/` folder or an unreadable/corrupt file is skipped, never thrown.
+ */
+export function loadEmbeddedThemeFiles(assetRoot: string, log?: EmbeddedHermesHostOptions['log']): unknown[] {
+  const dir = path.join(assetRoot, THEMES_SUBDIR)
+  let names: string[]
+
+  try {
+    names = fs.readdirSync(dir).filter(name => name.endsWith('.json')).sort()
+  } catch {
+    return []
+  }
+
+  const themes: unknown[] = []
+  for (const name of names) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'))
+      if (parsed && typeof parsed === 'object') {
+        themes.push(parsed)
+      }
+    } catch (error) {
+      logLine(log, `ignoring unreadable theme file ${name}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  return themes
 }
 
 function trustedDocumentUrl(assetRoot: string): URL {
@@ -1430,7 +1482,9 @@ export async function createEmbeddedHermesHostForTest(
     assetRoot: options.assetRoot,
     embedded: true,
     host: 'rhythm',
-    schemaVersion: 1
+    schemaVersion: 1,
+    defaultSkin: options.defaultSkin,
+    themes: loadEmbeddedThemeFiles(options.assetRoot, options.log)
   }))
 
   if (registerCoreBridge) {

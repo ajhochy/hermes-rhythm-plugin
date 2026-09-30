@@ -1256,7 +1256,12 @@ function writePersistedThemeSource(mode) {
   }
 }
 
-nativeTheme.themeSource = readPersistedThemeSource()
+// Rhythm owns the shared Electron `nativeTheme` singleton and its own window
+// chrome when embedded — pinning it here would repaint Rhythm's own windows
+// from inside the embedded Hermes renderer. Standalone Hermes keeps owning it.
+if (!embedded) {
+  nativeTheme.themeSource = readPersistedThemeSource()
+}
 
 // Window translucency (see-through window). One lever, 0–100; 0 = off (the
 // default). Two modes share the lever (see electron/translucency.ts and
@@ -14441,8 +14446,11 @@ ipcMain.on('hermes:titlebar-theme', (_event, payload) => {
 })
 
 // Pin the native appearance to the app theme (see NATIVE_THEME_CONFIG_PATH).
+// Embedded mode never touches the shared nativeTheme singleton or writes this
+// file into the host's userData tree — Rhythm's own chrome must stay isolated
+// from Hermes' in-tab appearance choice (and vice versa).
 ipcMain.on('hermes:native-theme', (_event, mode) => {
-  if (!THEME_SOURCES.has(mode)) {
+  if (embedded || !THEME_SOURCES.has(mode)) {
     return
   }
 
