@@ -721,6 +721,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Promote even if parent dependencies are not yet done/archived",
     )
     p_promote.add_argument(
+        "--allow-triage",
+        action="store_true",
+        help="Permit triage -> ready without changing the task specification; parent checks still apply",
+    )
+    p_promote.add_argument(
         "--dry-run",
         action="store_true",
         help="Validate the promotion without mutating state",
@@ -2541,6 +2546,7 @@ def _cmd_promote(args: argparse.Namespace) -> int:
                 actor=author,
                 reason=reason,
                 force=bool(args.force),
+                allow_triage=bool(getattr(args, "allow_triage", False)),
                 dry_run=bool(args.dry_run),
             )
             results.append({
@@ -2548,6 +2554,7 @@ def _cmd_promote(args: argparse.Namespace) -> int:
                 "promoted": ok,
                 "dry_run": bool(args.dry_run),
                 "forced": bool(args.force),
+                "allow_triage": bool(getattr(args, "allow_triage", False)),
                 "reason": reason,
                 "error": err,
             })
