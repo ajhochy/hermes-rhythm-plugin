@@ -1,0 +1,38 @@
+{
+  "action": "assigned",
+  "issue": {
+    "number": 42,
+    "title": "Fix login redirect loop (clarified)",
+    "body": "Updated body.",
+    "state": "open",
+    "created_at": "2026-08-21T10:00:00Z",
+    "updated_at": "2026-08-21T10:30:00Z",
+    "html_url": "https://github.com/allowed-org/allowed-repo/issues/42",
+    "user": {
+      "login": "reporter-alice",
+      "type": "User"
+    },
+    "labels": [],
+    "assignees": [{"login": "maintainer-bob"}]
+  },
+  "assignee": {
+    "login": "maintainer-bob"
+  },
+  "repository": {
+    "id": 100001,
+    "name": "allowed-repo",
+    "full_name": "allowed-org/allowed-repo",
+    "owner": {
+      "login": "allowed-org",
+      "type": "Organization"
+    },
+    "private": false
+  },
+  "sender": {
+    "login": "maintainer-bob",
+    "type": "User"
+  },
+  "installation": {
+    "id": 99001
+  }
+}

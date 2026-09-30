@@ -1,0 +1,12 @@
+name: github-intake
+version: "0.1.0"
+enabled: false
+dry_run: true
+kill_switch: false
+description: >
+  Disabled-by-default GitHub issue intake plugin.
+  Creates canonical Kanban records and deterministic HCW routes.
+  Requires explicit enablement and kill_switch=false to activate.
+permissions:
+  - read:issues
+  - write:local_board

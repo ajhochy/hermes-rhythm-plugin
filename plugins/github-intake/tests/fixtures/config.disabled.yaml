@@ -1,0 +1,29 @@
+# GitHub Intake Plugin — disabled-by-default configuration fixture.
+# This file is used in tests to verify safe-default behavior.
+plugin: github-intake
+enabled: false
+dry_run: true
+kill_switch: false
+
+webhook:
+  secret_env: GITHUB_INTAKE_WEBHOOK_SECRET
+  max_payload_bytes: 1048576
+
+allowlist:
+  owners:
+    - allowed-org
+  repositories:
+    - allowed-org/allowed-repo
+
+routing:
+  default_board: local-test-board
+  rules: []
+
+recovery:
+  max_attempts: 5
+  base_backoff_seconds: 1
+  max_backoff_seconds: 300
+
+audit:
+  enabled: true
+  redact_body: true
