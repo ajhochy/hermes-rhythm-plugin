@@ -1,0 +1,63 @@
+From 687b7b1f7ae865fa4fb457a9f5556f2168b78ce4 Mon Sep 17 00:00:00 2001
+From: ajhochy <ajhochy@gmail.com>
+Date: Tue, 29 Sep 2026 22:49:38 -0700
+Subject: [PATCH] WIP snapshot hcw/t_5a65dde9/attempt-1 2026-09-29
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ .../contrib/rhythm-page.acceptance.test.tsx   | 43 +++++++++++++++++++
+ 1 file changed, 43 insertions(+)
+ create mode 100644 apps/desktop/src/contrib/rhythm-page.acceptance.test.tsx
+
+diff --git a/apps/desktop/src/contrib/rhythm-page.acceptance.test.tsx b/apps/desktop/src/contrib/rhythm-page.acceptance.test.tsx
+new file mode 100644
+index 0000000000..6b989f7497
+--- /dev/null
++++ b/apps/desktop/src/contrib/rhythm-page.acceptance.test.tsx
+@@ -0,0 +1,43 @@
++import { cleanup, render, screen } from '@testing-library/react'
++import { afterEach, describe, expect, it } from 'vitest'
++
++import { contributedRoutes } from '@/app/routes'
++import { $narrowViewport } from '@/components/pane-shell/tree/store'
++
++import { createPluginContext } from './plugin'
++import plugin from '../../../../plugins/rhythm/desktop/src/plugin'
++
++describe('Rhythm page acceptance (#15)', () => {
++  afterEach(() => {
++    cleanup()
++    $narrowViewport.set(false)
++  })
++
++  it('issue-15-c1: passes viewport=compact to the workspace adapter when the window is narrow', async () => {
++    const disposers: Array<() => void> = []
++    plugin.register(createPluginContext('rhythm', dispose => disposers.push(dispose)))
++
++    $narrowViewport.set(true)
++
++    const [route] = contributedRoutes().filter(r => r.path === '/rhythm')
++    render(route.render())
++
++    const dashboardScreen = await screen.findByTestId('rhythm-dashboard-screen')
++    expect(dashboardScreen.getAttribute('data-rhythm-viewport')).toBe('compact')
++
++    disposers.forEach(d => d())
++  })
++
++  it('issue-15-c2: the workspace root carries the active connection identity for external framing', async () => {
++    const disposers: Array<() => void> = []
++    plugin.register(createPluginContext('rhythm', dispose => disposers.push(dispose)))
++
++    const [route] = contributedRoutes().filter(r => r.path === '/rhythm')
++    render(route.render())
++
++    const workspace = await screen.findByTestId('rhythm-workspace-readonly')
++    expect(workspace.getAttribute('data-connection-id')).toBe('local')
++
++    disposers.forEach(d => d())
++  })
++})
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,234 @@
+From e81fb679698f8816bfbd546e4b7b2bcb4d506e1d Mon Sep 17 00:00:00 2001
+From: ajhochy <ajhochy@gmail.com>
+Date: Tue, 29 Sep 2026 22:49:38 -0700
+Subject: [PATCH] WIP snapshot hcw/t_e3646d73/attempt-1 2026-09-29
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ .../contrib/rhythm-page.acceptance.test.tsx   | 214 ++++++++++++++++++
+ 1 file changed, 214 insertions(+)
+ create mode 100644 apps/desktop/src/contrib/rhythm-page.acceptance.test.tsx
+
+diff --git a/apps/desktop/src/contrib/rhythm-page.acceptance.test.tsx b/apps/desktop/src/contrib/rhythm-page.acceptance.test.tsx
+new file mode 100644
+index 0000000000..7441a58cc4
+--- /dev/null
++++ b/apps/desktop/src/contrib/rhythm-page.acceptance.test.tsx
+@@ -0,0 +1,214 @@
++/**
++ * Rhythm page acceptance: behavior-level contracts for the registered /rhythm
++ * route and its profile-plus-gateway connection identity flow.
++ *
++ * Tests go through the full createPluginContext → plugin.register →
++ * contributedRoutes → render() pathway so the contract is verified at the
++ * integration boundary the host actually uses, not by importing workspace-UI
++ * screens directly.
++ */
++import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
++
++import { contributedRoutes } from '@/app/routes'
++import { $activeGatewayProfile } from '@/store/profile'
++import { $connection, $gatewayState } from '@/store/session'
++
++import { createPluginContext } from './plugin'
++import plugin from '../../../../plugins/rhythm/desktop/src/plugin'
++
++// ── Colocated deterministic fixtures ─────────────────────────────────────────
++
++const kAlphaSummary = {
++  openTaskCount: 1,
++  threadCount: 0,
++  tasks: [
++    {
++      id: 'alpha-task-1',
++      title: 'Alpha fixture task',
++      notes: '',
++      status: 'open' as const,
++      bucket: 'today' as const,
++      dueLabel: 'Today',
++    },
++  ],
++  project: null,
++  unreadThreads: [],
++}
++
++const kBetaSummary = {
++  openTaskCount: 1,
++  threadCount: 0,
++  tasks: [
++    {
++      id: 'beta-task-1',
++      title: 'Beta fixture task',
++      notes: '',
++      status: 'open' as const,
++      bucket: 'today' as const,
++      dueLabel: 'Today',
++    },
++  ],
++  project: null,
++  unreadThreads: [],
++}
++
++// Shared controllable REST mock — each describe reconfigures it in beforeEach.
++const mockPluginRest = vi.fn()
++
++vi.mock('@/hermes', async importOriginal => {
++  const original = await importOriginal<typeof import('@/hermes')>()
++  return {
++    ...original,
++    pluginRest: (...args: unknown[]) => mockPluginRest(...args),
++    pluginSocket: vi.fn().mockReturnValue(() => undefined),
++  }
++})
++
++// ── P1: route-mounted workspace behavior ─────────────────────────────────────
++
++describe('Rhythm page acceptance: route-mounted workspace behavior', () => {
++  const disposeHandlers: Array<() => void> = []
++
++  beforeEach(() => {
++    disposeHandlers.length = 0
++    // Controlled: alpha summary resolves immediately, tasks always empty.
++    mockPluginRest.mockImplementation(async (_pluginId: string, path: string) => {
++      if (path === '/dashboard-summary') return kAlphaSummary
++      if (path === '/tasks') return { tasks: kAlphaSummary.tasks }
++      return {}
++    })
++    plugin.register(createPluginContext('rhythm', d => disposeHandlers.push(d)))
++  })
++
++  afterEach(() => {
++    disposeHandlers.forEach(d => d())
++    disposeHandlers.length = 0
++    cleanup()
++    $activeGatewayProfile.set('default')
++    mockPluginRest.mockReset()
++  })
++
++  it('resolves exactly one /rhythm contributed route with a callable render function', () => {
++    const routes = contributedRoutes().filter(r => r.path === '/rhythm')
++    expect(routes).toHaveLength(1)
++    expect(typeof routes[0]!.render).toBe('function')
++  })
++
++  it('mounts the workspace root landmark with stable accessibility attributes', () => {
++    const [route] = contributedRoutes().filter(r => r.path === '/rhythm')
++    const { container } = render(route!.render())
++
++    const root = container.querySelector('[data-testid="rhythm-workspace-readonly"]')
++    expect(root).not.toBeNull()
++    expect(root?.tagName.toLowerCase()).toBe('main')
++    expect(root?.getAttribute('aria-label')).toBe('Rhythm workspace')
++    // Production route sets data-readonly="false" (distinct from the test wrapper)
++    expect(root?.getAttribute('data-readonly')).toBe('false')
++  })
++
++  it('renders the dashboard screen through the registered route', async () => {
++    const [route] = contributedRoutes().filter(r => r.path === '/rhythm')
++    render(route!.render())
++
++    // The default tab is the dashboard screen
++    await screen.findByTestId('rhythm-dashboard-screen')
++    // Dashboard content from the colocated fixture is visible
++    await screen.findByText('Alpha fixture task')
++  })
++
++  it('RED: route-mounted workspace exposes the active profile identity in the DOM', async () => {
++    const [route] = contributedRoutes().filter(r => r.path === '/rhythm')
++    render(route!.render())
++
++    await screen.findByTestId('rhythm-dashboard-screen')
++    await screen.findByText('Alpha fixture task')
++
++    const root = screen.getByTestId('rhythm-workspace-readonly')
++
++    // RED: The registered Rhythm route should emit the active connection profile
++    // as an externally observable DOM attribute so acceptance tests — and
++    // accessibility tooling — can verify which identity the workspace is bound to.
++    // Fails because RhythmWorkspace does not yet set data-profile on its root.
++    expect(root.getAttribute('data-profile')).toBe($activeGatewayProfile.get())
++  })
++})
++
++// ── P2: profile-plus-gateway identity flow ───────────────────────────────────
++
++describe('Rhythm page acceptance: profile-plus-gateway identity flow', () => {
++  const disposeHandlers: Array<() => void> = []
++  let resolveAlpha!: (value: unknown) => void
++  let alphaSummaryPending: Promise<unknown>
++
++  beforeEach(() => {
++    disposeHandlers.length = 0
++
++    let summaryCallCount = 0
++    alphaSummaryPending = new Promise<unknown>(resolve => {
++      resolveAlpha = resolve
++    })
++
++    // Call 1 (alpha's initial summary): deferred — held by the test.
++    // Call 2+ (beta's summary): resolves immediately with beta fixture.
++    mockPluginRest.mockImplementation(async (_pluginId: string, path: string) => {
++      if (path === '/dashboard-summary') {
++        summaryCallCount++
++        return summaryCallCount === 1 ? alphaSummaryPending : kBetaSummary
++      }
++      if (path === '/tasks') return { tasks: [] }
++      return {}
++    })
++
++    plugin.register(createPluginContext('rhythm', d => disposeHandlers.push(d)))
++  })
++
++  afterEach(() => {
++    disposeHandlers.forEach(d => d())
++    disposeHandlers.length = 0
++    cleanup()
++    $activeGatewayProfile.set('default')
++    $connection.set(null)
++    $gatewayState.set('idle')
++    mockPluginRest.mockReset()
++  })
++
++  it('RED: re-homes page to new profile/gateway and blocks deferred prior-context publication', async () => {
++    const [route] = contributedRoutes().filter(r => r.path === '/rhythm')
++
++    // Initial identity: default profile, alpha summary deferred
++    render(route!.render())
++    await screen.findByTestId('rhythm-dashboard-screen')
++    // Alpha is still loading (deferred promise)
++    expect(screen.queryByTestId('page-state-loading')).not.toBeNull()
++
++    // Switch identity: beta profile activates, generation key changes, provider remounts
++    act(() => {
++      $activeGatewayProfile.set('beta')
++    })
++
++    // Beta resolves immediately — beta fixture content should appear
++    await screen.findByText('Beta fixture task')
++    expect(screen.queryByText('Alpha fixture task')).toBeNull()
++
++    // Deferred alpha promise resolves after the re-home — must not publish
++    act(() => {
++      resolveAlpha(kAlphaSummary)
++    })
++
++    await waitFor(() => {
++      expect(screen.queryByText('Alpha fixture task')).toBeNull()
++    })
++
++    // Registration retains exactly one Rhythm route owner through the identity switch
++    const rhythmRoutes = contributedRoutes().filter(r => r.path === '/rhythm')
++    expect(rhythmRoutes).toHaveLength(1)
++
++    // RED: After re-homing to beta, the workspace root should reflect the new
++    // profile identity in the DOM so callers can observe the live connection owner
++    // without reading internal store state.
++    // Fails because RhythmWorkspace does not yet emit data-profile on its root.
++    const root = screen.getByTestId('rhythm-workspace-readonly')
++    expect(root.getAttribute('data-profile')).toBe('beta')
++  })
++})
+-- 
+2.50.1 (Apple Git-155)
+

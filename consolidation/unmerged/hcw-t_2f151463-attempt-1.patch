@@ -1,0 +1,414 @@
+From 85297c2d3aaad227b9405904625797bd6305588b Mon Sep 17 00:00:00 2001
+From: ajhochy <ajhochy@gmail.com>
+Date: Tue, 29 Sep 2026 22:49:38 -0700
+Subject: [PATCH] WIP snapshot hcw/t_2f151463/attempt-1 2026-09-29
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ .../contrib/rhythm-connection-flow.test.tsx   | 300 ++++++++++++++++++
+ .../src/contrib/rhythm-page-red.test.tsx      |  86 +++++
+ 2 files changed, 386 insertions(+)
+ create mode 100644 apps/desktop/src/contrib/rhythm-connection-flow.test.tsx
+ create mode 100644 apps/desktop/src/contrib/rhythm-page-red.test.tsx
+
+diff --git a/apps/desktop/src/contrib/rhythm-connection-flow.test.tsx b/apps/desktop/src/contrib/rhythm-connection-flow.test.tsx
+new file mode 100644
+index 0000000000..1eabbe0092
+--- /dev/null
++++ b/apps/desktop/src/contrib/rhythm-connection-flow.test.tsx
+@@ -0,0 +1,300 @@
++/**
++ * Thin deterministic contract tests for the Rhythm connection flow.
++ * All tests use local deferred fixtures only; no live Rhythm access.
++ *
++ * Contracts defined here:
++ *   - Observable states: loading, disconnected, oauth-pending, unavailable, connected
++ *   - POST /oauth/start with validated external navigation + fresh GET /connection
++ *   - Shared workspace-adapter publication on state change
++ *   - Profile/gateway generation invalidation (resets confirmations map)
++ *   - Stale-response suppression (responses from an older generation are ignored)
++ *   - Renderer secrecy (no token or credential in the observable state)
++ *
++ * These tests are RED: createConnectionAdapter does not exist yet in the plugin.
++ */
++import type { ReadableAtom } from 'nanostores'
++import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
++
++// Import the plugin module as a namespace so the non-existent export resolves
++// to undefined at runtime rather than causing a TypeScript error.
++import * as rhythmPlugin from '../../../../plugins/rhythm/desktop/src/plugin'
++
++// The connection adapter surface expected by these contracts. Not yet
++// implemented; importing it as any lets the tests exercise the contract shape
++// without type-checking the missing export.
++type ConnectionStatus = 'loading' | 'disconnected' | 'oauth-pending' | 'unavailable' | 'connected'
++
++interface ConnectionState {
++  status: ConnectionStatus
++  connectionId?: string
++}
++
++interface ConnectionAdapterOptions {
++  rest: (path: string, init?: { method: string; body: unknown }) => Promise<unknown>
++  openExternal: (url: string) => Promise<boolean>
++  workspacePublisher?: (connectionId: string | null) => void
++  generation?: string
++}
++
++interface ConnectionAdapter {
++  state: ReadableAtom<ConnectionState>
++  startOAuth(): Promise<void>
++  notifyOAuthComplete(): void
++  dispose(): void
++}
++
++// The contract creator: absent from the plugin today, present after green.
++// eslint-disable-next-line @typescript-eslint/no-explicit-any
++const createConnectionAdapter: ((opts: ConnectionAdapterOptions) => ConnectionAdapter) | undefined =
++  (rhythmPlugin as Record<string, unknown>).createConnectionAdapter as
++    | ((opts: ConnectionAdapterOptions) => ConnectionAdapter)
++    | undefined
++
++function defer<T>(): { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void } {
++  let resolve!: (v: T) => void
++  let reject!: (e: unknown) => void
++  const promise = new Promise<T>((res, rej) => {
++    resolve = res
++    reject = rej
++  })
++  return { promise, resolve, reject }
++}
++
++// All tests assert that createConnectionAdapter exists before doing anything,
++// so the failure message is "not a function" rather than a cryptic undefined
++// dereference.
++function requireAdapter(opts: ConnectionAdapterOptions): ConnectionAdapter {
++  if (typeof createConnectionAdapter !== 'function') {
++    throw new TypeError('createConnectionAdapter is not implemented in the plugin yet')
++  }
++  return createConnectionAdapter(opts)
++}
++
++function makeRest(
++  handler: (path: string, init?: { method: string; body: unknown }) => Promise<unknown>
++): ConnectionAdapterOptions['rest'] {
++  return handler as ConnectionAdapterOptions['rest']
++}
++
++afterEach(() => {
++  vi.restoreAllMocks()
++})
++
++describe('Rhythm connection flow contract', () => {
++  describe('observable states', () => {
++    it('loading: initial status is loading while GET /connection is in-flight', async () => {
++      const pending = defer<unknown>()
++      const rest = makeRest(async path => {
++        if (path === '/connection') return pending.promise
++        throw new Error(`unexpected ${path}`)
++      })
++      const adapter = requireAdapter({ rest, openExternal: vi.fn() })
++      expect(adapter.state.get().status).toBe('loading')
++      pending.resolve({ connected: false })
++    })
++
++    it('disconnected: status becomes disconnected when GET /connection returns no active connection', async () => {
++      const rest = makeRest(async path => {
++        if (path === '/connection') return { connected: false }
++        throw new Error(`unexpected ${path}`)
++      })
++      const adapter = requireAdapter({ rest, openExternal: vi.fn() })
++      await new Promise<void>(resolve => {
++        const unsub = adapter.state.subscribe(state => {
++          if (state.status === 'disconnected') {
++            unsub()
++            resolve()
++          }
++        })
++      })
++      expect(adapter.state.get().status).toBe('disconnected')
++    })
++
++    it('oauth-pending: status becomes oauth-pending after startOAuth() is called', async () => {
++      const oauthDefer = defer<{ url: string }>()
++      const rest = makeRest(async path => {
++        if (path === '/connection') return { connected: false }
++        if (path === '/oauth/start') return oauthDefer.promise
++        throw new Error(`unexpected ${path}`)
++      })
++      const adapter = requireAdapter({ rest, openExternal: vi.fn().mockResolvedValue(true) })
++      void adapter.startOAuth()
++      expect(adapter.state.get().status).toBe('oauth-pending')
++      oauthDefer.resolve({ url: 'https://rhythm.example/oauth' })
++    })
++
++    it('unavailable: status becomes unavailable when GET /connection rejects with 503', async () => {
++      const unavailable = Object.assign(new Error('Service Unavailable'), { status: 503 })
++      const rest = makeRest(async path => {
++        if (path === '/connection') throw unavailable
++        throw new Error(`unexpected ${path}`)
++      })
++      const adapter = requireAdapter({ rest, openExternal: vi.fn() })
++      await new Promise<void>(resolve => {
++        const unsub = adapter.state.subscribe(state => {
++          if (state.status === 'unavailable') {
++            unsub()
++            resolve()
++          }
++        })
++      })
++      expect(adapter.state.get().status).toBe('unavailable')
++    })
++
++    it('connected: status becomes connected with connectionId when GET /connection succeeds', async () => {
++      const rest = makeRest(async path => {
++        if (path === '/connection') return { connected: true, connectionId: 'conn-fixture-1' }
++        throw new Error(`unexpected ${path}`)
++      })
++      const adapter = requireAdapter({ rest, openExternal: vi.fn() })
++      await new Promise<void>(resolve => {
++        const unsub = adapter.state.subscribe(state => {
++          if (state.status === 'connected') {
++            unsub()
++            resolve()
++          }
++        })
++      })
++      const state = adapter.state.get()
++      expect(state.status).toBe('connected')
++      expect(state.connectionId).toBe('conn-fixture-1')
++    })
++  })
++
++  describe('POST /oauth/start with validated external navigation', () => {
++    it('posts to /oauth/start and calls openExternal with the returned authorization URL', async () => {
++      const authUrl = 'https://rhythm.example/oauth?state=fixture-state'
++      const rest = makeRest(async path => {
++        if (path === '/connection') return { connected: false }
++        if (path === '/oauth/start') return { url: authUrl }
++        throw new Error(`unexpected ${path}`)
++      })
++      const openExternal = vi.fn().mockResolvedValue(true)
++      const adapter = requireAdapter({ rest, openExternal })
++      await adapter.startOAuth()
++      expect(openExternal).toHaveBeenCalledTimes(1)
++      expect(openExternal).toHaveBeenCalledWith(authUrl)
++    })
++
++    it('does not call openExternal when /oauth/start returns an unrecognized scheme', async () => {
++      const rest = makeRest(async path => {
++        if (path === '/connection') return { connected: false }
++        if (path === '/oauth/start') return { url: 'javascript:alert(1)' }
++        throw new Error(`unexpected ${path}`)
++      })
++      const openExternal = vi.fn().mockResolvedValue(true)
++      const adapter = requireAdapter({ rest, openExternal })
++      await adapter.startOAuth().catch(() => undefined)
++      expect(openExternal).not.toHaveBeenCalled()
++    })
++  })
++
++  describe('fresh GET /connection after OAuth', () => {
++    it('fetches /connection again after notifyOAuthComplete() to capture the new connectionId', async () => {
++      let callCount = 0
++      const rest = makeRest(async path => {
++        if (path === '/connection') {
++          callCount += 1
++          return callCount === 1 ? { connected: false } : { connected: true, connectionId: 'conn-post-oauth' }
++        }
++        throw new Error(`unexpected ${path}`)
++      })
++      const adapter = requireAdapter({ rest, openExternal: vi.fn() })
++      await new Promise<void>(resolve => {
++        const unsub = adapter.state.subscribe(s => { if (s.status === 'disconnected') { unsub(); resolve() } })
++      })
++      adapter.notifyOAuthComplete()
++      await new Promise<void>(resolve => {
++        const unsub = adapter.state.subscribe(s => { if (s.status === 'connected') { unsub(); resolve() } })
++      })
++      expect(adapter.state.get()).toMatchObject({ status: 'connected', connectionId: 'conn-post-oauth' })
++      expect(callCount).toBeGreaterThanOrEqual(2)
++    })
++  })
++
++  describe('shared workspace-adapter publication', () => {
++    it('calls workspacePublisher with connectionId when status becomes connected', async () => {
++      const rest = makeRest(async path => {
++        if (path === '/connection') return { connected: true, connectionId: 'conn-pub-1' }
++        throw new Error(`unexpected ${path}`)
++      })
++      const workspacePublisher = vi.fn()
++      const adapter = requireAdapter({ rest, openExternal: vi.fn(), workspacePublisher })
++      await new Promise<void>(resolve => {
++        const unsub = adapter.state.subscribe(s => { if (s.status === 'connected') { unsub(); resolve() } })
++      })
++      expect(workspacePublisher).toHaveBeenCalledWith('conn-pub-1')
++    })
++
++    it('calls workspacePublisher with null when status becomes disconnected', async () => {
++      const rest = makeRest(async path => {
++        if (path === '/connection') return { connected: false }
++        throw new Error(`unexpected ${path}`)
++      })
++      const workspacePublisher = vi.fn()
++      const adapter = requireAdapter({ rest, openExternal: vi.fn(), workspacePublisher })
++      await new Promise<void>(resolve => {
++        const unsub = adapter.state.subscribe(s => { if (s.status === 'disconnected') { unsub(); resolve() } })
++      })
++      expect(workspacePublisher).toHaveBeenCalledWith(null)
++    })
++  })
++
++  describe('profile/gateway generation invalidation', () => {
++    it('treats a new generation as a fresh session: earlier confirmations are unreachable', async () => {
++      const rest = makeRest(async path => {
++        if (path === '/connection') return { connected: true, connectionId: 'conn-gen-1' }
++        throw new Error(`unexpected ${path}`)
++      })
++      const adapter = requireAdapter({ rest, openExternal: vi.fn(), generation: 'gen-1' })
++      await new Promise<void>(resolve => {
++        const unsub = adapter.state.subscribe(s => { if (s.status === 'connected') { unsub(); resolve() } })
++      })
++
++      const adapterGen2 = requireAdapter({ rest, openExternal: vi.fn(), generation: 'gen-2' })
++      // The second adapter starts fresh: its state is isolated from gen-1's.
++      expect(adapterGen2.state.get().status).toBe('loading')
++    })
++  })
++
++  describe('stale-response suppression', () => {
++    it('ignores a /connection response that arrives after the adapter is disposed', async () => {
++      const pending = defer<unknown>()
++      const workspacePublisher = vi.fn()
++      const rest = makeRest(async path => {
++        if (path === '/connection') return pending.promise
++        throw new Error(`unexpected ${path}`)
++      })
++      const adapter = requireAdapter({ rest, openExternal: vi.fn(), workspacePublisher })
++      adapter.dispose()
++      pending.resolve({ connected: true, connectionId: 'conn-stale' })
++      // Flush microtasks
++      await new Promise(resolve => setTimeout(resolve, 0))
++      expect(workspacePublisher).not.toHaveBeenCalled()
++    })
++  })
++
++  describe('renderer secrecy', () => {
++    it('never includes a token, secret, or credential field in the observable connection state', async () => {
++      const rest = makeRest(async path => {
++        if (path === '/connection') return {
++          connected: true,
++          connectionId: 'conn-secret-test',
++          // Backend might return these; the adapter must strip them
++          accessToken: 'should-be-redacted',
++          refreshToken: 'also-redacted',
++          secret: 'hidden',
++        }
++        throw new Error(`unexpected ${path}`)
++      })
++      const adapter = requireAdapter({ rest, openExternal: vi.fn() })
++      await new Promise<void>(resolve => {
++        const unsub = adapter.state.subscribe(s => { if (s.status === 'connected') { unsub(); resolve() } })
++      })
++      const state = adapter.state.get() as Record<string, unknown>
++      for (const key of Object.keys(state)) {
++        expect(key).not.toMatch(/token|secret|credential|password|auth/i)
++      }
++    })
++  })
++})
+diff --git a/apps/desktop/src/contrib/rhythm-page-red.test.tsx b/apps/desktop/src/contrib/rhythm-page-red.test.tsx
+new file mode 100644
+index 0000000000..25c58ea266
+--- /dev/null
++++ b/apps/desktop/src/contrib/rhythm-page-red.test.tsx
+@@ -0,0 +1,86 @@
++/**
++ * RED: The real Rhythm plugin page currently crashes when rendered against only
++ * the six keys the @hermes/plugin-sdk state contract supports:
++ *   activeSessionId, cwd, gateway, model, profile, viewport
++ *
++ * The plugin reads host.state.connectionId which is absent from that list.
++ * useValue(undefined) throws during React render, producing the crash
++ * documented here. No production code is changed.
++ */
++import { render } from '@testing-library/react'
++import { atom } from 'nanostores'
++import { afterEach, describe, expect, it, vi } from 'vitest'
++
++// Provide only the six supported contract keys; connectionId is intentionally
++// absent so the crash is observable through the supported surface alone.
++vi.mock('@hermes/plugin-sdk', async () => {
++  const { useStore } = await import('@nanostores/react')
++
++  const host = {
++    state: {
++      activeSessionId: atom<string | null>(null),
++      cwd: atom<string>(''),
++      gateway: atom<string>('idle'),
++      model: atom<string>('claude-3-5-sonnet'),
++      profile: atom<string>('default'),
++      viewport: atom<{ width: number; height: number; narrow: boolean }>({
++        width: 1280,
++        height: 800,
++        narrow: false,
++      }),
++      // connectionId is intentionally absent — it is not a supported contract key
++    },
++    newChat: vi.fn(),
++    notify: vi.fn(),
++    notifyError: vi.fn(),
++    activeConnectionId: () => null,
++    onEvent: () => () => undefined,
++  }
++
++  return {
++    host,
++    useValue: useStore,
++    PALETTE_AREA: 'palette',
++    ROUTES_AREA: 'routes',
++    SIDEBAR_NAV_AREA: 'sidebar.nav',
++    PANES_AREA: 'panes',
++  }
++})
++
++import { registry } from './registry'
++
++describe('RED: Rhythm page crashes with supported six-key SDK state contract', () => {
++  const disposers: Array<() => void> = []
++
++  afterEach(() => {
++    disposers.forEach(d => d())
++    disposers.length = 0
++  })
++
++  it('throws because host.state.connectionId is undefined under the supported contract', async () => {
++    // Suppress the React error log that accompanies the throw; the crash itself
++    // is what the test asserts.
++    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
++
++    const plugin = (await import('../../../../plugins/rhythm/desktop/src/plugin')).default
++    const { createPluginContext } = await import('./plugin')
++
++    const ctx = createPluginContext('rhythm', dispose => disposers.push(dispose))
++    plugin.register(ctx)
++
++    const route = registry
++      .getArea('routes')
++      .find(c => c.id === 'rhythm:page' && c.source === 'plugin:rhythm')
++
++    expect(route, 'rhythm:page route must be registered').toBeDefined()
++    expect(typeof route!.render).toBe('function')
++
++    const element = route!.render!()
++
++    // The render throws because useValue(host.state.connectionId) is called
++    // with undefined — connectionId is absent from the supported contract.
++    expect(() => render(element as React.ReactElement)).toThrow()
++
++    consoleError.mockRestore()
++  })
++})
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,129 @@
+From 837575b5b9e1ca5ce951cc8819b0bbff3b7af28a Mon Sep 17 00:00:00 2001
+From: ajhochy <ajhochy@gmail.com>
+Date: Tue, 29 Sep 2026 22:49:37 -0700
+Subject: [PATCH] WIP snapshot hcw/t_c118913c/attempt-1 2026-09-29
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ apps/desktop/src/contrib/rhythm-page.test.tsx | 109 ++++++++++++++++++
+ 1 file changed, 109 insertions(+)
+ create mode 100644 apps/desktop/src/contrib/rhythm-page.test.tsx
+
+diff --git a/apps/desktop/src/contrib/rhythm-page.test.tsx b/apps/desktop/src/contrib/rhythm-page.test.tsx
+new file mode 100644
+index 0000000000..f30928defd
+--- /dev/null
++++ b/apps/desktop/src/contrib/rhythm-page.test.tsx
+@@ -0,0 +1,109 @@
++/**
++ * Behavior-level contract: the registered /rhythm route renders, reads the
++ * host connection/profile/gateway atoms, and re-homes deterministically when
++ * the active connection identity changes.
++ *
++ * RED intent: the workspace boundary must expose `data-connection` reflecting
++ * the active connectionId. The component currently has no such attribute, so
++ * these tests fail on the missing rendered identity behavior — never on fixture
++ * setup, timing, network, credentials, source inspection, or snapshots.
++ */
++import { cleanup, render, screen, waitFor } from '@testing-library/react'
++import { afterEach, beforeEach, describe, expect, it } from 'vitest'
++
++import { contributedRoutes } from '@/app/routes'
++import { createPluginContext } from '@/contrib/plugin'
++import { $activeGatewayProfile } from '@/store/profile'
++import { $connection, $gatewayState } from '@/store/session'
++
++import plugin from '../../../../plugins/rhythm/desktop/src/plugin'
++import type { HermesConnection } from '../global'
++
++function makeConnection(connectionId: string, profile: string): HermesConnection {
++  return {
++    baseUrl: 'http://localhost:5000',
++    connectionId,
++    profile,
++    isFullscreen: false,
++    mode: 'local',
++    nativeOverlayWidth: 0,
++    token: 'test-token',
++    wsUrl: 'ws://localhost:5000',
++    logs: [],
++  }
++}
++
++describe('Rhythm page connection-identity flow', () => {
++  let disposers: Array<() => void>
++
++  beforeEach(() => {
++    disposers = []
++    $activeGatewayProfile.set('default')
++    $connection.set(null)
++    $gatewayState.set('idle')
++    window.location.hash = ''
++  })
++
++  afterEach(() => {
++    disposers.forEach(d => d())
++    disposers = []
++    $activeGatewayProfile.set('default')
++    $connection.set(null)
++    $gatewayState.set('idle')
++    window.location.hash = ''
++    cleanup()
++  })
++
++  it('renders the registered /rhythm route and exposes a stable active-connection identity at the workspace boundary', async () => {
++    plugin.register(createPluginContext('rhythm', d => disposers.push(d)))
++
++    const rhythmRoute = contributedRoutes().find(r => r.path === '/rhythm')
++    expect(rhythmRoute, 'rhythm route must be contributed after registration').toBeDefined()
++
++    $connection.set(makeConnection('conn-alpha', 'profile-alpha'))
++    $activeGatewayProfile.set('profile-alpha')
++    $gatewayState.set('open')
++
++    render(rhythmRoute!.render())
++
++    const workspace = await screen.findByTestId('rhythm-workspace-readonly')
++    expect(workspace).toBeTruthy()
++
++    // The workspace boundary must expose the active connectionId so the host
++    // can observe which connection the route is homed on without inspecting
++    // React internals. This attribute is currently absent — the test is RED
++    // on the missing identity behavior, not on import or mount setup.
++    expect(workspace.getAttribute('data-connection')).toBe('conn-alpha')
++  })
++
++  it('re-homes to the second connection without retaining the first-connection identity or stale page state', async () => {
++    plugin.register(createPluginContext('rhythm', d => disposers.push(d)))
++
++    const rhythmRoute = contributedRoutes().find(r => r.path === '/rhythm')!
++
++    $connection.set(makeConnection('conn-alpha', 'profile-alpha'))
++    $activeGatewayProfile.set('profile-alpha')
++    $gatewayState.set('open')
++
++    const view = render(rhythmRoute.render())
++
++    const firstWorkspace = await screen.findByTestId('rhythm-workspace-readonly')
++    expect(firstWorkspace.getAttribute('data-connection')).toBe('conn-alpha')
++
++    // Switch the active connection identity.
++    $connection.set(makeConnection('conn-beta', 'profile-beta'))
++    $activeGatewayProfile.set('profile-beta')
++
++    // The route must re-home: the rendered boundary must carry the new identity
++    // and must not retain the first connection's identity marker.
++    await waitFor(() => {
++      const workspace = screen.getByTestId('rhythm-workspace-readonly')
++      expect(workspace.getAttribute('data-connection')).toBe('conn-beta')
++    })
++
++    const workspace = screen.getByTestId('rhythm-workspace-readonly')
++    expect(workspace.getAttribute('data-connection')).not.toBe('conn-alpha')
++
++    view.unmount()
++  })
++})
+-- 
+2.50.1 (Apple Git-155)
+

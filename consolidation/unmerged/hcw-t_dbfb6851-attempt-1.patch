@@ -1,0 +1,355 @@
+From 5c56440c859d604f21f27300b5b72c49757e4b98 Mon Sep 17 00:00:00 2001
+From: ajhochy <ajhochy@gmail.com>
+Date: Tue, 29 Sep 2026 22:49:39 -0700
+Subject: [PATCH] WIP snapshot hcw/t_dbfb6851/attempt-1 2026-09-29
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ .../contrib/rhythm-connection-state.test.tsx  | 335 ++++++++++++++++++
+ 1 file changed, 335 insertions(+)
+ create mode 100644 apps/desktop/src/contrib/rhythm-connection-state.test.tsx
+
+diff --git a/apps/desktop/src/contrib/rhythm-connection-state.test.tsx b/apps/desktop/src/contrib/rhythm-connection-state.test.tsx
+new file mode 100644
+index 0000000000..6aea29734d
+--- /dev/null
++++ b/apps/desktop/src/contrib/rhythm-connection-state.test.tsx
+@@ -0,0 +1,335 @@
++/**
++ * Connection-state contracts for the registered Rhythm page and Desktop plugin
++ * SDK host.state.connectionId seam.
++ *
++ * RED suite: exercises the real registered /rhythm route against the unmodified
++ * implementation. Every expectation reflects the authenticated lifecycle the
++ * page must satisfy; all fail deterministically against the current code which
++ * has no connection gate.
++ *
++ * Scope: apps/desktop/src/contrib only. No production changes.
++ */
++import { host } from '@hermes/plugin-sdk'
++import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
++
++import { contributedRoutes } from '@/app/routes'
++import { createPluginContext } from '@/contrib/plugin'
++import { $activeGatewayProfile } from '@/store/profile'
++import { $connection, $gatewayState, setGatewayState } from '@/store/session'
++
++import plugin from '../../../../plugins/rhythm/desktop/src/plugin'
++
++// ── Fixture transport ─────────────────────────────────────────────────────────
++// All REST calls in the renderer go through window.hermesDesktop.api. The mock
++// is installed fresh for each test; assertions never inspect tokens, OAuth
++// code/state params, or raw upstream diagnostics.
++let mockApi: ReturnType<typeof vi.fn>
++let mockOpenExternal: ReturnType<typeof vi.fn>
++
++function installBridge(overrides: Record<string, unknown> = {}) {
++  mockApi = vi.fn()
++  mockOpenExternal = vi.fn()
++  ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
++    api: mockApi,
++    getConnection: vi.fn().mockResolvedValue({
++      baseUrl: 'http://fixture.local',
++      wsUrl: 'ws://fixture.local',
++      isFullscreen: false,
++      nativeOverlayWidth: 0,
++      logs: [],
++      mode: 'local' as const,
++    }),
++    getConnectionFor: undefined,
++    openExternal: mockOpenExternal,
++    ...overrides,
++  }
++}
++
++function removeBridge() {
++  delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
++}
++
++// ── Plugin registration ───────────────────────────────────────────────────────
++// Register the real plugin through createPluginContext per test so the registry
++// is clean. Dispose at teardown to prevent contribution leaks across tests.
++let disposePlugin: () => void
++let rhythmRender: () => React.ReactNode
++
++function registerRhythm() {
++  const disposers: Array<() => void> = []
++  plugin.register(createPluginContext('rhythm', dispose => disposers.push(dispose)))
++  disposePlugin = () => disposers.forEach(d => d())
++  const route = contributedRoutes().find(r => r.path === '/rhythm')
++  if (!route?.render) throw new Error('Rhythm /rhythm route was not registered')
++  rhythmRender = route.render
++}
++
++// ── Lifecycle ─────────────────────────────────────────────────────────────────
++beforeEach(() => {
++  installBridge()
++  $connection.set(null)
++  setGatewayState('idle')
++  $activeGatewayProfile.set('default')
++  registerRhythm()
++})
++
++afterEach(() => {
++  disposePlugin?.()
++  $connection.set(null)
++  setGatewayState('idle')
++  $activeGatewayProfile.set('default')
++  removeBridge()
++  cleanup()
++})
++
++// ── Dashboard fixture (bounded, no real identity) ─────────────────────────────
++const dashboardSummary = {
++  openTaskCount: 1,
++  threadCount: 0,
++  tasks: [{ id: 'task-fixture-1', title: 'Fixture task', notes: '', status: 'open' as const, bucket: 'today' as const, dueLabel: 'Today' }],
++  project: null,
++  unreadThreads: [],
++}
++
++describe('Rhythm page connection-state contracts', () => {
++  // ── RED anchor ──────────────────────────────────────────────────────────────
++  // Documents the exact current failure at the page boundary. The atom value
++  // is null — the page receives null (coerced to 'local' via ?? 'local') —
++  // and there is no disconnected gate: the workspace renders unconditionally.
++  it('RED anchor: page must not render the workspace when host.state.connectionId is null', async () => {
++    // Passes today: connectionId really is null before any connection is set.
++    expect(host.state.connectionId.get()).toBeNull()
++
++    // Allow any API calls that the current code issues, so the test is not
++    // blocked by missing bridge responses — the RED failure is the workspace
++    // rendering, not an unhandled promise rejection.
++    mockApi.mockResolvedValue({})
++
++    render(<>{rhythmRender()}</>)
++
++    // Wait for React effects to settle so the page has had time to render its
++    // chosen state.
++    await new Promise(r => setTimeout(r, 0))
++
++    // Contract: a disconnected gate MUST be shown instead of the workspace.
++    // RED: the current implementation renders `rhythm-workspace-readonly`
++    // unconditionally, so `rhythm-page-disconnected` is absent and the test
++    // fails for the right reason.
++    expect(screen.queryByTestId('rhythm-page-disconnected')).not.toBeNull()
++    expect(screen.queryByTestId('rhythm-workspace-readonly')).toBeNull()
++  })
++
++  // ── Loading state ───────────────────────────────────────────────────────────
++  it('shows loading state while the gateway socket is connecting', async () => {
++    setGatewayState('connecting')
++    mockApi.mockResolvedValue({})
++    render(<>{rhythmRender()}</>)
++    await new Promise(r => setTimeout(r, 0))
++
++    // Contract: the page gates on gateway state and shows loading.
++    // RED: no loading gate exists; the workspace renders instead.
++    expect(screen.queryByTestId('rhythm-page-loading')).not.toBeNull()
++    expect(screen.queryByTestId('rhythm-workspace-readonly')).toBeNull()
++  })
++
++  // ── No data GETs before authenticated connected state ───────────────────────
++  it('makes no workspace or data GET before authenticated connected state', async () => {
++    // Connection is null; gateway is idle.
++    expect(host.state.connectionId.get()).toBeNull()
++    render(<>{rhythmRender()}</>)
++    await new Promise(r => setTimeout(r, 50))
++
++    // Contract: REST transport must not be reached until the page confirms
++    // authenticated connected state.
++    // RED: the current code renders the workspace and calls /dashboard-summary
++    // regardless of connectionId, so mockApi IS called.
++    expect(mockApi).not.toHaveBeenCalled()
++  })
++
++  // ── OAuth-pending state ─────────────────────────────────────────────────────
++  it('shows oauth-pending state and drives the OAuth lifecycle with a validated HTTPS URL', async () => {
++    // Simulate a remote connection whose backend requires OAuth sign-in.
++    $connection.set({ connectionId: 'remote-work', mode: 'remote', authMode: 'oauth' } as never)
++    setGatewayState('open')
++
++    // The connection check returns 401 → page should enter oauth-pending.
++    mockApi.mockImplementation(async (req: { path: string; method?: string }) => {
++      if (req.path === '/api/plugins/rhythm/connection') {
++        const err = Object.assign(new Error('fixture'), { status: 401 })
++        throw err
++      }
++      if (req.path === '/api/plugins/rhythm/oauth/start') {
++        // Return an HTTPS authorization URL — no code/state params in the
++        // fixture to keep assertions clean.
++        return { authorizationUrl: 'https://auth.fixture.invalid/authorize' }
++      }
++      throw new Error(`unexpected fixture path: ${req.path}`)
++    })
++    mockOpenExternal.mockResolvedValue(true)
++
++    render(<>{rhythmRender()}</>)
++
++    // Contract: an oauth-pending state must appear.
++    // RED: no OAuth state exists in the current implementation.
++    const pendingState = await screen.findByTestId('rhythm-page-oauth-pending')
++    expect(pendingState).not.toBeNull()
++
++    // Contract: a connect affordance must be present.
++    const connectButton = screen.getByTestId('rhythm-oauth-connect')
++    expect(connectButton).not.toBeNull()
++
++    fireEvent.click(connectButton)
++
++    // Contract: POST /oauth/start must be called before openExternal.
++    await waitFor(() =>
++      expect(mockApi).toHaveBeenCalledWith(
++        expect.objectContaining({ path: '/api/plugins/rhythm/oauth/start', method: 'POST' })
++      )
++    )
++
++    // Contract: openExternal must be called with a valid HTTPS URL.
++    // Assertions exclude token, code, or state params (no raw upstream data).
++    await waitFor(() => expect(mockOpenExternal).toHaveBeenCalled())
++    const externalUrl: string = mockOpenExternal.mock.calls[0]?.[0]
++    expect(externalUrl).toMatch(/^https:\/\//)
++    expect(new URL(externalUrl).protocol).toBe('https:')
++
++    // Contract: GET /connection must be called after OAuth completion to
++    // establish authenticated state.
++    mockApi.mockResolvedValueOnce({ connected: true })
++    await waitFor(() =>
++      expect(mockApi).toHaveBeenCalledWith(
++        expect.objectContaining({ path: '/api/plugins/rhythm/connection', method: undefined })
++      )
++    )
++  })
++
++  // ── Unavailable state before connection is authenticated ────────────────────
++  it('shows unavailable state when the connection check fails before authentication', async () => {
++    $connection.set({ connectionId: 'remote-work', mode: 'remote' } as never)
++    setGatewayState('open')
++
++    mockApi.mockRejectedValue(Object.assign(new Error('fixture'), { status: 503 }))
++
++    render(<>{rhythmRender()}</>)
++    await new Promise(r => setTimeout(r, 0))
++
++    // Contract: an unavailable backend must be surfaced without exposing the
++    // raw error text from the fixture.
++    // RED: no pre-connection unavailable state; the workspace renders instead.
++    const unavailableEl = await screen.findByTestId('rhythm-page-unavailable')
++    expect(unavailableEl).not.toBeNull()
++    expect(unavailableEl.textContent).not.toContain('fixture')
++    expect(screen.queryByTestId('rhythm-workspace-readonly')).toBeNull()
++  })
++
++  // ── Connected: renders workspace through the registered destination ─────────
++  it('renders workspace data through the registered destination when authenticated', async () => {
++    $connection.set({ connectionId: 'remote-work', mode: 'remote' } as never)
++    setGatewayState('open')
++    $activeGatewayProfile.set('default')
++
++    mockApi.mockImplementation(async (req: { path: string }) => {
++      // Connection check passes — authenticated.
++      if (req.path === '/api/plugins/rhythm/connection') return { connected: true }
++      if (req.path === '/api/plugins/rhythm/dashboard-summary') return dashboardSummary
++      return {}
++    })
++
++    render(<>{rhythmRender()}</>)
++
++    // Contract: authenticated connection renders the workspace destination.
++    const workspace = await screen.findByTestId('rhythm-workspace-readonly')
++    expect(workspace).not.toBeNull()
++    expect(screen.queryByTestId('rhythm-page-disconnected')).toBeNull()
++
++    // Contract: workspace content flows through the registered route render —
++    // data-readonly="false" is the live mode the registered contribution uses.
++    expect(workspace.getAttribute('data-readonly')).toBe('false')
++  })
++
++  // ── Generation change clears prior content synchronously ───────────────────
++  it('synchronously clears workspace content when connection changes and blocks stale promise publishing', async () => {
++    $connection.set({ connectionId: 'conn-a', mode: 'remote' } as never)
++    setGatewayState('open')
++
++    // Hold the first dashboard fetch in-flight.
++    let resolveStale: (v: unknown) => void = () => undefined
++    const stalePromise = new Promise(resolve => { resolveStale = resolve })
++
++    mockApi.mockImplementation(async (req: { path: string }) => {
++      if (req.path === '/api/plugins/rhythm/connection') return { connected: true }
++      if (req.path === '/api/plugins/rhythm/dashboard-summary') return stalePromise
++      return {}
++    })
++
++    const view = render(<>{rhythmRender()}</>)
++    await screen.findByTestId('rhythm-workspace-readonly')
++
++    // Switch to a new connection while the stale fetch is in-flight.
++    $connection.set({ connectionId: 'conn-b', mode: 'remote' } as never)
++    view.rerender(<>{rhythmRender()}</>)
++
++    // Resolve the stale fetch after the re-home.
++    resolveStale({ ...dashboardSummary, openTaskCount: 99 })
++    await new Promise(r => setTimeout(r, 50))
++
++    // Contract: stale data must not surface in the re-homed destination.
++    expect(screen.queryByText('99')).toBeNull()
++  })
++
++  it('synchronously clears workspace content when profile changes', async () => {
++    $connection.set({ connectionId: 'conn-a', mode: 'remote' } as never)
++    setGatewayState('open')
++
++    let resolveStale: (v: unknown) => void = () => undefined
++    const stalePromise = new Promise(resolve => { resolveStale = resolve })
++
++    mockApi.mockImplementation(async (req: { path: string }) => {
++      if (req.path === '/api/plugins/rhythm/connection') return { connected: true }
++      if (req.path === '/api/plugins/rhythm/dashboard-summary') return stalePromise
++      return {}
++    })
++
++    const view = render(<>{rhythmRender()}</>)
++    await screen.findByTestId('rhythm-workspace-readonly')
++
++    // Profile change must also trigger a generation re-home.
++    $activeGatewayProfile.set('alternate-profile')
++    view.rerender(<>{rhythmRender()}</>)
++
++    resolveStale({ ...dashboardSummary, openTaskCount: 77 })
++    await new Promise(r => setTimeout(r, 50))
++
++    // Contract: prior profile content must not surface after the re-home.
++    expect(screen.queryByText('77')).toBeNull()
++  })
++
++  it('synchronously clears workspace content when gateway state changes', async () => {
++    $connection.set({ connectionId: 'conn-a', mode: 'remote' } as never)
++    setGatewayState('open')
++
++    let resolveStale: (v: unknown) => void = () => undefined
++    const stalePromise = new Promise(resolve => { resolveStale = resolve })
++
++    mockApi.mockImplementation(async (req: { path: string }) => {
++      if (req.path === '/api/plugins/rhythm/connection') return { connected: true }
++      if (req.path === '/api/plugins/rhythm/dashboard-summary') return stalePromise
++      return {}
++    })
++
++    const view = render(<>{rhythmRender()}</>)
++    await screen.findByTestId('rhythm-workspace-readonly')
++
++    // Gateway closure must trigger a generation re-home.
++    setGatewayState('closed')
++    view.rerender(<>{rhythmRender()}</>)
++
++    resolveStale({ ...dashboardSummary, openTaskCount: 55 })
++    await new Promise(r => setTimeout(r, 50))
++
++    // Contract: prior gateway-state content must not surface after the re-home.
++    expect(screen.queryByText('55')).toBeNull()
++  })
++})
+-- 
+2.50.1 (Apple Git-155)
+
