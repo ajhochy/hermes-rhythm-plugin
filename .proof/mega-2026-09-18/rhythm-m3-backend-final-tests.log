@@ -1,0 +1,20 @@
+▶ skipping venv without pytest: /Users/ajhochhalter/Documents/hermes-rhythm-plugin/.venv
+▶ running per-file parallel test suite via run_tests_parallel.py
+  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)
+▶ pre-compiling bytecode cache
+▶ launching test runner
+Discovered 2 test files (~41 tests) under ['tests/plugins/rhythm/test_rhythm_backend.py', 'tests/plugins/rhythm/test_rhythm_mounted_oauth.py']; running with -j 2
+[  9.8% |     4/~41 | ✓4 | ✗0] ✓ tests/plugins/rhythm/test_rhythm_mounted_oauth.py (4✓, 1.0s)
+[100.0% |    41/~41 | ✓60 | ✗ 0] ✓ tests/plugins/rhythm/test_rhythm_backend.py (56✓, 3.0s)
+
+=== Summary: 2 files, 60 tests passed, 0 failed (100% complete) in 3.0s (2 workers) ===
+  Durations cached to test_durations.json (2 files)
+
+=== Per-file subprocess time distribution ===
+  Files:   2
+  Total subprocess CPU-wall: 4.0s  (runner wall: 3.0s, parallelism: 2x)
+  P50: 2.99s  P90: 2.99s  P95: 2.99s  P99: 2.99s  Max: 2.99s
+  <1s: 0 files (0%)  <2s: 1 files (50%)
+  Top 10 slowest:
+      2.99s  tests/plugins/rhythm/test_rhythm_backend.py
+      1.04s  tests/plugins/rhythm/test_rhythm_mounted_oauth.py

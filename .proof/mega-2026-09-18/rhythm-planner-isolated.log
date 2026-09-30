@@ -1,0 +1,358 @@
+
+> hermes@0.17.0 test
+> vitest run --run src/contrib/rhythm-workspace-ui.test.tsx -t mounts Planner with canonical M5 content
+
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - `__dirname` (vite.config.ts:22:20). Use `import.meta.dirname` instead
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v4.1.10 /Users/ajhochhalter/Documents/hermes-rhythm-plugin/apps/desktop
+
+ ❯ |ui| src/contrib/rhythm-workspace-ui.test.tsx (33 tests | 1 failed | 32 skipped) 5034ms
+     × mounts Planner with canonical M5 content and its exact pinned GET paths 5033ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |ui| src/contrib/rhythm-workspace-ui.test.tsx > accepted Rhythm workspace package > mounts Planner with canonical M5 content and its exact pinned GET paths
+TestingLibraryElementError: Unable to find an element with the text: Plan launch. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div[39m
+      [33mclass[39m=[32m"rhythm-workspace-root"[39m
+      [33mdata-readonly[39m=[32m"true"[39m
+    [36m>[39m
+      [36m<main[39m
+        [33maria-label[39m=[32m"Planner"[39m
+        [33mclass[39m=[32m"rhythm-workspace-root"[39m
+        [33mdata-rhythm-theme[39m=[32m"dark"[39m
+        [33mdata-rhythm-viewport[39m=[32m"expanded"[39m
+        [33mdata-testid[39m=[32m"rhythm-planner-screen"[39m
+        [33mstyle[39m=[32m"--rhythm-bg: #171a1b; --rhythm-surface: #1f2426; --rhythm-surface-warm: #283230; --rhythm-surface-raised: #262d2f; --rhythm-fg: #f3f6f5; --rhythm-fg-secondary: #c7d6d3; --rhythm-fg-muted: #9fb0ad; --rhythm-border: #4d6260; --rhythm-border-soft: #33403e; --rhythm-accent: #4fb8a0; --rhythm-accent-on: #0c1716; --rhythm-accent-hover: #469e8a; --rhythm-success: #5fbf83; --rhythm-warning: #d1a24f; --rhythm-danger: #d1584a; --rhythm-info: #5a9fd1; --rhythm-font-ui: Inter, system-ui, sans-serif; --rhythm-font-mono: \"SF Mono\", ui-monospace, Menlo, monospace; --rhythm-radius-sm: 10px; --rhythm-radius-md: 16px; --rhythm-radius-lg: 24px; --rhythm-radius-pill: 999px; --rhythm-focus: 0 0 0 4px rgba(79, 184, 160, 0.32); --rhythm-shadow: 0 24px 80px rgba(10, 14, 13, 0.4);"[39m
+      [36m>[39m
+        [36m<section[39m
+          [33maria-busy[39m=[32m"false"[39m
+          [33mclass[39m=[32m"page-shell pg-planner"[39m
+        [36m>[39m
+          [36m<header[39m
+            [33mclass[39m=[32m"planner-toolbar"[39m
+          [36m>[39m
+            [36m<div[39m
+              [33mclass[39m=[32m"planner-heading"[39m
+            [36m>[39m
+              [36m<h1>[39m
+                [0mPlanner[0m
+              [36m</h1>[39m
+              [36m<p[39m
+                [33mdata-testid[39m=[32m"planner-week-label"[39m
+              [36m>[39m
+                [0mWeek of [0m
+                [0m2026-09-14[0m
+              [36m</p>[39m
+            [36m</div>[39m
+            [36m<div[39m
+              [33maria-label[39m=[32m"Week summary"[39m
+              [33mclass[39m=[32m"planner-summary"[39m
+            [36m>[39m
+              [36m<span>[39m
+                [36m<strong>[39m
+                  [0m0[0m
+                [36m</strong>[39m
+                [0m scheduled open[0m
+              [36m</span>[39m
+              [36m<span>[39m
+                [36m<strong>[39m
+                  [0m0[0m
+                [36m</strong>[39m
+                [0m completed[0m
+              [36m</span>[39m
+              [36m<span>[39m
+                [36m<strong[39m
+                  [33mdata-testid[39m=[32m"planner-backlog-count"[39m
+                [36m>[39m
+                  [0m0[0m
+                [36m</strong>[39m
+                [0m backlog[0m
+              [36m</span>[39m
+            [36m</div>[39m
+            [36m<div[39m
+              [33mclass[39m=[32m"planner-header-actions"[39m
+            [36m>[39m
+              [36m<button[39m
+                [33mclass[39m=[32m"primary-button page-task-action"[39m
+                [33mdata-testid[39m=[32m"planner-header-add-task"[39m
+                [33mdisabled[39m=[32m""[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [36m<svg[39m
+                  [33maria-hidden[39m=[32m"true"[39m
+                  [33mclass[39m=[32m"lucide lucide-plus"[39m
+                  [33mfill[39m=[32m"none"[39m
+                  [33mheight[39m=[32m"15"[39m
+                  [33mstroke[39m=[32m"currentColor"[39m
+                  [33mstroke-linecap[39m=[32m"round"[39m
+                  [33mstroke-linejoin[39m=[32m"round"[39m
+                  [33mstroke-width[39m=[32m"1.8"[39m
+                  [33mviewBox[39m=[32m"0 0 24 24"[39m
+                  [33mwidth[39m=[32m"15"[39m
+                  [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+                [36m>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M5 12h14"[39m
+                  [36m/>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M12 5v14"[39m
+                  [36m/>[39m
+                [36m</svg>[39m
+                [36m<span>[39m
+                  [0mAdd task[0m
+                [36m</span>[39m
+              [36m</button>[39m
+              [36m<nav[39m
+                [33maria-label[39m=[32m"Week navigation"[39m
+                [33mclass[39m=[32m"week-controls"[39m
+              [36m>[39m
+                [36m<button[39m
+                  [33maria-label[39m=[32m"Previous week"[39m
+                  [33mclass[39m=[32m"secondary-button"[39m
+                  [33mdata-testid[39m=[32m"planner-prev-week"[39m
+                  [33mtype[39m=[32m"button"[39m
+                [36m>[39m
+                  [0m←[0m
+                [36m</button>[39m
+                [36m<button[39m
+                  [33mclass[39m=[32m"secondary-button"[39m
+                  [33mdata-testid[39m=[32m"planner-today"[39m
+                  [33mdisabled[39m=[32m""[39m
+                  [33mtype[39m=[32m"button"[39m
+                [36m>[39m
+                  [0mToday[0m
+                [36m</button>[39m
+                [36m<button[39m
+                  [33maria-label[39m=[32m"Next week"[39m
+                  [33mclass[39m=[32m"secondary-button"[39m
+                  [33mdata-testid[39m=[32m"planner-next-week"[39m
+                  [33mtype[39m=[32m"button"[39m
+                [36m>[39m
+                  [0m→[0m
+                [36m</button>[39m
+              [36m</nav>[39m
+            [36m</div>[39m
+          [36m</header>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"planner-scroll"[39m
+          [36m>[39m
+            [36m<section[39m
+              [33mclass[39m=[32m"planner-state danger"[39m
+              [33mdata-testid[39m=[32m"page-state-server-error"[39m
+              [33mrole[39m=[32m"alert"[39m
+            [36m>[39m
+              [36m<span[39m
+                [33mclass[39m=[32m"eyebrow"[39m
+              [36m>[39m
+                [0mRetryable server error[0m
+              [36m</span>[39m
+              [36m<h2>[39m
+                [0mThis week could not load[0m
+              [36m</h2>[39m
+              [36m<p>[39m
+                [0mThe planning service returned a temporary error. Your data is unchanged.[0m
+              [36m</p>[39m
+              [36m<button[39m
+                [33mclass[39m=[32m"primary-button"[39m
+                [33mdata-testid[39m=[32m"page-retry"[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [0mRetry[0m
+              [36m</button>[39m
+            [36m</section>[39m
+          [36m</div>[39m
+        [36m</section>[39m
+      [36m</main>[39m
+    [36m</div>[39m
+  [36m</div>[39m
+[36m</body>[39m
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div[39m
+      [33mclass[39m=[32m"rhythm-workspace-root"[39m
+      [33mdata-readonly[39m=[32m"true"[39m
+    [36m>[39m
+      [36m<main[39m
+        [33maria-label[39m=[32m"Planner"[39m
+        [33mclass[39m=[32m"rhythm-workspace-root"[39m
+        [33mdata-rhythm-theme[39m=[32m"dark"[39m
+        [33mdata-rhythm-viewport[39m=[32m"expanded"[39m
+        [33mdata-testid[39m=[32m"rhythm-planner-screen"[39m
+        [33mstyle[39m=[32m"--rhythm-bg: #171a1b; --rhythm-surface: #1f2426; --rhythm-surface-warm: #283230; --rhythm-surface-raised: #262d2f; --rhythm-fg: #f3f6f5; --rhythm-fg-secondary: #c7d6d3; --rhythm-fg-muted: #9fb0ad; --rhythm-border: #4d6260; --rhythm-border-soft: #33403e; --rhythm-accent: #4fb8a0; --rhythm-accent-on: #0c1716; --rhythm-accent-hover: #469e8a; --rhythm-success: #5fbf83; --rhythm-warning: #d1a24f; --rhythm-danger: #d1584a; --rhythm-info: #5a9fd1; --rhythm-font-ui: Inter, system-ui, sans-serif; --rhythm-font-mono: \"SF Mono\", ui-monospace, Menlo, monospace; --rhythm-radius-sm: 10px; --rhythm-radius-md: 16px; --rhythm-radius-lg: 24px; --rhythm-radius-pill: 999px; --rhythm-focus: 0 0 0 4px rgba(79, 184, 160, 0.32); --rhythm-shadow: 0 24px 80px rgba(10, 14, 13, 0.4);"[39m
+      [36m>[39m
+        [36m<section[39m
+          [33maria-busy[39m=[32m"false"[39m
+          [33mclass[39m=[32m"page-shell pg-planner"[39m
+        [36m>[39m
+          [36m<header[39m
+            [33mclass[39m=[32m"planner-toolbar"[39m
+          [36m>[39m
+            [36m<div[39m
+              [33mclass[39m=[32m"planner-heading"[39m
+            [36m>[39m
+              [36m<h1>[39m
+                [0mPlanner[0m
+              [36m</h1>[39m
+              [36m<p[39m
+                [33mdata-testid[39m=[32m"planner-week-label"[39m
+              [36m>[39m
+                [0mWeek of [0m
+                [0m2026-09-14[0m
+              [36m</p>[39m
+            [36m</div>[39m
+            [36m<div[39m
+              [33maria-label[39m=[32m"Week summary"[39m
+              [33mclass[39m=[32m"planner-summary"[39m
+            [36m>[39m
+              [36m<span>[39m
+                [36m<strong>[39m
+                  [0m0[0m
+                [36m</strong>[39m
+                [0m scheduled open[0m
+              [36m</span>[39m
+              [36m<span>[39m
+                [36m<strong>[39m
+                  [0m0[0m
+                [36m</strong>[39m
+                [0m completed[0m
+              [36m</span>[39m
+              [36m<span>[39m
+                [36m<strong[39m
+                  [33mdata-testid[39m=[32m"planner-backlog-count"[39m
+                [36m>[39m
+                  [0m0[0m
+                [36m</strong>[39m
+                [0m backlog[0m
+              [36m</span>[39m
+            [36m</div>[39m
+            [36m<div[39m
+              [33mclass[39m=[32m"planner-header-actions"[39m
+            [36m>[39m
+              [36m<button[39m
+                [33mclass[39m=[32m"primary-button page-task-action"[39m
+                [33mdata-testid[39m=[32m"planner-header-add-task"[39m
+                [33mdisabled[39m=[32m""[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [36m<svg[39m
+                  [33maria-hidden[39m=[32m"true"[39m
+                  [33mclass[39m=[32m"lucide lucide-plus"[39m
+                  [33mfill[39m=[32m"none"[39m
+                  [33mheight[39m=[32m"15"[39m
+                  [33mstroke[39m=[32m"currentColor"[39m
+                  [33mstroke-linecap[39m=[32m"round"[39m
+                  [33mstroke-linejoin[39m=[32m"round"[39m
+                  [33mstroke-width[39m=[32m"1.8"[39m
+                  [33mviewBox[39m=[32m"0 0 24 24"[39m
+                  [33mwidth[39m=[32m"15"[39m
+                  [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+                [36m>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M5 12h14"[39m
+                  [36m/>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M12 5v14"[39m
+                  [36m/>[39m
+                [36m</svg>[39m
+                [36m<span>[39m
+                  [0mAdd task[0m
+                [36m</span>[39m
+              [36m</button>[39m
+              [36m<nav[39m
+                [33maria-label[39m=[32m"Week navigation"[39m
+                [33mclass[39m=[32m"week-controls"[39m
+              [36m>[39m
+                [36m<button[39m
+                  [33maria-label[39m=[32m"Previous week"[39m
+                  [33mclass[39m=[32m"secondary-button"[39m
+                  [33mdata-testid[39m=[32m"planner-prev-week"[39m
+                  [33mtype[39m=[32m"button"[39m
+                [36m>[39m
+                  [0m←[0m
+                [36m</button>[39m
+                [36m<button[39m
+                  [33mclass[39m=[32m"secondary-button"[39m
+                  [33mdata-testid[39m=[32m"planner-today"[39m
+                  [33mdisabled[39m=[32m""[39m
+                  [33mtype[39m=[32m"button"[39m
+                [36m>[39m
+                  [0mToday[0m
+                [36m</button>[39m
+                [36m<button[39m
+                  [33maria-label[39m=[32m"Next week"[39m
+                  [33mclass[39m=[32m"secondary-button"[39m
+                  [33mdata-testid[39m=[32m"planner-next-week"[39m
+                  [33mtype[39m=[32m"button"[39m
+                [36m>[39m
+                  [0m→[0m
+                [36m</button>[39m
+              [36m</nav>[39m
+            [36m</div>[39m
+          [36m</header>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"planner-scroll"[39m
+          [36m>[39m
+            [36m<section[39m
+              [33mclass[39m=[32m"planner-state danger"[39m
+              [33mdata-testid[39m=[32m"page-state-server-error"[39m
+              [33mrole[39m=[32m"alert"[39m
+            [36m>[39m
+              [36m<span[39m
+                [33mclass[39m=[32m"eyebrow"[39m
+              [36m>[39m
+                [0mRetryable server error[0m
+              [36m</span>[39m
+              [36m<h2>[39m
+                [0mThis week could not load[0m
+              [36m</h2>[39m
+              [36m<p>[39m
+                [0mThe planning service returned a temporary error. Your data is unchanged.[0m
+              [36m</p>[39m
+              [36m<button[39m
+                [33mclass[39m=[32m"primary-button"[39m
+                [33mdata-testid[39m=[32m"page-retry"[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [0mRetry[0m
+              [36m</button>[39m
+            [36m</section>[39m
+          [36m</div>[39m
+        [36m</section>[39m
+      [36m</main>[39m
+    [36m</div>[39m
+  [36m</div>[39m
+[36m</body>[39m
+ ❯ waitForWrapper ../../node_modules/@testing-library/dom/dist/wait-for.js:163:27
+ ❯ ../../node_modules/@testing-library/dom/dist/query-helpers.js:86:33
+ ❯ src/contrib/rhythm-workspace-ui.test.tsx:148:26
+    146|     const view = renderScreen(<Screen />, createGateway(rest as never)…
+    147|     expect(await screen.findByTestId(testId)).not.toBeNull()
+    148|     expect((await screen.findAllByText(content)).length).toBeGreaterTh…
+       |                          ^
+    149|     await waitFor(() => expect(rest.mock.calls.map(([path]) => path)).…
+    150|     expect(rest.mock.calls.map(([path]) => path).some(path => /collabo…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 32 skipped (33)
+   Start at  08:31:12
+   Duration  8.88s (transform 1.30s, setup 123ms, import 2.96s, tests 5.03s, environment 654ms)
+
+npm error Lifecycle script `test` failed with error:
+npm error code 1
+npm error path /Users/ajhochhalter/Documents/hermes-rhythm-plugin/apps/desktop
+npm error workspace hermes@0.17.0
+npm error location /Users/ajhochhalter/Documents/hermes-rhythm-plugin/apps/desktop
+npm error command failed
+npm error command sh -c vitest run --run src/contrib/rhythm-workspace-ui.test.tsx -t 'mounts Planner with canonical M5 content'
