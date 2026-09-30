@@ -142,3 +142,79 @@ class TestCheckSystemdTimingAlignment:
         # for whatever unit pytest IS in.  Both are valid; we just ensure
         # the function doesn't raise.
         assert result is None or isinstance(result, dict)
+
+
+class TestSpawnAsyncDiagnosticPortability:
+    """``timeout(1)`` is GNU coreutils and absent on macOS.
+
+    Hardcoding it made ``spawn_async_diagnostic`` return None on every Mac,
+    so the gateway silently produced no shutdown forensics at all. The
+    fallback must still spawn, still write, and still self-clean.
+    """
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only diagnostic")
+    def test_works_when_no_timeout_binary_exists(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sf.shutil, "which", lambda _name: None)
+        log_path = tmp_path / "diag.log"
+        pid = sf.spawn_async_diagnostic(log_path, "SIGTERM", timeout_seconds=3.0)
+        assert pid is not None and pid > 0
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if log_path.exists() and log_path.stat().st_size > 0:
+                time.sleep(0.2)
+                break
+            time.sleep(0.1)
+        try:
+            os.waitpid(pid, 0)
+        except (ChildProcessError, OSError):
+            pass
+
+        contents = log_path.read_text(encoding="utf-8", errors="replace")
+        assert "shutdown diagnostic" in contents
+        assert "SIGTERM" in contents
+        assert "=== end ===" in contents
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only diagnostic")
+    def test_prefers_the_real_timeout_binary_when_present(self, tmp_path, monkeypatch):
+        seen = {}
+
+        def fake_which(name):
+            seen.setdefault("asked", []).append(name)
+            return "/fake/bin/timeout" if name == "timeout" else None
+
+        captured = {}
+
+        class _Proc:
+            pid = 4242
+
+        def fake_popen(argv, **kwargs):
+            captured["argv"] = argv
+            return _Proc()
+
+        monkeypatch.setattr(sf.shutil, "which", fake_which)
+        monkeypatch.setattr(sf.subprocess, "Popen", fake_popen)
+        pid = sf.spawn_async_diagnostic(
+            tmp_path / "diag.log", "SIGINT", timeout_seconds=7.0
+        )
+        assert pid == 4242
+        assert captured["argv"][:3] == ["/fake/bin/timeout", "7", "bash"]
+        assert seen["asked"][0] == "timeout"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only diagnostic")
+    def test_falls_back_to_gtimeout_before_the_bash_watchdog(self, tmp_path, monkeypatch):
+        captured = {}
+
+        class _Proc:
+            pid = 99
+
+        monkeypatch.setattr(
+            sf.shutil, "which",
+            lambda name: "/opt/homebrew/bin/gtimeout" if name == "gtimeout" else None,
+        )
+        monkeypatch.setattr(
+            sf.subprocess, "Popen",
+            lambda argv, **kw: (captured.__setitem__("argv", argv), _Proc())[1],
+        )
+        sf.spawn_async_diagnostic(tmp_path / "d.log", "SIGTERM", timeout_seconds=4.0)
+        assert captured["argv"][0] == "/opt/homebrew/bin/gtimeout"

@@ -128,6 +128,29 @@ def _acp_supported(command: str, args: list[str]) -> bool | None:
     return verdict
 
 
+def _resolve_acp_mcp_servers() -> list[dict[str, Any]]:
+    """MCP servers to register in the ACP agent's session (session/new).
+
+    Returns [] by default (preserving Copilot behaviour). When
+    HERMES_ACP_MCP_SERVERS points at a JSON file, its contents (a list of ACP
+    mcpServer specs) are passed through so a delegated OpenCode session can use
+    the same domain MCP servers (Rhythm/PCO/Obsidian/etc.) the Hermes profile
+    would. Malformed/missing config degrades silently to [].
+    """
+    path = os.getenv("HERMES_ACP_MCP_SERVERS", "").strip()
+    if not path:
+        return []
+    try:
+        with open(os.path.expanduser(path), "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, list):
+            return [s for s in data if isinstance(s, dict)]
+    except Exception:
+        pass
+    return []
+
+
+
 def _resolve_home_dir() -> str:
     """Return a stable HOME for child ACP processes."""
     home = os.environ.get("HOME", "").strip()
@@ -715,12 +738,29 @@ class CopilotACPClient:
                 "session/new",
                 {
                     "cwd": self._acp_cwd,
-                    "mcpServers": [],
+                    "mcpServers": _resolve_acp_mcp_servers(),
                 },
             ) or {}
             session_id = str(session.get("sessionId") or "").strip()
             if not session_id:
                 raise RuntimeError("Copilot ACP did not return a sessionId.")
+
+            # OpenCode-compat: ACP agents like OpenCode default to their own model
+            # (e.g. "opencode/big-pickle") and ignore a `model` field in session/new.
+            # When HERMES_ACP_MODEL is set, pin the session model via session/set_model
+            # ({sessionId, modelId}) so requests run on the intended model
+            # (e.g. anthropic/claude-sonnet-4-6 on the user's subscription).
+            acp_model = os.getenv("HERMES_ACP_MODEL", "").strip()
+            if acp_model:
+                try:
+                    _request(
+                        "session/set_model",
+                        {"sessionId": session_id, "modelId": acp_model},
+                    )
+                except Exception as _model_exc:
+                    # Non-fatal: agents that don't implement set_model (e.g. Copilot)
+                    # just keep their default model.
+                    pass
 
             text_parts: list[str] = []
             reasoning_parts: list[str] = []
@@ -767,7 +807,26 @@ class CopilotACPClient:
                 text_parts.append(chunk_text)
             elif kind == "agent_thought_chunk" and chunk_text and reasoning_parts is not None:
                 reasoning_parts.append(chunk_text)
+            elif kind in ("tool_call", "tool_call_update") and reasoning_parts is not None:
+                # OpenCode-compat: ACP agents that execute tools internally report
+                # progress via tool_call / tool_call_update instead of returning
+                # tool_use blocks. Capture a compact trace into reasoning so the
+                # final response is never treated as "empty" when real work ran,
+                # and so Hermes can see what the sub-agent did.
+                title = str(update.get("title") or "").strip()
+                status = str(update.get("status") or "").strip()
+                if title or status:
+                    locs = update.get("locations") or []
+                    loc_str = ""
+                    if isinstance(locs, list) and locs:
+                        first = locs[0]
+                        if isinstance(first, dict) and first.get("path"):
+                            loc_str = f" {first.get('path')}"
+                        reasoning_parts.append(f"[tool: {title} {status}{loc_str}]\n")
+                    else:
+                        reasoning_parts.append(f"[tool: {title} {status}]\n")
             return True
+
 
         if process.stdin is None:
             return True
@@ -776,7 +835,31 @@ class CopilotACPClient:
         params = msg.get("params") or {}
 
         if method == "session/request_permission":
-            response = _permission_denied(message_id)
+            # Permission policy: allow-all (user-selected). OpenCode (and other
+            # ACP agents) ask before write/edit/bash/delete; pick an "allow"
+            # option from what the agent offered so autonomous tasks don't hang.
+            # Per-task prompt constraints are the safety boundary here.
+            opts = params.get("options") or []
+            allow_id = None
+            # Prefer an explicit allow-once / allow option; fall back to first.
+            for o in opts:
+                if not isinstance(o, dict):
+                    continue
+                kind = str(o.get("kind") or "").lower()
+                if kind in ("allow_once", "allow", "allow_always"):
+                    allow_id = o.get("optionId") or o.get("id")
+                    break
+            if allow_id is None and opts and isinstance(opts[0], dict):
+                allow_id = opts[0].get("optionId") or opts[0].get("id")
+            if allow_id is not None:
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": message_id,
+                    "result": {"outcome": {"outcome": "selected", "optionId": allow_id}},
+                }
+            else:
+                response = _permission_denied(message_id)
+
         elif method == "fs/read_text_file":
             try:
                 path = _ensure_path_within_cwd(str(params.get("path") or ""), cwd)

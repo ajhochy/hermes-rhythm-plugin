@@ -24,6 +24,7 @@ import atexit
 import os
 import shutil
 import sqlite3
+import contextlib
 import sys
 import tempfile
 from pathlib import Path
@@ -649,6 +650,52 @@ def _neutralize_macos_keychain_creds(request, monkeypatch):
 # allow-list because test-level fixtures legitimately move HERMES_HOME to
 # sibling directories — an allow-list captured at setup time would see the
 # stale autouse-set value and falsely reject hermetic tests (#69385 review).
+
+
+# ── hermes_cli module re-import isolation ──────────────────────────────────
+# Several kanban fixtures need HERMES_HOME re-resolved at import time, which
+# means dropping the already-imported ``hermes_cli`` / ``hermes_state`` /
+# ``hermes_constants`` modules so the next import re-runs their module-level
+# resolution. Doing that WITHOUT restoring them leaves a different module
+# object installed for the rest of the session, and anything holding a
+# reference to the old one — a test that imported it at module scope, or the
+# ``_kanban_write_guard`` autouse fixture that monkeypatched it — is then
+# silently talking to a dead module. That is what made 9 kanban tests fail
+# only in a full ``-k kanban`` run while every one of them passed alone.
+#
+# Use this context manager instead of an inline ``del sys.modules[...]`` loop.
+
+_REIMPORT_PREFIXES = ("hermes_cli", "hermes_state")
+_REIMPORT_NAMES = frozenset({"hermes_constants"})
+
+
+def _reimport_scope_names() -> list:
+    return [
+        name for name in list(sys.modules)
+        if name.startswith(_REIMPORT_PREFIXES) or name in _REIMPORT_NAMES
+    ]
+
+
+@contextlib.contextmanager
+def reimported_hermes_cli():
+    """Purge the hermes module cache for the body, then restore it exactly.
+
+    Inside the block a fresh ``from hermes_cli import ...`` re-runs
+    module-level HERMES_HOME resolution against the caller's monkeypatched
+    env. On exit — including on an exception — every module object that was
+    loaded beforehand is put back under its original name, and anything
+    imported inside the block is discarded. sys.modules identity is
+    therefore unchanged from the rest of the session's point of view.
+    """
+    saved = {name: sys.modules[name] for name in _reimport_scope_names()}
+    for name in saved:
+        del sys.modules[name]
+    try:
+        yield
+    finally:
+        for name in _reimport_scope_names():
+            del sys.modules[name]
+        sys.modules.update(saved)
 
 
 def _capture_real_kanban_root() -> Path:

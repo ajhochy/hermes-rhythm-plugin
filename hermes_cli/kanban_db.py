@@ -86,7 +86,7 @@ import logging
 import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
@@ -1141,6 +1141,9 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Structured creation provenance (JSON-decoded dict), ``{}`` when the
+    # column is NULL. Never infer identity from ``title``.
+    provenance: Optional[dict] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1234,6 +1237,9 @@ class Task:
                 int(row["block_recurrences"])
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
+            ),
+            provenance=_decode_provenance_blob(
+                row["provenance"] if "provenance" in keys else None
             ),
         )
 
@@ -1422,7 +1428,16 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Structured creation provenance, JSON object or NULL. See
+    -- PROVENANCE_ORIGINS / encode_provenance. This is the ONLY authority for
+    -- "who made this card"; nothing may infer identity from the title.
+    --   {"origin": "user"|"intake"|"decomposer"|"workflow",
+    --    "root_id": <canonical root task id>,       # decomposer children
+    --    "run_id", "stage", "attempt", "package_id", # workflow stages
+    --    "parent_run": <run id this run was spawned from>}
+    -- NULL = legacy / hand-created card, treated as origin="user".
+    provenance           TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -2679,6 +2694,12 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
 
+    if "provenance" not in cols:
+        # Structured creation provenance (JSON). Legacy rows get NULL, which
+        # ``decode_provenance`` reads as ``origin="user"`` — i.e. existing
+        # hand-made cards stay decomposable, which is the correct default.
+        _add_column_if_missing(conn, "tasks", "provenance", "provenance TEXT")
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -3155,6 +3176,485 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+# ---------------------------------------------------------------------------
+# Provenance, decomposition eligibility, and workflow depth
+# ---------------------------------------------------------------------------
+# The runaway-recursion incident (285 cards, 84 active, 8 nested `.worktrees`)
+# had one shape: the auto-decomposer could not tell a user's request from a
+# machine-generated workflow stage, so a BLOCKED HCW stage that got routed to
+# `triage` for a human decision was decomposed into a fresh task graph, whose
+# children were routed back to the HCW orchestrator profile, which started
+# another HCW run inside the first one's worktree.
+#
+# The fix is structural identity, not heuristics. Every creation path stamps
+# `tasks.provenance`; the decomposer consults ONE predicate
+# (`decompose_eligibility`) that only user/intake roots can pass.
+
+#: Recognised ``provenance.origin`` values.
+#:   user       - a human created this from the CLI, dashboard, or chat.
+#:   intake     - an external request (webhook, GitHub, email) landed here.
+#:   decomposer - the auto-decomposer created it as a child of a root.
+#:   workflow   - a workflow engine (HCW) created it as a lifecycle stage.
+PROVENANCE_ORIGINS = ("user", "intake", "decomposer", "workflow")
+
+#: Origins whose cards represent an ORIGINAL request and may be decomposed.
+#: ``None``/missing provenance (legacy rows, hand-made cards) reads as "user".
+DECOMPOSABLE_ORIGINS = ("user", "intake")
+
+#: Idempotency-key namespaces owned by workflow engines. A card carrying one
+#: is a machine-generated stage even if its ``provenance`` column is NULL —
+#: which happens when an older engine runtime created it. Belt and braces for
+#: the window between deploying this guard and deploying the stamping side.
+WORKFLOW_KEY_NAMESPACES = ("hcw:",)
+
+#: Directory name that marks a workflow-controlled git worktree root.
+WORKFLOW_WORKTREE_DIR = ".worktrees"
+
+#: Maximum number of nested ``.worktrees`` segments allowed in a workspace
+#: path. The intended lifecycle is exactly one Kanban-owned root workspace
+#: with ONE workflow-controlled attempt worktree beneath it, i.e. a single
+#: ``.worktrees/<attempt>`` segment. Two or more means a workflow bootstrapped
+#: inside another workflow's worktree.
+MAX_WORKFLOW_WORKTREE_DEPTH = 1
+
+
+#: Parent statuses that SATISFY a dependency edge for gating purposes.
+#:
+#: Deliberately excludes ``archived``. Treating an archived parent as
+#: satisfied was one of the incident's amplifiers: cleaning up a runaway
+#: graph archived parents, which silently released their surviving
+#: descendants into ``ready`` and the dispatcher spawned them. An archive is
+#: "this card is out of the way", never "this work succeeded".
+#:
+#: Consequence: archiving a parent leaves descendants gated in ``todo``
+#: forever. That is the safe direction (no unexpected dispatch), and there
+#: are two intentional exits: :func:`cancel_subtree` for the atomic
+#: whole-branch cancellation, and ``promote --force`` for a one-off manual
+#: override. ``board_diagnostics`` reports anything stranded this way.
+DEPENDENCY_SATISFIED_STATUSES = ("done",)
+
+
+# ---------------------------------------------------------------------------
+# Non-Hermes workers: kanban.worker_command
+# ---------------------------------------------------------------------------
+# The dispatcher's worker was hardcoded to `hermes -p <profile> chat -q ...`,
+# so the only way to do work on a card was a Hermes agent session -- one full
+# system-prompt bootstrap per card, and no way to drive an external coding
+# workflow (Claude Code, Codex) from the board.
+#
+# `kanban.worker_command` maps an ASSIGNEE to an argv template. Because the
+# BOARD picks the host, "this model wrote it, the other model reviews it" is an
+# invariant of the graph rather than an instruction. That distinction is
+# load-bearing: a model asked nicely will not comply reliably (an HCW planner
+# stage pinned a command its card body explicitly and repeatedly forbade, then
+# did it again on the next attempt).
+
+#: Placeholders substituted into a worker_command argv template.
+WORKER_COMMAND_PLACEHOLDERS = ("task_id", "workspace", "board", "assignee")
+
+#: Host label used when an assignee has no worker_command override -- i.e. the
+#: card runs as a normal Hermes agent session.
+DEFAULT_WORKER_HOST = "hermes"
+
+
+def _load_kanban_config() -> dict:
+    """Read the ``kanban`` config section, ``{}`` on any failure.
+
+    Module-level indirection so tests can patch one seam instead of the whole
+    config loader.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = (load_config_readonly() or {}).get("kanban")
+    except Exception:
+        return {}
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def worker_command_for(assignee: Optional[str]) -> Optional[list[str]]:
+    """Return the argv template configured for ``assignee``, else ``None``.
+
+    Fails CLOSED on a malformed template: a non-list, an empty list, a blank
+    executable, or any non-string member returns ``None`` so the dispatcher
+    falls back to the Hermes worker rather than spawning something arbitrary
+    from half-valid config.
+    """
+    if not assignee:
+        return None
+    table = _load_kanban_config().get("worker_command")
+    if not isinstance(table, dict):
+        return None
+    template = table.get(str(assignee))
+    if not isinstance(template, list) or not template:
+        return None
+    if not all(isinstance(part, str) for part in template):
+        return None
+    if not str(template[0]).strip():
+        return None
+    return list(template)
+
+
+def render_worker_command(
+    template: Iterable[str],
+    *,
+    task_id: str,
+    workspace: str,
+    board: str,
+    assignee: str,
+) -> list[str]:
+    """Substitute the supported placeholders into an argv template.
+
+    Uses explicit token replacement rather than ``str.format`` so a literal
+    brace in a command (``sh -c 'echo {foo}'``) is left alone instead of
+    raising ``KeyError``.
+    """
+    values = {
+        "task_id": task_id, "workspace": workspace,
+        "board": board, "assignee": assignee,
+    }
+    out: list[str] = []
+    for part in template:
+        rendered = str(part)
+        for key in WORKER_COMMAND_PLACEHOLDERS:
+            rendered = rendered.replace("{" + key + "}", str(values[key] or ""))
+        out.append(rendered)
+    return out
+
+
+def worker_host_for(assignee: Optional[str]) -> str:
+    """Return the host label that runs ``assignee``'s cards.
+
+    Derived from the configured command's executable basename -- the command
+    IS the host, so there is exactly one source of truth and no second config
+    table to drift. ``"hermes"`` when no override is configured.
+    """
+    template = worker_command_for(assignee)
+    if not template:
+        return DEFAULT_WORKER_HOST
+    return PurePosixPath(str(template[0]).replace("\\", "/")).name or DEFAULT_WORKER_HOST
+
+
+#: Stage pairs that MUST run on different hosts, as ``{child: parent}``.
+#:
+#: ``review`` after ``implement`` -- a model must not review its own diff.
+#:
+#: ``implement`` after ``contract`` -- `acceptance-contract` authors a test that
+#: must fail before implementation. If the same model then writes the code, it
+#: can satisfy the spec by weakening the spec; `coding-agent` names this exact
+#: failure mode ("I'll make the contract test pass by mocking the thing it
+#: checks"). A different host removes the ABILITY rather than warning about the
+#: temptation: an edit to a test it does not own lands in the diff the reviewer
+#: reads.
+CROSS_MODEL_STAGE_PAIRS = {
+    "review": "implement",
+    "implement": "contract",
+}
+
+
+#: Stage prerequisites: ``{child_stage: (parent_stage, required_metadata_key)}``.
+#:
+#: `acceptance-contract` must produce `docs/ai/contracts/<slug>.json` -- the
+#: machine-readable mandate that turns the coder's job from "do what the prose
+#: says" into "make these tests pass". That was requested in the skill and
+#: skipped by live workers twice, so it is now a gate: the contract card reports
+#: the artifact path in its completion metadata, and an implement card whose
+#: contract parent did not report one is refused BEFORE it is claimed.
+STAGE_PREREQUISITES = {
+    "implement": ("contract", "contract_path"),
+}
+
+
+def check_stage_prerequisites(
+    conn: sqlite3.Connection, task_id: str,
+) -> tuple[bool, str]:
+    """Return ``(ok, reason)`` for this card's upstream-artifact requirements."""
+    row = conn.execute(
+        "SELECT id, provenance FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if row is None:
+        return False, "unknown_task"
+    stage = decode_provenance(row["provenance"]).get("stage")
+    spec = STAGE_PREREQUISITES.get(stage or "")
+    if spec is None:
+        return True, "no_prerequisite"
+    parent_stage, required_key = spec
+
+    parents = [
+        r for r in conn.execute(
+            "SELECT t.id, t.provenance FROM tasks t "
+            "JOIN task_links l ON l.parent_id = t.id WHERE l.child_id = ?",
+            (task_id,),
+        ).fetchall()
+        if decode_provenance(r["provenance"]).get("stage") == parent_stage
+    ]
+    if not parents:
+        return False, f"missing_{parent_stage}_parent"
+
+    for parent in parents:
+        # A dispatcher-completed run ends as 'done'; 'completed' only appears
+        # when complete_task synthesises a run for an unclaimed task. Accept
+        # both -- filtering on 'completed' alone refused every real card.
+        for run in conn.execute(
+            "SELECT metadata FROM task_runs WHERE task_id = ? "
+            "AND status IN ('done', 'completed') ORDER BY id DESC",
+            (parent["id"],),
+        ).fetchall():
+            meta = run["metadata"]
+            if not meta:
+                continue
+            try:
+                parsed = json.loads(meta) if isinstance(meta, str) else dict(meta)
+            except Exception:
+                continue
+            if str(parsed.get(required_key) or "").strip():
+                return True, "prerequisite_met"
+    return False, f"{parent_stage}_artifact_missing"
+
+
+def check_cross_model_review(
+    conn: sqlite3.Connection, task_id: str,
+) -> tuple[bool, str]:
+    """Return ``(ok, reason)`` for the cross-model authorship invariant.
+
+    A card whose stage appears in :data:`CROSS_MODEL_STAGE_PAIRS` must not run
+    on the same host as the parent stage whose work it checks or builds on.
+    Cards with no such parent are unconstrained -- the rule is about
+    authorship boundaries, not about every edge in the graph.
+    """
+    row = conn.execute(
+        "SELECT id, assignee, provenance FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if row is None:
+        return False, "unknown_task"
+    stage = decode_provenance(row["provenance"]).get("stage")
+    author_stage = CROSS_MODEL_STAGE_PAIRS.get(stage or "")
+    if author_stage is None:
+        return True, "unconstrained_stage"
+    own_host = worker_host_for(row["assignee"])
+    for parent in conn.execute(
+        "SELECT t.id, t.assignee, t.provenance FROM tasks t "
+        "JOIN task_links l ON l.parent_id = t.id WHERE l.child_id = ?",
+        (task_id,),
+    ).fetchall():
+        if decode_provenance(parent["provenance"]).get("stage") != author_stage:
+            continue
+        if worker_host_for(parent["assignee"]) == own_host:
+            return False, "same_host_as_author"
+    return True, "cross_model"
+
+
+#: Coder->reviewer repair rounds allowed on ONE card before it blocks for a
+#: human. Deliberately the SAME number as BLOCK_RECURRENCE_LIMIT so there is
+#: one ceiling, not two that can drift apart.
+REPAIR_ROUND_LIMIT = BLOCK_RECURRENCE_LIMIT
+
+
+def repair_round(conn: sqlite3.Connection, task_id: str) -> int:
+    """How many repair rounds this card has already been through.
+
+    Reads ``block_recurrences`` -- the counter the block/unblock machinery
+    itself maintains -- rather than a parallel tally that could disagree with
+    the routing decision. Each reviewer rejection is one round. Counting
+    transitions on the SAME card is the point: a loop that creates a card per
+    iteration is the runaway fan-out this subsystem exists to prevent.
+    """
+    row = conn.execute(
+        "SELECT block_recurrences FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if row is None or row["block_recurrences"] is None:
+        return 0
+    return int(row["block_recurrences"])
+
+
+def repair_budget_exhausted(
+    conn: sqlite3.Connection, task_id: str, ceiling: Optional[int] = None,
+) -> bool:
+    """Whether ``task_id`` has used up its repair rounds.
+
+    At the ceiling the caller must block ONE card with a concise actionable
+    reason. It must not create another card, re-plan, or re-decompose.
+    """
+    limit = REPAIR_ROUND_LIMIT if ceiling is None else int(ceiling)
+    if repair_round(conn, task_id) >= limit:
+        return True
+    # The machinery routes an over-limit card to `triage` and records
+    # `block_loop_detected`. Honour that even if the counter was later reset.
+    return conn.execute(
+        "SELECT 1 FROM task_events WHERE task_id = ? AND "
+        "kind = 'block_loop_detected' LIMIT 1", (task_id,),
+    ).fetchone() is not None
+
+
+def _decode_provenance_blob(raw: Any) -> dict:
+    """Parse a ``tasks.provenance`` cell into a dict. Never raises."""
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return dict(raw)
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return {}
+    return dict(parsed) if isinstance(parsed, dict) else {}
+
+
+def encode_provenance(
+    *,
+    origin: str,
+    root_id: Optional[str] = None,
+    run_id: Optional[str] = None,
+    stage: Optional[str] = None,
+    attempt: Optional[int] = None,
+    package_id: Optional[str] = None,
+    parent_run: Optional[str] = None,
+) -> str:
+    """Build the JSON blob stored in ``tasks.provenance``.
+
+    Keys are omitted when unset so the stored object stays small and a
+    round-trip is stable (the HCW side hashes these bodies).
+    """
+    if origin not in PROVENANCE_ORIGINS:
+        raise ValueError(
+            f"provenance origin must be one of {list(PROVENANCE_ORIGINS)}, got {origin!r}"
+        )
+    payload: dict[str, Any] = {"origin": origin}
+    for key, value in (
+        ("root_id", root_id), ("run_id", run_id), ("stage", stage),
+        ("package_id", package_id), ("parent_run", parent_run),
+    ):
+        if value:
+            payload[key] = str(value)
+    if attempt is not None:
+        payload["attempt"] = int(attempt)
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def decode_provenance(value: Any) -> dict:
+    """Normalise any provenance carrier (row cell, dict, Task) to a dict.
+
+    Missing/unparseable provenance normalises to ``{"origin": "user"}`` so a
+    legacy or hand-made card behaves exactly as it did before this column
+    existed.
+    """
+    if isinstance(value, Task):
+        raw = value.provenance
+    else:
+        raw = value
+    data = _decode_provenance_blob(raw)
+    if data.get("origin") not in PROVENANCE_ORIGINS:
+        data["origin"] = "user"
+    return data
+
+
+def task_provenance(conn: sqlite3.Connection, task_id: str) -> dict:
+    """Return the decoded provenance for ``task_id`` (``{}`` when unknown)."""
+    row = conn.execute(
+        "SELECT provenance FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if row is None:
+        return {}
+    return decode_provenance(row["provenance"])
+
+
+def is_workflow_key(idempotency_key: Optional[str]) -> bool:
+    """Whether an idempotency key belongs to a workflow-engine namespace."""
+    if not idempotency_key:
+        return False
+    return any(
+        str(idempotency_key).startswith(ns) for ns in WORKFLOW_KEY_NAMESPACES
+    )
+
+
+def workspace_worktree_depth(workspace_path: Optional[str]) -> int:
+    """Count nested workflow-worktree segments in a workspace path."""
+    if not workspace_path:
+        return 0
+    try:
+        parts = PurePosixPath(str(workspace_path).replace("\\", "/")).parts
+    except Exception:
+        return 0
+    return sum(1 for part in parts if part == WORKFLOW_WORKTREE_DIR)
+
+
+def check_workspace_depth(workspace_path: Optional[str]) -> None:
+    """Raise ``ValueError('workspace_depth_exceeded: ...')`` when a path nests
+    workflow worktrees deeper than :data:`MAX_WORKFLOW_WORKTREE_DEPTH`.
+
+    Called from ``create_task`` BEFORE the insert txn opens, so a depth
+    violation never leaves a card or a directory behind.
+    """
+    depth = workspace_worktree_depth(workspace_path)
+    if depth > MAX_WORKFLOW_WORKTREE_DEPTH:
+        raise ValueError(
+            f"workspace_depth_exceeded: {depth} nested "
+            f"{WORKFLOW_WORKTREE_DIR!r} segments exceeds the maximum of "
+            f"{MAX_WORKFLOW_WORKTREE_DEPTH} ({workspace_path})"
+        )
+
+
+def decompose_eligibility(
+    conn: sqlite3.Connection, task_id: str,
+) -> tuple[bool, str]:
+    """Return ``(eligible, reason)`` for auto/manual decomposition.
+
+    The single authority for requirement "only root requests may be
+    decomposed". Every rejection reason is a stable machine code so the
+    dashboard, CLI, and diagnostics all speak the same language.
+    """
+    row = conn.execute(
+        "SELECT id, status, workspace_path, idempotency_key, provenance "
+        "FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return False, "unknown_task"
+    if row["status"] != "triage":
+        return False, "not_in_triage"
+
+    prov = decode_provenance(row["provenance"])
+    origin = prov.get("origin")
+    # A workflow stage is never a new problem to solve. Check the explicit
+    # structured identity first, then the key namespace as a fallback for
+    # cards created by an engine runtime older than the stamping change.
+    if origin == "workflow" or prov.get("run_id"):
+        return False, "workflow_stage"
+    if is_workflow_key(row["idempotency_key"]):
+        return False, "workflow_stage"
+    if origin == "decomposer":
+        return False, "decomposer_child"
+    if origin not in DECOMPOSABLE_ORIGINS:
+        return False, "machine_generated"
+
+    # A card living inside a workflow-controlled worktree belongs to that
+    # workflow's run, whatever its provenance claims.
+    if workspace_worktree_depth(row["workspace_path"]) > 0:
+        return False, "inside_workflow_worktree"
+    if workspace_worktree_depth(row["workspace_path"]) > MAX_WORKFLOW_WORKTREE_DEPTH:
+        return False, "workspace_depth_exceeded"
+
+    # `block_loop_detected` is the ONE transition that exists to force human
+    # attention: a task re-blocked for the same cause past the recurrence
+    # limit is parked in triage deliberately. Decomposing it converts a
+    # bounded repair into unbounded fan-out — the incident's core mistake.
+    looped = conn.execute(
+        "SELECT 1 FROM task_events WHERE task_id = ? AND kind = "
+        "'block_loop_detected' LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if looped is not None:
+        return False, "block_loop_routed"
+
+    # Decomposition is a one-shot transition. A root that already owns
+    # children has been decomposed; re-running it duplicates the graph.
+    kids = conn.execute(
+        "SELECT 1 FROM task_links WHERE parent_id = ? LIMIT 1", (task_id,)
+    ).fetchone()
+    if kids is not None:
+        return False, "already_decomposed"
+
+    return True, "eligible"
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -3183,6 +3683,7 @@ def create_task(
     board: Optional[str] = None,
     project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
+    provenance: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -3235,6 +3736,20 @@ def create_task(
         raise ValueError(
             f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}"
         )
+    # Structured provenance: normalise and reject an unknown origin outright
+    # rather than silently storing a blob the guards can't read.
+    if provenance is not None:
+        decoded = _decode_provenance_blob(provenance)
+        if decoded.get("origin") not in PROVENANCE_ORIGINS:
+            raise ValueError(
+                "provenance.origin must be one of "
+                f"{list(PROVENANCE_ORIGINS)}, got {decoded.get('origin')!r}"
+            )
+        provenance = json.dumps(decoded, sort_keys=True, separators=(",", ":"))
+    # Bounded workflow depth, checked BEFORE the idempotency lookup and
+    # before any write txn opens: a depth violation must never leave a card
+    # or a directory behind.
+    check_workspace_depth(workspace_path)
     if workspace_kind not in VALID_WORKSPACE_KINDS:
         raise ValueError(
             f"workspace_kind must be one of {sorted(VALID_WORKSPACE_KINDS)}, "
@@ -3497,8 +4012,8 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, provenance
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3524,6 +4039,7 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        provenance,
                     ),
                 )
                 for pid in parents:
@@ -4562,7 +5078,9 @@ def recompute_ready(
                 "WHERE l.child_id = ?",
                 (task_id,),
             ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
+            if all(
+                p["status"] in DEPENDENCY_SATISFIED_STATUSES for p in parents
+            ):
                 resume_status = _resume_status_from_events(conn, task_id)
                 if cur_status == "blocked":
                     # Don't auto-recover tasks that have hit the
@@ -4609,7 +5127,7 @@ def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
         "SELECT 1 FROM task_links l "
         "JOIN tasks p ON p.id = l.parent_id "
         "WHERE l.child_id = ? "
-        "AND p.status NOT IN ('done', 'archived') LIMIT 1",
+        "AND p.status NOT IN ('done') LIMIT 1",
         (task_id,),
     ).fetchone() is None
 
@@ -4641,7 +5159,7 @@ def claim_task(
         undone = conn.execute(
             "SELECT 1 FROM task_links l "
             "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
+            "WHERE l.child_id = ? AND p.status NOT IN ('done') LIMIT 1",
             (task_id,),
         ).fetchone()
         if undone:
@@ -6813,7 +7331,7 @@ def promote_task(
         ).fetchall()
         unsatisfied = [
             p["id"] for p in parents
-            if p["status"] not in ("done", "archived")
+            if p["status"] not in DEPENDENCY_SATISFIED_STATUSES
         ]
         if unsatisfied:
             return False, (
@@ -6885,7 +7403,7 @@ def _landing_status_after_parents(conn: sqlite3.Connection, task_id: str) -> str
         "SELECT 1 FROM task_links l "
         "JOIN tasks p ON p.id = l.parent_id "
         "WHERE l.child_id = ? "
-        "AND p.status NOT IN ('done', 'archived') LIMIT 1",
+        "AND p.status NOT IN ('done') LIMIT 1",
         (task_id,),
     ).fetchone()
     return "todo" if undone_parents else "ready"
@@ -7420,11 +7938,21 @@ def decompose_triage_task(
                 child_ws_path = root_ws_path
             else:
                 child_ws_path = None
+            # Machine-generated: stamp structured provenance so this child can
+            # never itself be decomposed, and so diagnostics can attribute it
+            # to its canonical root. `created_by` is free text and is NOT an
+            # identity signal.
+            child_provenance = encode_provenance(
+                origin="decomposer", root_id=task_id,
+            )
+            # Inherited paths are already depth-checked on the root, but a
+            # per-child override is caller-supplied: re-check before insert.
+            check_workspace_depth(child_ws_path)
             conn.execute(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "
-                " workspace_path, tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
+                " workspace_path, tenant, created_at, created_by, provenance) "
+                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
@@ -7435,6 +7963,7 @@ def decompose_triage_task(
                     tenant,
                     now,
                     (author or "decomposer"),
+                    child_provenance,
                 ),
             )
             _append_event(
@@ -7533,14 +8062,403 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
             summary="task archived with run still active",
         )
         _append_event(conn, task_id, "archived", None, run_id=run_id)
-    # ``archived`` parents no longer block children, same as ``done``.
-    # Promote newly-unblocked dependents immediately instead of waiting
-    # for a later dispatcher tick.
+    # NOTE: archiving deliberately does NOT release descendants — see
+    # DEPENDENCY_SATISFIED_STATUSES. ``recompute_ready`` is still called so a
+    # sibling whose OWN parents are genuinely ``done`` isn't left waiting on a
+    # dispatcher tick, but this task's own children stay gated in ``todo``.
+    # Use :func:`cancel_subtree` to take a whole branch out atomically.
     recompute_ready(conn)
     # Reap the workspace on archive too — tasks archived without ever
     # completing previously kept their scratch dir / worktree forever.
     _cleanup_workspace(conn, task_id)
     return True
+
+
+# ---------------------------------------------------------------------------
+# Board-level (semantic) diagnostics
+# ---------------------------------------------------------------------------
+# ``kanban_diagnostics`` runs PER-TASK rules: local structural checks over one
+# card's events and runs. That is why ``hermes kanban diagnostics --json``
+# returned ``[]`` while the board held 285 cards and 49 five-deep worktrees —
+# every individual card was locally well-formed. The pathology was in the
+# GRAPH: recursion, duplicated canonical identity, contaminated workflow
+# identity, unbounded fan-out. Those need a board-wide pass.
+
+#: Statuses that count as "actively consuming the board".
+ACTIVE_STATUSES = ("ready", "running", "review")
+
+#: Statuses past which a card can no longer be a live canonical root.
+TERMINAL_STATUSES = ("done", "archived")
+
+
+@dataclass
+class BoardDiagnostic:
+    """One board-wide semantic finding.
+
+    ``kind`` is the stable machine code, ``task_ids`` / ``run_ids`` are the
+    concrete identities an operator needs to act, and ``detail`` states the
+    actionable reason in one sentence.
+    """
+
+    kind: str
+    severity: str
+    title: str
+    detail: str
+    task_ids: list[str] = field(default_factory=list)
+    run_ids: list[str] = field(default_factory=list)
+
+    def as_dict(self) -> dict:
+        return {
+            "kind": self.kind,
+            "severity": self.severity,
+            "title": self.title,
+            "detail": self.detail,
+            "task_ids": list(self.task_ids),
+            "run_ids": list(self.run_ids),
+        }
+
+
+def _workflow_root_of(path: Optional[str]) -> Optional[str]:
+    """Return the repo path above the FIRST ``.worktrees`` segment."""
+    if not path:
+        return None
+    parts = PurePosixPath(str(path).replace("\\", "/")).parts
+    if WORKFLOW_WORKTREE_DIR not in parts:
+        return None
+    return str(PurePosixPath(*parts[: parts.index(WORKFLOW_WORKTREE_DIR)]))
+
+
+def _brief_scope(body: Optional[str]) -> Optional[tuple]:
+    """Extract the declared mutation scope from an HCW card brief body."""
+    if not body:
+        return None
+    try:
+        parsed = json.loads(body)
+    except Exception:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    scope = parsed.get("scope")
+    if not isinstance(scope, list):
+        return None
+    return tuple(sorted(str(x) for x in scope))
+
+
+def board_diagnostics(
+    conn: sqlite3.Connection,
+    *,
+    max_in_progress: Optional[int] = None,
+) -> list[BoardDiagnostic]:
+    """Semantic, graph-wide diagnostics for one board.
+
+    Detects the failure classes the per-task rules structurally cannot see.
+    Read-only. Every finding carries concrete task and run ids.
+    """
+    out: list[BoardDiagnostic] = []
+    rows = conn.execute(
+        "SELECT id, title, status, body, workspace_path, branch_name, "
+        "       idempotency_key, provenance, assignee "
+        "FROM tasks"
+    ).fetchall()
+    tasks = {r["id"]: r for r in rows}
+    prov = {r["id"]: decode_provenance(r["provenance"]) for r in rows}
+    links = conn.execute("SELECT parent_id, child_id FROM task_links").fetchall()
+    children: dict[str, list[str]] = {}
+    for link in links:
+        children.setdefault(link["parent_id"], []).append(link["child_id"])
+
+    def _run_of(tid: str) -> Optional[str]:
+        return prov.get(tid, {}).get("run_id")
+
+    # 1. An HCW stage that owns or launches another HCW run. This is the
+    #    recursion itself: a machine-generated stage parenting a card that
+    #    belongs to a DIFFERENT workflow run.
+    for tid, row in tasks.items():
+        if prov[tid].get("origin") != "workflow":
+            continue
+        mine = _run_of(tid)
+        nested = [
+            kid for kid in children.get(tid, [])
+            if kid in prov and prov[kid].get("origin") == "workflow"
+            and _run_of(kid) and _run_of(kid) != mine
+        ]
+        if nested:
+            out.append(BoardDiagnostic(
+                kind="workflow_recursion",
+                severity="critical",
+                title="Workflow stage owns another workflow run",
+                detail=(
+                    f"Stage {tid} (run {mine}, stage "
+                    f"{prov[tid].get('stage')}) is the parent of "
+                    f"{', '.join(nested)}, which belong to a different run. "
+                    "A stage must never bootstrap a workflow. Cancel the "
+                    "nested subtree and route recovery to the canonical run."
+                ),
+                task_ids=[tid, *nested],
+                run_ids=[r for r in {mine, *(_run_of(k) for k in nested)} if r],
+            ))
+
+    # 2. An HCW stage that was decomposed. The decomposer must never touch a
+    #    stage; a stage with decomposer children means the guard was bypassed
+    #    or predates this fix.
+    for tid in tasks:
+        if prov[tid].get("origin") != "workflow":
+            continue
+        kids = [
+            k for k in children.get(tid, [])
+            if k in prov and prov[k].get("origin") == "decomposer"
+        ]
+        if kids:
+            out.append(BoardDiagnostic(
+                kind="decomposed_workflow_stage",
+                severity="critical",
+                title="Workflow stage was auto-decomposed",
+                detail=(
+                    f"Stage {tid} (run {_run_of(tid)}, stage "
+                    f"{prov[tid].get('stage')}) has decomposer children "
+                    f"{', '.join(kids)}. A blocked stage is a repair for its "
+                    "own run, not a new problem to fan out."
+                ),
+                task_ids=[tid, *kids],
+                run_ids=[r for r in [_run_of(tid)] if r],
+            ))
+
+    # 3. Multiple live roots sharing one canonical idempotency identity.
+    by_key: dict[str, list[str]] = {}
+    for tid, row in tasks.items():
+        key = row["idempotency_key"]
+        if not key or row["status"] in TERMINAL_STATUSES:
+            continue
+        by_key.setdefault(key, []).append(tid)
+    for key, ids in by_key.items():
+        if len(ids) > 1:
+            out.append(BoardDiagnostic(
+                kind="duplicate_canonical_root",
+                severity="critical",
+                title="Duplicate canonical root",
+                detail=(
+                    f"{len(ids)} live cards share idempotency key {key!r}: "
+                    f"{', '.join(sorted(ids))}. Intake, retries, and gateway "
+                    "restarts must converge on ONE root. Archive the "
+                    "duplicates and keep the earliest."
+                ),
+                task_ids=sorted(ids),
+            ))
+
+    # 4. Workspace nesting above the allowed workflow depth.
+    for tid, row in tasks.items():
+        if row["status"] in TERMINAL_STATUSES:
+            continue
+        depth = workspace_worktree_depth(row["workspace_path"])
+        if depth > MAX_WORKFLOW_WORKTREE_DEPTH:
+            out.append(BoardDiagnostic(
+                kind="workspace_depth_exceeded",
+                severity="critical",
+                title="Workflow worktree nested too deep",
+                detail=(
+                    f"{tid} has {depth} nested {WORKFLOW_WORKTREE_DIR!r} "
+                    f"segments (max {MAX_WORKFLOW_WORKTREE_DEPTH}): "
+                    f"{row['workspace_path']}. A workflow bootstrapped inside "
+                    "another workflow's attempt worktree."
+                ),
+                task_ids=[tid],
+                run_ids=[r for r in [_run_of(tid)] if r],
+            ))
+
+    # 5. Stages of one run whose workspace root or branch disagree — the
+    #    identity-contamination shape (a replacement run authoring files
+    #    outside its own permitted worktree).
+    per_run: dict[str, list[str]] = {}
+    for tid in tasks:
+        run = _run_of(tid)
+        if run:
+            per_run.setdefault(run, []).append(tid)
+    for run, ids in per_run.items():
+        roots = {
+            _workflow_root_of(tasks[t]["workspace_path"]) for t in ids
+        } - {None}
+        branches = {tasks[t]["branch_name"] for t in ids} - {None}
+        scopes = {sc for sc in (_brief_scope(tasks[t]["body"]) for t in ids)
+                  if sc is not None}
+        if len(roots) > 1 or len(branches) > 1:
+            out.append(BoardDiagnostic(
+                kind="workflow_workspace_mismatch",
+                severity="critical",
+                title="Workflow stages disagree on workspace or branch",
+                detail=(
+                    f"Run {run} spans repo roots {sorted(roots)} and branches "
+                    f"{sorted(branches)} across {', '.join(sorted(ids))}. Every "
+                    "stage of a run must reference the same authoritative "
+                    "worktree and branch."
+                ),
+                task_ids=sorted(ids),
+                run_ids=[run],
+            ))
+        if len(scopes) > 1:
+            out.append(BoardDiagnostic(
+                kind="workflow_scope_conflict",
+                severity="error",
+                title="Workflow stages disagree on mutation scope",
+                detail=(
+                    f"Run {run} declares conflicting mutation scopes "
+                    f"{sorted(scopes)} across {', '.join(sorted(ids))}. A "
+                    "stage whose scope excludes the run's plan paths will fail "
+                    "closed on every attempt."
+                ),
+                task_ids=sorted(ids),
+                run_ids=[run],
+            ))
+
+    # 6. Ready/running descendants of an archived or cancelled parent — the
+    #    cleanup-releases-survivors shape.
+    for link in links:
+        parent, child = link["parent_id"], link["child_id"]
+        if parent not in tasks or child not in tasks:
+            continue
+        if tasks[parent]["status"] != "archived":
+            continue
+        if tasks[child]["status"] not in ACTIVE_STATUSES:
+            continue
+        out.append(BoardDiagnostic(
+            kind="orphaned_gated_descendant",
+            severity="error",
+            title="Active descendant of an archived parent",
+            detail=(
+                f"{child} is {tasks[child]['status']} while its parent "
+                f"{parent} is archived. An archive is not a success — use "
+                "`hermes kanban cancel-subtree` to take the branch out "
+                "atomically, or re-open the parent."
+            ),
+            task_ids=[parent, child],
+        ))
+
+    # 7. A review card running on the same host as the implementer it
+    #    reviews. The cross-model invariant is the whole point of routing by
+    #    assignee: a model reviewing its own output is not a review.
+    for tid in tasks:
+        if prov[tid].get("stage") != "review":
+            continue
+        if tasks[tid]["status"] in TERMINAL_STATUSES:
+            continue
+        ok, why = check_cross_model_review(conn, tid)
+        if ok:
+            continue
+        parents = [
+            p_id for p_id in (
+                r["parent_id"] for r in links if r["child_id"] == tid
+            )
+            if p_id in prov and prov[p_id].get("stage") == "implement"
+        ]
+        out.append(BoardDiagnostic(
+            kind="cross_model_review_violation",
+            severity="critical",
+            title="Review card runs on the author's own host",
+            detail=(
+                f"{tid} (assignee {tasks[tid]['assignee']}, host "
+                f"{worker_host_for(tasks[tid]['assignee'])}) reviews "
+                f"{', '.join(parents) or 'an implement card'} on the SAME host "
+                f"({why}). Reassign the review to a different host so a "
+                "different model reads the diff."
+            ),
+            task_ids=[tid, *parents],
+        ))
+
+    # 7. Active fan-out above the configured board cap.
+    if max_in_progress is None:
+        max_in_progress = configured_max_in_progress()
+    if max_in_progress:
+        active = [
+            t for t, r in tasks.items() if r["status"] in ("running",)
+        ]
+        if len(active) > int(max_in_progress):
+            out.append(BoardDiagnostic(
+                kind="fanout_exceeded",
+                severity="error",
+                title="Active workers exceed the configured cap",
+                detail=(
+                    f"{len(active)} running cards against "
+                    f"kanban.max_in_progress={max_in_progress}: "
+                    f"{', '.join(sorted(active))}."
+                ),
+                task_ids=sorted(active),
+            ))
+    return out
+
+
+def descendant_closure(conn: sqlite3.Connection, task_id: str) -> list[str]:
+    """Return ``task_id`` plus every transitive descendant, parents first.
+
+    Breadth-first over ``task_links``; a diamond or a (defensively tolerated)
+    cycle visits each id once.
+    """
+    seen = {task_id}
+    order = [task_id]
+    frontier = [task_id]
+    while frontier:
+        rows = conn.execute(
+            "SELECT child_id FROM task_links WHERE parent_id IN ("
+            + ",".join("?" * len(frontier)) + ")",
+            frontier,
+        ).fetchall()
+        frontier = []
+        for row in rows:
+            kid = row["child_id"]
+            if kid in seen:
+                continue
+            seen.add(kid)
+            order.append(kid)
+            frontier.append(kid)
+    return order
+
+
+def cancel_subtree(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: str = "",
+    actor: Optional[str] = None,
+) -> int:
+    """Atomically archive ``task_id`` and its whole descendant closure.
+
+    The intentional counterpart to the gating rule in
+    :data:`DEPENDENCY_SATISFIED_STATUSES`: because an archived parent no
+    longer satisfies its children, "cancel this branch" needs an operation
+    that takes the branch out in ONE transaction. Partially archiving a graph
+    can therefore never leave a runnable descendant behind.
+
+    Returns the number of tasks archived (already-archived ones are skipped
+    and not counted).
+    """
+    ids = descendant_closure(conn, task_id)
+    archived: list[str] = []
+    with write_txn(conn):
+        for tid in ids:
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'archived', claim_lock = NULL, "
+                "    claim_expires = NULL, worker_pid = NULL "
+                "WHERE id = ? AND status != 'archived'",
+                (tid,),
+            )
+            if cur.rowcount != 1:
+                continue
+            run_id = _end_run(
+                conn, tid,
+                outcome="reclaimed", status="reclaimed",
+                summary="subtree cancelled",
+            )
+            _append_event(
+                conn, tid, "archived",
+                {
+                    "subtree_root": task_id,
+                    "reason": (reason or "subtree cancelled")[:500],
+                    "actor": actor,
+                },
+                run_id=run_id,
+            )
+            archived.append(tid)
+    for tid in archived:
+        _cleanup_workspace(conn, tid)
+    return len(archived)
 
 
 def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
@@ -8039,6 +8957,15 @@ class DispatchResult:
     operator can see when the dispatcher is acting on the fallback rule
     rather than on explicit per-task assignments."""
     skipped_nonspawnable: list[str] = field(default_factory=list)
+    #: ``stage=review`` cards refused because their host matches the
+    #: ``stage=implement`` parent they review. The cross-model invariant has to
+    #: hold at dispatch: a self-review that runs and *then* trips a diagnostic
+    #: has already produced a worthless approval.
+    skipped_cross_model: list[str] = field(default_factory=list)
+    #: Cards refused because a required upstream artifact was never reported
+    #: (see STAGE_PREREQUISITES) -- e.g. an implement card whose contract parent
+    #: did not produce docs/ai/contracts/<slug>.json.
+    skipped_missing_prerequisite: list[str] = field(default_factory=list)
     """Ready task ids skipped because their assignee names a control-plane
     lane (a Claude Code terminal like ``orion-cc``) rather than a Hermes
     profile. Expected steady-state on multi-lane setups; NOT an
@@ -10038,7 +10965,9 @@ def _dispatch_once_locked(
             spawn_budget = 1
 
     ready_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
+        # `provenance` is selected so the cross-model review gate below can
+        # test the stage without a per-row follow-up query.
+        "SELECT id, assignee, provenance FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -10102,6 +11031,14 @@ def _dispatch_once_locked(
     # Normalize default_assignee once: empty/whitespace string → None so the
     # rest of the loop can use ``if default_assignee:`` as a single check.
     # We also resolve profile_exists once here for the same reason.
+    # Read the worker_command table ONCE per tick, not once per ready row --
+    # each read hits load_config_readonly, and the ready loop can be long.
+    try:
+        _wc_table = _load_kanban_config().get("worker_command") or {}
+        if not isinstance(_wc_table, dict):
+            _wc_table = {}
+    except Exception:
+        _wc_table = {}
     _default_assignee = (default_assignee or "").strip() or None
     _default_assignee_resolved = False
     if _default_assignee:
@@ -10176,7 +11113,14 @@ def _dispatch_once_locked(
             from hermes_cli.profiles import profile_exists  # local import: avoids cycle
         except Exception:
             profile_exists = None  # type: ignore[assignment]
-        if profile_exists is not None and not profile_exists(row_assignee):
+        # A worker_command assignee (codex-builder, opus-reviewer, ...) is a
+        # HOST selector, not a Hermes profile -- no profile will ever exist for
+        # it, so the profile_exists gate must not reject it.
+        if (
+            profile_exists is not None
+            and row_assignee not in _wc_table
+            and not profile_exists(row_assignee)
+        ):
             # Bucket separately from skipped_unassigned: the operator
             # cannot fix this by assigning a profile (the assignee IS the
             # intended owner — a terminal lane). Health telemetry uses
@@ -10184,6 +11128,24 @@ def _dispatch_once_locked(
             # multi-lane setups where the ready queue is steadily full
             # of human-pulled work.
             result.skipped_nonspawnable.append(row["id"])
+            continue
+        # Cross-model review gate: never let a model review its own host's
+        # work. Refused BEFORE the claim, so no worker ever starts. Only
+        # review-stage cards can fail this, so skip the query for everything
+        # else rather than paying it on every ready row.
+        # Gate on the PAIR TABLE, never a literal stage name: adding a pair to
+        # CROSS_MODEL_STAGE_PAIRS must be enough to enforce it here. A hardcoded
+        # "review" let implement<-contract violations spawn unchecked.
+        if _wc_table and decode_provenance(row["provenance"]).get("stage") in CROSS_MODEL_STAGE_PAIRS:
+            _xm_ok, _xm_why = check_cross_model_review(conn, row["id"])
+            if not _xm_ok:
+                result.skipped_cross_model.append(row["id"])
+                continue
+        # Upstream-artifact gate: refuse before the claim so a coder never runs
+        # without the contract it is supposed to be held to.
+        _pq_ok, _pq_why = check_stage_prerequisites(conn, row["id"])
+        if not _pq_ok:
+            result.skipped_missing_prerequisite.append(row["id"])
             continue
         # Per-profile concurrency cap (#21582): even if there's global
         # headroom, refuse to spawn for an assignee that's already at
@@ -10842,6 +11804,22 @@ def _default_spawn(
     # older hermes builds on PATH that predate the flag's precedence.
     env.pop("HERMES_TUI", None)
 
+    # kanban.worker_command: launch a NON-Hermes worker (Claude Code, Codex, ...)
+    # for this assignee instead of a Hermes chat session. Everything above --
+    # the HERMES_KANBAN_* env, cwd=workspace, the rotated per-task log, the
+    # claim/PID bookkeeping below -- is shared, because write-back happens
+    # through the `hermes kanban` CLI which resolves the board from that env.
+    _override = worker_command_for(task.assignee)
+    if _override:
+        cmd = render_worker_command(
+            _override,
+            task_id=task.id,
+            workspace=workspace or "",
+            board=resolved_board,
+            assignee=task.assignee or "",
+        )
+        return _finish_spawn(cmd, task, workspace, board, env)
+
     cmd = [
         *_resolve_hermes_argv(),
         "-p", profile_arg,
@@ -10888,6 +11866,24 @@ def _default_spawn(
         # turn, prints text, exits rc=0, and the dispatcher records a
         # protocol violation (incident 2026-06-09 t_d9cbe312).
         cmd.append("-Q")
+    return _finish_spawn(cmd, task, workspace, board, env)
+
+
+def _finish_spawn(
+    cmd: list,
+    task: "Task",
+    workspace: str,
+    board: Optional[str],
+    env: dict,
+) -> Optional[int]:
+    """Launch ``cmd`` detached, logging to the board's per-task log.
+
+    Shared tail for both worker kinds -- the Hermes chat worker and a
+    ``kanban.worker_command`` host (Claude Code, Codex, ...). Keeping one
+    implementation means the log path, rotation, detachment, cwd and PID
+    bookkeeping cannot drift between them.
+    """
+    import subprocess
     # Redirect output to a per-task log under <board-root>/logs/.
     # Anchored at the board root (not the shared kanban root), so
     # `hermes kanban log` on a specific board reads its own file and
@@ -10914,8 +11910,9 @@ def _default_spawn(
     except FileNotFoundError:
         log_f.close()
         raise RuntimeError(
-            "`hermes` executable not found on PATH. "
-            "Install Hermes Agent or activate its venv before running the kanban dispatcher."
+            f"worker executable not found on PATH: {cmd[0]!r}. For a Hermes "
+            "worker, install Hermes Agent or activate its venv. For a "
+            "kanban.worker_command assignee, fix the configured argv[0]."
         )
     # NOTE: we intentionally do NOT close log_f here — we want Popen's
     # child process to keep writing after this function returns.  The
